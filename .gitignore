@@ -1,0 +1,5 @@
+node_modules/
+.DS_Store
+scraped_lobbies.json
+scraped_lobbies_relic.json
+*.log

@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AoE2Lobby - Live Age of Empires II Lobbies</title>
+    <meta name="description" content="A beautiful and modern live lobby browser for Age of Empires II.">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+    <!-- Background Elements -->
+    <div class="bg-shape shape-1"></div>
+    <div class="bg-shape shape-2"></div>
+    <div class="bg-shape shape-3"></div>
+
+    <div class="app-container">
+        <!-- Navbar -->
+        <header class="navbar">
+            <div class="nav-logo">
+                <span class="logo-icon">🛡️</span>
+                <h1>AoE2<span>Lobby</span></h1>
+            </div>
+            <div class="nav-actions">
+                <button class="btn btn-secondary">Sign In</button>
+                <button class="btn btn-primary">Download Client</button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Filters Section -->
+            <section class="filters-section glass-panel">
+                <div class="search-container">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="search-icon"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    <input type="text" id="searchInput" placeholder="Search by host, player, or map..." aria-label="Search lobbies">
+                </div>
+                
+                <div class="filter-controls">
+                    <div class="filter-group">
+                        <label for="gameTypeFilter">Game Type</label>
+                        <select id="gameTypeFilter">
+                            <option value="all">All Types</option>
+                            <option value="Random Map">Random Map</option>
+                            <option value="Empire Wars">Empire Wars</option>
+                            <option value="Death Match">Death Match</option>
+                            <option value="Custom">Custom</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="mapFilter">Map</label>
+                        <select id="mapFilter">
+                            <option value="all">All Maps</option>
+                            <option value="Arabia">Arabia</option>
+                            <option value="Arena">Arena</option>
+                            <option value="Black Forest">Black Forest</option>
+                            <option value="Nomad">Nomad</option>
+                            <option value="MegaRandom">MegaRandom</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="eloFilter">Min ELO</label>
+                        <select id="eloFilter">
+                            <option value="0">Any ELO</option>
+                            <option value="1000">1000+</option>
+                            <option value="1500">1500+</option>
+                            <option value="2000">2000+</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="statusFilter">Status</label>
+                        <select id="statusFilter">
+                            <option value="all">All Statuses</option>
+                            <option value="open">Open</option>
+                            <option value="playing">In Progress</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="modFilter">Mods</label>
+                        <select id="modFilter">
+                            <option value="all">All Mods</option>
+                            <option value="No Mods">No Mods</option>
+                            <option value="Mods Enabled">Mods Enabled</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Header -->
+            <div class="lobbies-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <div style="display: flex; gap: 20px; align-items: center;">
+                    <h2 class="lobbies-title" style="margin: 0;">Active <span id="viewTitleText">Lobbies</span> <span class="pulse-indicator"></span></h2>
+                    <div class="view-toggles" style="display: flex; background: rgba(255,255,255,0.05); padding: 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
+                        <button id="viewLobbiesBtn" class="btn" style="padding: 6px 16px; border-radius: 6px; font-size: 0.9em; background: rgba(88, 101, 242, 0.2); border: 1px solid var(--accent); color: white;">Lobbies</button>
+                        <button id="viewPlayersBtn" class="btn" style="padding: 6px 16px; border-radius: 6px; font-size: 0.9em; background: transparent; border: 1px solid transparent; color: #8a9bb2;">Players</button>
+                    </div>
+                </div>
+                <div class="lobbies-stats" style="color: #8a9bb2; font-weight: 500;">
+                    <span id="itemCount" style="color: var(--accent); font-weight: 700; font-size: 1.2em;">0</span> <span id="countLabel">lobbies</span> found
+                </div>
+            </div>
+
+            <!-- Player Filters (Hidden by default) -->
+            <section class="filters-section glass-panel" id="playerFilters" style="display: none; margin-bottom: 20px;">
+                <div class="filter-controls" style="display: flex; gap: 20px; align-items: center;">
+                    <div class="filter-group" style="flex: 1;">
+                        <input type="text" id="playerSearch" placeholder="Search Players or Maps..." style="padding: 10px; border-radius: 8px; background: #1a1f2e; border: 1px solid #3d4a60; color: #fff; width: 100%;">
+                    </div>
+                    <div class="filter-group">
+                        <label for="playerSort">Sort Players By</label>
+                        <select id="playerSort">
+                            <option value="elo-desc">Elo (Highest First)</option>
+                            <option value="elo-asc">Elo (Lowest First)</option>
+                            <option value="wr-desc">Win Rate (Highest First)</option>
+                            <option value="games-desc">Total Games Played</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Lobby Grid -->
+            <section class="lobby-grid" id="lobbyGrid">
+                <!-- Lobbies will be injected here by app.js -->
+            </section>
+
+            <!-- Player Grid -->
+            <section class="lobby-grid" id="playerGrid" style="display: none;">
+                <!-- Players will be injected here by app.js -->
+            </section>
+        </main>
+    </div>
+
+    <!-- Scripts -->
+    <script src="app.js?v=2"></script>
+</body>
+</html>
