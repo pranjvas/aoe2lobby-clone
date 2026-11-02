@@ -877,3 +877,11 @@ select:focus, select:hover {
 .empty-state .clear-filters-btn {
     margin: 1rem 0 0;
 }
+
+/* A filter that is narrowing the list (remembered between visits) */
+select.filter-active,
+input.filter-active {
+    border-color: var(--gold-primary) !important;
+    box-shadow: 0 0 0 1px var(--gold-primary);
+    color: var(--gold-primary);
+}

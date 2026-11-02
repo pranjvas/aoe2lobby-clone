@@ -465,6 +465,12 @@ function filterLobbies() {
 function applyFiltersAndRender() {
     const { rawMatches, ...saved } = state; // the lobby list itself is not worth saving
     localStorage.setItem('aoe2State', JSON.stringify(saved));
+    // Outline every filter that is narrowing the list, so remembered filters are easy to spot
+    for (const [key, id] of LOBBY_FILTERS) {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('filter-active', String(state[key]) !== String(defaultState[key]));
+    }
+    if (searchInput) searchInput.classList.toggle('filter-active', !!state.search);
     const clearBtn = document.getElementById('clearFiltersBtn');
     if (clearBtn) clearBtn.hidden = state.currentView !== 'lobbies' || activeLobbyFilters().length === 0;
     if (state.currentView === 'lobbies') {
