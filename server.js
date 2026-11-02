@@ -113,6 +113,8 @@ async function fetchProfilesBatch(ids) {
                         const member = sg.members[0];
                         const profileId = member.profile_id;
                         let alias = member.alias || 'Unknown';
+                        const steamId = /^\/steam\/(\d+)$/.exec(member.name || '');
+                        const steamProfile = steamId ? `https://steamcommunity.com/profiles/${steamId[1]}` : null;
                         
                         let currentRating = null;
                         const ladderStats = {};
@@ -149,7 +151,7 @@ async function fetchProfilesBatch(ids) {
                                 }
                             }
                         }
-                        profileCache.set(profileId, { alias, rating: currentRating, totalGames, totalWins, winRate, stats: ladderStats });
+                        profileCache.set(profileId, { alias, rating: currentRating, totalGames, totalWins, winRate, stats: ladderStats, steamProfile });
                     }
                 });
             }
@@ -357,9 +359,11 @@ const server = http.createServer(async (req, res) => {
                 } catch (e) {}
 
                 const scrapedStatsById = {};
+                const scrapedSteamById = {};
                 for (const name in scrapedPlayersStats) {
                     const sp = scrapedPlayersStats[name];
                     if (sp && sp.profileId && sp.stats) scrapedStatsById[String(sp.profileId)] = sp.stats;
+                    if (sp && sp.profileId && sp.steamProfile) scrapedSteamById[String(sp.profileId)] = sp.steamProfile;
                 }
 
                 let scrapedMatchesStats = {};
@@ -478,7 +482,8 @@ const server = http.createServer(async (req, res) => {
                             if (scrapedPlayer.winRate !== undefined && scrapedPlayer.winRate !== "") finalWinRate = scrapedPlayer.winRate;
                         }
 
-                        return { id: p.id, name: cached.alias, team: p.team, elo: finalElo, totalGames: finalTotalGames, totalWins: finalTotalWins, winRate: finalWinRate };
+                        const steamProfile = scrapedSteamById[String(p.id)] || cached.steamProfile || null;
+                        return { id: p.id, name: cached.alias, team: p.team, elo: finalElo, totalGames: finalTotalGames, totalWins: finalTotalWins, winRate: finalWinRate, steamProfile };
                     }) : [];
                     
                     let finalMapName = m.mapname || "Unknown Map";
@@ -639,7 +644,7 @@ const server = http.createServer(async (req, res) => {
                         const lobby = scrapedLobbiesObj[host];
                         const ladder = ladderFor(lobby.settings?.Mode, lobby.map, lobby.slotsTotal);
                         const parsedPlayers = (lobby.players || []).map(p => {
-                            const player = { id: p.profileId || 0, name: p.name, team: 0, elo: null, totalGames: 0, totalWins: 0, winRate: "0.0%" };
+                            const player = { id: p.profileId || 0, name: p.name, team: 0, elo: null, totalGames: 0, totalWins: 0, winRate: "0.0%", steamProfile: p.steamProfile || null };
                             const stats = (p.profileId && scrapedStatsById[String(p.profileId)]) || p.stats;
                             applyStat(player, stats && Object.keys(stats).length ? stats : null, ladder);
                             return player;

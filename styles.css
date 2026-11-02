@@ -885,3 +885,54 @@ input.filter-active {
     box-shadow: 0 0 0 1px var(--gold-primary);
     color: var(--gold-primary);
 }
+
+/* Per-player profile links: AoE2Insights, official AoE stats (Xbox icon), Steam */
+.player-links {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 4px;
+}
+
+.player-link {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    line-height: 1.4;
+    text-decoration: none;
+}
+
+.player-link:hover {
+    border-color: var(--border-hover);
+    color: var(--gold-primary);
+}
+
+.host-info .player-links {
+    margin: 6px 0 0;
+}
+
+/* Let a player row wrap (name, stats, profile links) instead of running off narrow screens */
+.player-item {
+    gap: 0.5rem;
+}
+
+.player-item .player-name {
+    flex-wrap: wrap;
+    min-width: 0;
+    row-gap: 4px;
+}
+
+.player-list {
+    overflow-x: hidden;
+}
+
+@media (max-width: 768px) {
+    .player-item .player-stats {
+        margin-left: 0;
+    }
+}

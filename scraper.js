@@ -112,12 +112,14 @@ async function dumpData() {
                     
                     scrapedPlayers[slot.name.toLowerCase()] = {
                         profileId: slot.profileid,
+                        steamProfile: slot.steam_profile || null,
                         stats: pStats // Store all stats for all modes!
                     };
 
                     players.push({
                         name: slot.name,
                         profileId: slot.profileid,
+                        steamProfile: slot.steam_profile || null,
                         civ: slot.civilization ? slot.civilization.toString() : "",
                         stats: pStats
                     });
