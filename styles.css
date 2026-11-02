@@ -897,6 +897,7 @@ input.filter-active {
 .player-link {
     display: inline-flex;
     align-items: center;
+    white-space: nowrap;
     padding: 1px 6px;
     border-radius: 4px;
     border: 1px solid var(--border-color);
@@ -935,4 +936,55 @@ input.filter-active {
     .player-item .player-stats {
         margin-left: 0;
     }
+}
+
+/* Spectate view: teams side by side, Spectate button with the spectator-delay countdown */
+.spectate-teams {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.75rem;
+    padding: 0.75rem 1.25rem 1rem;
+    border-top: 1px solid var(--border-color);
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.spectate-team {
+    min-width: 0;
+}
+
+.spectate-team-head {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-heading);
+    font-size: 0.8rem;
+    letter-spacing: 1px;
+    color: var(--text-secondary);
+    padding: 0 1rem 0.25rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.spectate-teams .player-item {
+    padding: 0.45rem 1rem;
+    font-size: 0.95rem;
+}
+
+.spectate-started {
+    margin-top: 0.6rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.spectate-btn.waiting {
+    opacity: 0.85;
+}
+
+.spectate-countdown {
+    font-variant-numeric: tabular-nums;
+}
+
+.spectate-more {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: center;
+    padding: 1rem 0;
 }

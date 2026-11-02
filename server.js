@@ -179,6 +179,101 @@ function parseSlotInfoIds(slotinfoBase64) {
     return [];
 }
 
+// --- Spectate: games in progress, from aoe2lobby.com's spectate feed ---------------------------------
+// The feed is ~3 MB, so it is fetched at most once per SPECTATE_REFRESH_MS and only while someone is
+// using the Spectate view (each /api/spectate request may trigger a refresh; nothing polls on its own).
+const SPECTATE_REFRESH_MS = 60000;
+const SPECTATE_ELO_TYPES = ['0', '3', '4', '13', '14'];
+let spectateCache = { at: 0, body: null, loading: null };
+
+function fetchSpectateSnapshot() {
+    return new Promise((resolve, reject) => {
+        let schema = null, matches = null, elo = {};
+        let ws;
+        const finish = (err) => {
+            clearTimeout(timer);
+            try { ws.close(); } catch (e) { }
+            if (matches) resolve({ schema: schema || {}, matches, elo });
+            else reject(err || new Error('no spectate data'));
+        };
+        const timer = setTimeout(() => finish(new Error('spectate snapshot timed out')), 20000);
+        try {
+            ws = new WebSocket('wss://aoe2lobby.com/ws/spectate/');
+        } catch (e) {
+            return finish(e);
+        }
+        ws.onopen = () => ws.send(JSON.stringify({ action: 'subscribe', type: 'elotypes', context: 'spectate', ids: SPECTATE_ELO_TYPES }));
+        ws.onerror = () => finish(new Error('spectate websocket error'));
+        ws.onmessage = (msg) => {
+            try {
+                const data = JSON.parse(msg.data);
+                if (data.schema) schema = data.schema;
+                if (data.spectate_match_all) matches = data.spectate_match_all;
+                if (data.spectate_elo_update) {
+                    for (const type in data.spectate_elo_update) elo[type] = Object.assign(elo[type] || {}, data.spectate_elo_update[type]);
+                }
+                if (matches && Object.keys(elo).length) finish();
+            } catch (e) { }
+        };
+    });
+}
+
+function buildSpectateGames({ schema, matches, elo }) {
+    const label = (field, value) => (value === null || value === undefined) ? null : (schema[field]?.[String(value)] ?? null);
+    const games = [];
+    for (const m of Object.values(matches)) {
+        if (m.observable === false) continue;
+        const players = [];
+        for (const slot of Object.values(m.slots || {})) {
+            if (!slot.profileid && !slot.name) continue;
+            const id = slot.profileid || 0;
+            const ratings = {};
+            for (const type of SPECTATE_ELO_TYPES) {
+                const st = id && elo[type]?.[id];
+                if (st) ratings[type] = st.rating;
+            }
+            players.push({
+                id, name: slot.name || 'AI', team: slot.team, color: slot.color,
+                civ: label('civilization', slot.civilization), country: slot.country || null,
+                steamProfile: slot.steam_profile || null, ratings
+            });
+        }
+        if (!players.length) continue;
+        const mode = label('mode', m.mode);
+        const isRanked = m.description === 'AUTOMATCH';
+        const ladder = ladderFor(mode, m.map_name, players.length === 2 ? 2 : 8);
+        for (const p of players) {
+            p.rating = p.ratings[ladder] ?? null; // the lobby's own ladder, like Auto on the lobby list
+        }
+        games.push({
+            id: m.matchid,
+            title: isRanked ? 'Ranked match' : (m.description || 'Age of Empires II Game'),
+            isRanked,
+            // Map-pool and custom maps arrive as a bare number (negative mapid); show that honestly
+            map: /^\d+$/.test(String(m.map_name)) ? (schema.mapid?.[String(m.mapid)] || `Map #${m.map_name}`) : (m.map_name || 'Unknown Map'),
+            matchType: mode,
+            mapSize: label('size', m.size),
+            speed: label('speed', m.speed),
+            population: m.population || null,
+            server: regionName(label('server', m.server)),
+            modInfo: m.data_mod || 'No Mods',
+            startTime: m.start_time,
+            observerDelay: m.observer_delay || 0,
+            observers: m.observers || 0,
+            ladder,
+            players
+        });
+    }
+    games.sort((a, b) => b.startTime - a.startTime);
+    return games;
+}
+
+async function refreshSpectate() {
+    const snapshot = await fetchSpectateSnapshot();
+    const games = buildSpectateGames(snapshot);
+    spectateCache = { at: Date.now(), body: JSON.stringify({ updatedAt: Math.floor(Date.now() / 1000), games }), loading: null };
+}
+
 const server = http.createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -191,6 +286,24 @@ const server = http.createServer(async (req, res) => {
     }
 
 
+
+    if (req.url.startsWith('/api/spectate')) {
+        try {
+            if (Date.now() - spectateCache.at > SPECTATE_REFRESH_MS && !spectateCache.loading) {
+                spectateCache.loading = refreshSpectate().catch(e => {
+                    console.error('Spectate refresh failed:', e.message);
+                    spectateCache.loading = null;
+                });
+            }
+            if (!spectateCache.body && spectateCache.loading) await spectateCache.loading;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(spectateCache.body || JSON.stringify({ updatedAt: null, games: [] }));
+        } catch (e) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ updatedAt: null, games: [] }));
+        }
+        return;
+    }
 
     if (req.url.startsWith('/api/lobbies')) {
         if (lobbiesCache.body && Date.now() - lobbiesCache.at < LOBBIES_CACHE_MS) {

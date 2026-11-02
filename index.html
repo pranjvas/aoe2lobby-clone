@@ -59,7 +59,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     
     <!-- Styles -->
-    <link rel="stylesheet" href="./styles.css?v=16">
+    <link rel="stylesheet" href="./styles.css?v=18">
 </head>
 <body>
     <!-- Background Elements -->
@@ -133,7 +133,7 @@
                         <select id="statusFilter">
                             <option value="all">All Statuses</option>
                             <option value="open">Open</option>
-                            <option value="playing">In Progress</option>
+                            <option value="playing">Full</option>
                         </select>
                     </div>
                     <div class="filter-group">
@@ -193,6 +193,7 @@
                     <div class="view-toggles" style="display: flex; background: rgba(255,255,255,0.05); padding: 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
                         <button id="viewLobbiesBtn" class="btn" style="padding: 6px 16px; border-radius: 6px; font-size: 0.9em; background: rgba(88, 101, 242, 0.2); border: 1px solid var(--accent); color: white;">Lobbies</button>
                         <button id="viewPlayersBtn" class="btn" style="padding: 6px 16px; border-radius: 6px; font-size: 0.9em; background: transparent; border: 1px solid transparent; color: #8a9bb2;">Players</button>
+                        <button id="viewSpectateBtn" class="btn" style="padding: 6px 16px; border-radius: 6px; font-size: 0.9em; background: transparent; border: 1px solid transparent; color: #8a9bb2;">Spectate</button>
                     </div>
                 </div>
                 <div style="display: flex; gap: 20px; align-items: center;">
@@ -238,6 +239,61 @@
                 <!-- Players will be injected here by app.js -->
             </section>
 
+            <!-- Spectate: games in progress (hidden until the Spectate view is chosen) -->
+            <section class="filters-section glass-panel" id="spectateFilters" style="display: none; margin-bottom: 20px;">
+                <div class="search-container">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="search-icon"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    <input type="text" id="spectateSearch" placeholder="Search by player, map or title..." aria-label="Search games in progress">
+                </div>
+                <div class="filter-controls">
+                    <div class="filter-group">
+                        <label for="spectateType">Type</label>
+                        <select id="spectateType">
+                            <option value="all">1v1 &amp; Team</option>
+                            <option value="1v1">1v1</option>
+                            <option value="team">Team</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="spectateKind">Games</label>
+                        <select id="spectateKind">
+                            <option value="all">Ranked &amp; Custom</option>
+                            <option value="ranked">Ranked only</option>
+                            <option value="custom">Custom lobbies only</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="spectateServer">Server</label>
+                        <select id="spectateServer">
+                            <option value="all">All Servers</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="spectateEloType">Elo Type</label>
+                        <select id="spectateEloType">
+                            <option value="auto">Auto (Match Mode)</option>
+                            <option value="0">Unranked</option>
+                            <option value="3">RM 1v1</option>
+                            <option value="4">RM Team</option>
+                            <option value="13">EW 1v1</option>
+                            <option value="14">EW Team</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="spectateSort">Sort</label>
+                        <select id="spectateSort">
+                            <option value="newest">Newest first</option>
+                            <option value="rating">Highest rated</option>
+                            <option value="spectators">Most spectators</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+
+            <section class="lobby-grid" id="spectateGrid" style="display: none;">
+                <!-- Games in progress are injected here by app.js -->
+            </section>
+
             <noscript>
                 <p class="about-section glass-panel">This live lobby list needs JavaScript. Turn it on to see open Age of Empires II: DE lobbies.</p>
             </noscript>
@@ -250,7 +306,11 @@
                 <h2>Frequently asked questions</h2>
                 <details>
                     <summary>How do I join a lobby?</summary>
-                    <p>Press <strong>Join Game</strong> on a lobby card. Your browser opens Age of Empires II: DE and joins that lobby; the game needs to be installed and you need to be signed in. Games that have already started show <strong>In Progress</strong> instead.</p>
+                    <p>Press <strong>Join Game</strong> on a lobby card. Your browser opens Age of Empires II: DE and joins that lobby; the game needs to be installed and you need to be signed in. Lobbies with no open slots show <strong>Lobby Full</strong>.</p>
+                </details>
+                <details>
+                    <summary>Can I watch games that already started?</summary>
+                    <p>Yes. Open <strong>Spectate</strong> to see games in progress, ranked and custom, with each team's players, ratings and civilizations. Press <strong>Spectate</strong> on a game to watch it in Age of Empires II: DE. Games have a short spectator delay, usually 2 minutes, and the button shows a countdown until it ends. A lobby leaves the lobby list as soon as its game starts and appears under Spectate instead.</p>
                 </details>
                 <details>
                     <summary>Which ELO is shown for each player?</summary>
@@ -273,7 +333,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="app.js?v=19"></script>
+    <script src="app.js?v=20"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>

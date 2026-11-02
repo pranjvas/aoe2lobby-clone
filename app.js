@@ -11,6 +11,11 @@ const defaultState = {
     resources: 'all',
     treaty: 'all',
     server: 'all',
+    spectateSearch: '',
+    spectateType: 'all',
+    spectateKind: 'all',
+    spectateServer: 'all',
+    spectateSort: 'newest',
     currentView: 'lobbies',
     playerSort: 'elo-desc',
     playerSearch: '',
@@ -109,14 +114,37 @@ function init() {
         if (layoutGridBtn) layoutGridBtn.click();
     }
     
-    if(state.currentView === 'players') {
-        viewPlayersBtn.click();
-    } else {
-        viewLobbiesBtn.click();
-    }
+    showView(['lobbies', 'players', 'spectate'].includes(state.currentView) ? state.currentView : 'lobbies');
     
     fetchRealLobbies();
 }
+
+// Names, titles and maps come from the game's lobby feed: escape before putting them in HTML
+function esc(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+// For a value placed inside a single-quoted JS string in an HTML attribute
+function jsArg(value) {
+    return esc(String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+}
+
+// Add a Steam friend: the steam:// link makes the Steam app send the request. Without the app, nothing takes
+// focus, so after a moment open the player's Steam profile (its Add Friend button signs in first if needed).
+window.addSteamFriend = function(e, steamId) {
+    e.preventDefault();
+    e.stopPropagation();
+    let appOpened = false;
+    const markOpened = () => { appOpened = true; };
+    window.addEventListener('blur', markOpened, { once: true });
+    document.addEventListener('visibilitychange', markOpened, { once: true });
+    window.location.href = `steam://friends/add/${steamId}`;
+    setTimeout(() => {
+        window.removeEventListener('blur', markOpened);
+        document.removeEventListener('visibilitychange', markOpened);
+        if (!appOpened) window.open(`https://steamcommunity.com/profiles/${steamId}`, '_blank', 'noopener');
+    }, 1500);
+    return false;
+};
 
 const XBOX_ICON = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7.202 15.967a8 8 0 0 1-3.552-1.26c-.898-.585-1.101-.826-1.101-1.306 0-.965 1.062-2.656 2.879-4.583C6.459 7.723 7.897 6.44 8.052 6.475c.302.068 2.718 2.423 3.622 3.531 1.43 1.753 2.088 3.189 1.754 3.829-.254.486-1.83 1.437-2.987 1.802-.954.301-2.207.429-3.239.33m-5.866-3.57C.589 11.253.212 10.127.03 8.497c-.06-.539-.038-.846.137-1.95.218-1.377 1.002-2.97 1.945-3.95.401-.417.437-.427.926-.263.595.2 1.23.638 2.213 1.528l.574.519-.313.385C4.056 6.553 2.52 9.086 1.94 10.653c-.315.852-.442 1.707-.306 2.063.091.24.007.15-.3-.319Zm13.101.195c.074-.36-.019-1.02-.238-1.687-.473-1.443-2.055-4.128-3.508-5.953l-.457-.575.494-.454c.646-.593 1.095-.948 1.58-1.25.381-.237.927-.448 1.161-.448.145 0 .654.528 1.065 1.104a8.4 8.4 0 0 1 1.343 3.102c.153.728.166 2.286.024 3.012a9.5 9.5 0 0 1-.6 1.893c-.179.393-.624 1.156-.82 1.404-.1.128-.1.127-.043-.148ZM7.335 1.952c-.67-.34-1.704-.705-2.276-.803a4 4 0 0 0-.759-.043c-.471.024-.45 0 .306-.358A7.8 7.8 0 0 1 6.47.128c.8-.169 2.306-.17 3.094-.005.85.18 1.853.552 2.418.9l.168.103-.385-.02c-.766-.038-1.88.27-3.078.853-.361.176-.676.316-.699.312a12 12 0 0 1-.654-.319Z"/></svg>';
 const STEAM_ICON = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M.329 10.333A8.01 8.01 0 0 0 7.99 16C12.414 16 16 12.418 16 8s-3.586-8-8.009-8A8.006 8.006 0 0 0 0 7.468l.003.006 4.304 1.769A2.2 2.2 0 0 1 5.62 8.88l1.96-2.844-.001-.04a3.046 3.046 0 0 1 3.042-3.043 3.046 3.046 0 0 1 3.042 3.043 3.047 3.047 0 0 1-3.111 3.044l-2.804 2a2.223 2.223 0 0 1-3.075 2.11 2.22 2.22 0 0 1-1.312-1.568L.33 10.333Z"/><path d="M4.868 12.683a1.715 1.715 0 0 0 1.318-3.165 1.7 1.7 0 0 0-1.263-.02l1.023.424a1.261 1.261 0 1 1-.97 2.33l-.99-.41a1.7 1.7 0 0 0 .882.84Zm3.726-6.687a2.03 2.03 0 0 0 2.027 2.029 2.03 2.03 0 0 0 2.027-2.029 2.03 2.03 0 0 0-2.027-2.027 2.03 2.03 0 0 0-2.027 2.027m2.03-1.527a1.524 1.524 0 1 1-.002 3.048 1.524 1.524 0 0 1 .002-3.048"/></svg>';
@@ -129,6 +157,10 @@ function playerLinksHtml(p) {
     html += `<a class="player-link" href="https://www.ageofempires.com/stats/?profileId=${id}&game=age2" target="_blank" rel="noopener" title="Official Age of Empires stats (Microsoft)">${XBOX_ICON}</a>`;
     if (typeof p.steamProfile === 'string' && /^https:\/\/steamcommunity\.com\/(profiles|id)\/[\w-]+\/?$/.test(p.steamProfile)) {
         html += `<a class="player-link" href="${p.steamProfile}" target="_blank" rel="noopener" title="Steam profile">${STEAM_ICON}</a>`;
+        const steamId = /\/profiles\/(\d{17})\/?$/.exec(p.steamProfile);
+        if (steamId) {
+            html += `<a class="player-link" href="steam://friends/add/${steamId[1]}" onclick="return addSteamFriend(event, '${steamId[1]}')" title="Add friend on Steam">+ Friend</a>`;
+        }
     }
     return `<span class="player-links">${html}</span>`;
 }
@@ -206,8 +238,8 @@ function parseRelicLobby(match) {
             return `
             <div class="player-item" style="display: flex; align-items: center; justify-content: space-between;">
                 <span class="player-name" style="display: flex; align-items: center; gap: 6px;">
-                    T${p.team} - ${p.name}
-                    <button onclick="copyPlayerHandle(event, this, '${p.name.replace(/'/g, "\\'")}')" style="background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 0; display: flex; align-items: center;" title="Copy Handle">
+                    T${p.team} - ${esc(p.name)}
+                    <button onclick="copyPlayerHandle(event, this, '${jsArg(p.name)}')" style="background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 0; display: flex; align-items: center;" title="Copy Handle">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                     </button>
                     <span class="player-stats">${statsHtml}</span>
@@ -359,6 +391,8 @@ function setupEventListeners() {
     if (eloTypeFilter) {
         eloTypeFilter.addEventListener('change', (e) => {
             state.eloType = e.target.value;
+            const spectateElo = document.getElementById('spectateEloType');
+            if (spectateElo) spectateElo.value = state.eloType;
             // We need to re-parse all lobbies so the UI updates
             lobbies = lobbies.map(l => {
                 const rawMatch = state.rawMatches.find(rm => rm.id === l.id);
@@ -369,41 +403,28 @@ function setupEventListeners() {
     }
 
     // View Toggles
-    viewLobbiesBtn.addEventListener('click', () => {
-        state.currentView = 'lobbies';
-        viewLobbiesBtn.style.background = 'rgba(88, 101, 242, 0.2)';
-        viewLobbiesBtn.style.border = '1px solid var(--accent)';
-        viewLobbiesBtn.style.color = 'white';
-        viewPlayersBtn.style.background = 'transparent';
-        viewPlayersBtn.style.border = '1px solid transparent';
-        viewPlayersBtn.style.color = 'var(--text-secondary)';
-        
-        lobbyGrid.style.display = state.layout === 'list' ? 'flex' : 'grid';
-        playerGrid.style.display = 'none';
-        lobbyFilters.style.display = 'flex';
-        playerFilters.style.display = 'none';
-        viewTitleText.textContent = 'Lobbies';
-        countLabel.textContent = 'lobbies';
-        applyFiltersAndRender();
-    });
+    viewLobbiesBtn.addEventListener('click', () => showView('lobbies'));
+    viewPlayersBtn.addEventListener('click', () => showView('players'));
+    document.getElementById('viewSpectateBtn').addEventListener('click', () => showView('spectate'));
 
-    viewPlayersBtn.addEventListener('click', () => {
-        state.currentView = 'players';
-        viewPlayersBtn.style.background = 'rgba(88, 101, 242, 0.2)';
-        viewPlayersBtn.style.border = '1px solid var(--accent)';
-        viewPlayersBtn.style.color = 'white';
-        viewLobbiesBtn.style.background = 'transparent';
-        viewLobbiesBtn.style.border = '1px solid transparent';
-        viewLobbiesBtn.style.color = 'var(--text-secondary)';
-        
-        lobbyGrid.style.display = 'none';
-        playerGrid.style.display = state.layout === 'list' ? 'flex' : 'grid';
-        lobbyFilters.style.display = 'none';
-        playerFilters.style.display = 'flex';
-        viewTitleText.textContent = 'Players';
-        countLabel.textContent = 'players';
+    // Spectate filters
+    const spectateSearch = document.getElementById('spectateSearch');
+    spectateSearch.value = state.spectateSearch;
+    spectateSearch.addEventListener('input', (e) => {
+        state.spectateSearch = e.target.value.toLowerCase();
+        spectateLimit = SPECTATE_PAGE;
         applyFiltersAndRender();
     });
+    for (const [id, key] of [['spectateType', 'spectateType'], ['spectateKind', 'spectateKind'], ['spectateServer', 'spectateServer'], ['spectateSort', 'spectateSort'], ['spectateEloType', 'eloType']]) {
+        const el = document.getElementById(id);
+        el.value = state[key];
+        el.addEventListener('change', (e) => {
+            state[key] = e.target.value;
+            if (key === 'eloType' && eloTypeFilter) eloTypeFilter.value = state.eloType;
+            spectateLimit = SPECTATE_PAGE;
+            applyFiltersAndRender();
+        });
+    }
 
     // Layout Toggles
     const layoutGridBtn = document.getElementById('layoutGridBtn');
@@ -419,12 +440,8 @@ function setupEventListeners() {
         layoutListBtn.style.color = 'var(--text-secondary)';
         lobbyGrid.classList.remove('list-layout');
         playerGrid.classList.remove('list-layout');
-        if (state.currentView === 'lobbies') {
-            lobbyGrid.style.display = 'grid';
-        } else {
-            playerGrid.style.display = 'grid';
-        }
-        applyFiltersAndRender();
+        spectateGrid.classList.remove('list-layout');
+        showView(state.currentView);
     });
 
     layoutListBtn.addEventListener('click', () => {
@@ -437,12 +454,8 @@ function setupEventListeners() {
         layoutGridBtn.style.color = 'var(--text-secondary)';
         lobbyGrid.classList.add('list-layout');
         playerGrid.classList.add('list-layout');
-        if (state.currentView === 'lobbies') {
-            lobbyGrid.style.display = 'flex';
-        } else {
-            playerGrid.style.display = 'flex';
-        }
-        applyFiltersAndRender();
+        spectateGrid.classList.add('list-layout');
+        showView(state.currentView);
     });
 
     // Player Sorting
@@ -493,6 +506,10 @@ function applyFiltersAndRender() {
         const filteredLobbies = filterLobbies();
         itemCount.textContent = filteredLobbies.length;
         renderLobbies(filteredLobbies);
+    } else if (state.currentView === 'spectate') {
+        const games = filterSpectate();
+        itemCount.textContent = games.length;
+        renderSpectate(games);
     } else {
         const aggregatedPlayers = aggregatePlayers();
         itemCount.textContent = aggregatedPlayers.length;
@@ -586,13 +603,13 @@ function renderPlayers(players) {
             <div class="card-header">
                 <div class="host-info">
                     <div class="host-name" style="display: flex; align-items: center; gap: 8px;">
-                        ${p.name}
-                        <button onclick="copyPlayerHandle(event, this, '${p.name.replace(/'/g, "\\'")}')" style="background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 0; display: flex;" title="Copy Handle">
+                        ${esc(p.name)}
+                        <button onclick="copyPlayerHandle(event, this, '${jsArg(p.name)}')" style="background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 0; display: flex;" title="Copy Handle">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                         </button>
                         ${p.displayElo !== null ? `<span class="elo-badge">${p.displayElo}</span>` : '<span class="elo-badge" style="background: rgba(138, 155, 178, 0.2); color: var(--text-secondary); border-color: transparent;">Unranked</span>'}
                     </div>
-                    <div class="game-title" style="font-size: 0.8em; color: var(--text-secondary);">In lobby: ${p.lobbyTitle}</div>
+                    <div class="game-title" style="font-size: 0.8em; color: var(--text-secondary);">In lobby: ${esc(p.lobbyTitle)}</div>
                     ${playerLinksHtml(p)}
                 </div>
             </div>
@@ -609,10 +626,10 @@ function renderPlayers(players) {
                     </div>
                     <div class="detail-row">
                         <span class="detail-icon">&#x1F5FA;</span>
-                        Playing: ${p.lobbyMap}
+                        Map: ${esc(p.lobbyMap)}
                     </div>
                     <div class="tags-row" style="margin-top: 10px;">
-                        <span class="badge status-badge" style="background: ${p.isPlaying ? 'rgba(212, 175, 55, 0.2)' : 'rgba(46, 160, 67, 0.2)'}; color: ${p.isPlaying ? '#d4af37' : '#2ea043'}; border-color: ${p.isPlaying ? '#d4af37' : '#2ea043'}">${p.isPlaying ? '&#x1F3AE; Playing' : '&#x23F3; Waiting'}</span>
+                        <span class="badge status-badge" style="background: ${p.isPlaying ? 'rgba(212, 175, 55, 0.2)' : 'rgba(46, 160, 67, 0.2)'}; color: ${p.isPlaying ? '#d4af37' : '#2ea043'}; border-color: ${p.isPlaying ? '#d4af37' : '#2ea043'}">${p.isPlaying ? '&#x1F512; Full lobby' : '&#x23F3; Waiting'}</span>
                         ${p.server ? `<span class="badge server-badge" title="Server">&#x1F310; ${p.server}</span>` : ''}
                         ${renderInfoBadges(p)}
                     </div>
@@ -646,7 +663,7 @@ function renderInfoBadges(item) {
     if (item.mapSize) html += `<span class="badge map-size-badge" title="Map Size">&#x1F5FA; ${item.mapSize}</span>`;
     if (item.population) html += `<span class="badge pop-badge" title="Population">&#x1F465; ${item.population}</span>`;
     if (item.speed) html += `<span class="badge speed-badge" title="Speed">&#x23E9; ${item.speed}</span>`;
-    html += `<span class="badge mod-info-badge" title="Mod Info">&#x2699; ${item.modInfo || 'No Mods'}</span>`;
+    html += `<span class="badge mod-info-badge" title="Mod Info">&#x2699; ${esc(item.modInfo || 'No Mods')}</span>`;
     return html;
 }
 
@@ -677,21 +694,21 @@ function lobbyCardHtml(lobby) {
     const joinLink = (!lobby.isPlaying) 
         ? `aoe2de://0/${lobby.id}`
         : '#';
-    const joinText = joinLink === '#' ? (lobby.isPlaying ? 'In Progress' : 'Cannot Join') : 'Join Game';
+    const joinText = joinLink === '#' ? (lobby.isPlaying ? 'Lobby Full' : 'Cannot Join') : 'Join Game';
     const joinClass = joinLink === '#' ? 'btn-join disabled' : 'btn-join';
     
     const statusIndicator = lobby.isPlaying ? 
-        '<span style="color: #d4af37">&#x1F3AE; Playing</span> ' + (lobby.server || '') : 
+        '<span style="color: #d4af37">&#x1F512; Full</span> ' + (lobby.server || '') : 
         '<span style="color: #2ea043">&#x23F3; Waiting</span> ' + (lobby.server || '');
 
     return `
         <div class="card-header">
             <div class="host-info">
                 <div class="host-name">
-                    ${lobby.host}
+                    ${esc(lobby.host)}
                     ${lobby.elo ? `<span class="elo-badge">${lobby.elo}</span>` : ''}
                 </div>
-                <div class="game-title" title="${lobby.title}">${lobby.title}</div>
+                <div class="game-title" title="${esc(lobby.title)}">${esc(lobby.title)}</div>
             </div>
             <div class="server-badge">
                 ${statusIndicator}
@@ -708,7 +725,7 @@ function lobbyCardHtml(lobby) {
                     <span class="detail-icon" style="opacity: 0.7;">⚔️</span> <span style="font-weight: 500;">${lobby.type}</span>
                 </div>
                 <div class="detail-row">
-                    <span class="detail-icon" style="opacity: 0.7;">🗺️</span> <span style="font-weight: 500;">${lobby.map}</span>
+                    <span class="detail-icon" style="opacity: 0.7;">🗺️</span> <span style="font-weight: 500;">${esc(lobby.map)}</span>
                 </div>
                 <div class="tags-row">
                     ${renderInfoBadges(lobby)}
@@ -802,7 +819,7 @@ function renderLobbies(filteredLobbies) {
             }
             if (sBadge) {
                 sBadge.innerHTML = lobby.isPlaying ? 
-                    '<span style="color: #d4af37">&#x1F3AE; Playing</span> ' + (lobby.server || '') : 
+                    '<span style="color: #d4af37">&#x1F512; Full</span> ' + (lobby.server || '') : 
                     '<span style="color: #2ea043">&#x23F3; Waiting</span> ' + (lobby.server || '');
             }
         } else {
@@ -865,3 +882,186 @@ window.togglePlayerCard = function(e, btn) {
         card.classList.toggle('expanded');
     }
 };
+
+// ---------------------------------------------------------------- Views
+const spectateGrid = document.getElementById('spectateGrid');
+const VIEWS = {
+    lobbies: { btn: 'viewLobbiesBtn', grid: 'lobbyGrid', filters: () => lobbyFilters, title: 'Lobbies', count: 'lobbies' },
+    players: { btn: 'viewPlayersBtn', grid: 'playerGrid', filters: () => playerFilters, title: 'Players', count: 'players' },
+    spectate: { btn: 'viewSpectateBtn', grid: 'spectateGrid', filters: () => document.getElementById('spectateFilters'), title: 'Games', count: 'games in progress' }
+};
+
+function showView(view) {
+    state.currentView = view;
+    for (const [name, v] of Object.entries(VIEWS)) {
+        const on = name === view;
+        const btn = document.getElementById(v.btn);
+        btn.style.background = on ? 'rgba(88, 101, 242, 0.2)' : 'transparent';
+        btn.style.border = on ? '1px solid var(--accent)' : '1px solid transparent';
+        btn.style.color = on ? 'white' : 'var(--text-secondary)';
+        document.getElementById(v.grid).style.display = on ? (state.layout === 'list' ? 'flex' : 'grid') : 'none';
+        const filters = v.filters();
+        if (filters) filters.style.display = on ? 'flex' : 'none';
+    }
+    viewTitleText.textContent = VIEWS[view].title;
+    countLabel.textContent = VIEWS[view].count;
+    if (view === 'spectate') fetchSpectate();
+    applyFiltersAndRender();
+}
+
+// ---------------------------------------------------------------- Spectate: games in progress
+const SPECTATE_PAGE = 60;
+let spectateGames = [];
+let spectateLoaded = false;
+let spectateTimer = null;
+let spectateLimit = SPECTATE_PAGE;
+
+async function fetchSpectate() {
+    clearTimeout(spectateTimer);
+    if (state.currentView !== 'spectate') return;
+    try {
+        const data = await fetch('/api/spectate?t=' + Date.now()).then(r => r.json());
+        spectateGames = data.games || [];
+        spectateLoaded = true;
+        const serverSelect = document.getElementById('spectateServer');
+        const servers = [...new Set(spectateGames.map(g => g.server).filter(Boolean))].sort();
+        if (state.spectateServer !== 'all' && !servers.includes(state.spectateServer)) servers.push(state.spectateServer);
+        serverSelect.innerHTML = '<option value="all">All Servers</option>' + servers.map(sv => `<option value="${esc(sv)}">${esc(sv)}</option>`).join('');
+        serverSelect.value = state.spectateServer;
+        if (state.currentView === 'spectate') applyFiltersAndRender();
+    } catch (e) {
+        console.warn('Failed to fetch games in progress:', e);
+    }
+    // The server refreshes its copy at most once a minute; polling only while this view is open
+    if (state.currentView === 'spectate') spectateTimer = setTimeout(fetchSpectate, 30000);
+}
+
+function spectateRating(p) {
+    return state.eloType === 'auto' ? p.rating : (p.ratings ? p.ratings[state.eloType] ?? null : null);
+}
+
+function spectateAverage(players) {
+    const r = players.map(spectateRating).filter(v => v != null);
+    return r.length ? Math.round(r.reduce((a, b) => a + b, 0) / r.length) : null;
+}
+
+function filterSpectate() {
+    const q = state.spectateSearch;
+    const games = spectateGames.filter(g => {
+        if (q && !(`${g.map} ${g.title} ${g.players.map(p => p.name).join(' ')}`).toLowerCase().includes(q)) return false;
+        if (state.spectateType === '1v1' && g.players.length !== 2) return false;
+        if (state.spectateType === 'team' && g.players.length <= 2) return false;
+        if (state.spectateKind === 'ranked' && !g.isRanked) return false;
+        if (state.spectateKind === 'custom' && g.isRanked) return false;
+        if (state.spectateServer !== 'all' && g.server !== state.spectateServer) return false;
+        return true;
+    });
+    if (state.spectateSort === 'rating') games.sort((a, b) => (spectateAverage(b.players) ?? -1) - (spectateAverage(a.players) ?? -1));
+    else if (state.spectateSort === 'spectators') games.sort((a, b) => b.observers - a.observers || b.startTime - a.startTime);
+    else games.sort((a, b) => b.startTime - a.startTime);
+    return games;
+}
+
+function minutesAgo(startTime) {
+    const mins = Math.max(0, Math.floor((Date.now() / 1000 - startTime) / 60));
+    if (mins < 1) return 'Started just now';
+    if (mins < 60) return `Started ${mins} min ago`;
+    return `Started ${Math.floor(mins / 60)} h ${mins % 60} min ago`;
+}
+
+function countdownText(readyAt) {
+    const left = Math.ceil(readyAt - Date.now() / 1000);
+    if (left <= 0) return '';
+    return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+}
+
+function spectateCardHtml(g) {
+    const teams = new Map();
+    for (const p of g.players) {
+        if (!teams.has(p.team)) teams.set(p.team, []);
+        teams.get(p.team).push(p);
+    }
+    const teamsHtml = [...teams.entries()].sort((a, b) => a[0] - b[0]).map(([, players], i) => {
+        const avg = spectateAverage(players);
+        return `
+            <div class="spectate-team">
+                <div class="spectate-team-head">Team ${i + 1}${avg != null ? ` <span class="player-elo">${avg}</span>` : ''}</div>
+                ${players.map(p => {
+                    const r = spectateRating(p);
+                    return `
+                    <div class="player-item">
+                        <span class="player-name" style="display: flex; align-items: center; gap: 6px;">
+                            ${esc(p.name)}
+                            ${p.civ ? `<span class="player-stats">${esc(p.civ)}</span>` : ''}
+                            ${playerLinksHtml(p)}
+                        </span>
+                        <span class="player-elo">${r != null ? r : '&mdash;'}</span>
+                    </div>`;
+                }).join('')}
+            </div>`;
+    }).join('');
+    const avg = spectateAverage(g.players);
+    const readyAt = g.startTime + g.observerDelay * 60;
+    const wait = countdownText(readyAt);
+    return `
+        <div class="card-header">
+            <div class="host-info">
+                <div class="host-name">
+                    ${esc(g.map)}
+                    ${avg != null ? `<span class="elo-badge">${avg}</span>` : ''}
+                </div>
+                <div class="game-title" title="${esc(g.title)}">${esc(g.title)}</div>
+            </div>
+            <div class="server-badge"><span title="Spectators">&#x1F441; ${g.observers}</span> ${esc(g.server || '')}</div>
+        </div>
+        <div class="card-body">
+            <div class="game-details">
+                <div class="tags-row">
+                    ${g.isRanked ? '<span class="badge treaty-badge">Ranked</span>' : ''}
+                    ${renderInfoBadges(g)}
+                </div>
+                <div class="detail-row spectate-started" data-start="${g.startTime}">${minutesAgo(g.startTime)}</div>
+            </div>
+        </div>
+        <div class="spectate-teams">${teamsHtml}</div>
+        <div class="card-footer">
+            <div class="players-count"><span class="players-count-text">&#x1F464; ${g.players.length} players</span></div>
+            <a href="aoe2de://1/${g.id}" class="btn-join spectate-btn${wait ? ' waiting' : ''}" title="Opens Age of Empires II: DE as a spectator">
+                &#x1F441; Spectate<span class="spectate-countdown" data-ready-at="${readyAt}">${wait ? ' &#x23F3; ' + wait : ''}</span>
+            </a>
+        </div>`;
+}
+
+function renderSpectate(games) {
+    if (!spectateLoaded) {
+        spectateGrid.innerHTML = `<div class="loader-container"><div class="spinner"></div><p>Fetching games in progress...</p></div>`;
+        return;
+    }
+    if (!games.length) {
+        spectateGrid.innerHTML = `<div class="empty-state"><h3>No games match</h3><p>${spectateGames.length} games are in progress, but none match your spectate filters.</p></div>`;
+        return;
+    }
+    const shown = games.slice(0, spectateLimit);
+    spectateGrid.innerHTML = shown.map(g => `<div class="lobby-card spectate-card" id="game-${g.id}">${spectateCardHtml(g)}</div>`).join('') +
+        (games.length > shown.length
+            ? `<div class="spectate-more"><button type="button" class="clear-filters-btn" onclick="showMoreSpectate()">Show more (${games.length - shown.length} more)</button></div>`
+            : '');
+}
+
+window.showMoreSpectate = function() {
+    spectateLimit += SPECTATE_PAGE;
+    applyFiltersAndRender();
+};
+
+// Tick the spectate countdowns and "started" times once a second
+setInterval(() => {
+    if (state.currentView !== 'spectate') return;
+    for (const el of spectateGrid.querySelectorAll('.spectate-countdown[data-ready-at]')) {
+        const wait = countdownText(Number(el.dataset.readyAt));
+        el.innerHTML = wait ? ' &#x23F3; ' + wait : '';
+        el.closest('.spectate-btn')?.classList.toggle('waiting', !!wait);
+    }
+    for (const el of spectateGrid.querySelectorAll('.spectate-started[data-start]')) {
+        el.textContent = minutesAgo(Number(el.dataset.start));
+    }
+}, 1000);
