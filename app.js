@@ -19,8 +19,7 @@ const defaultState = {
 const storedState = JSON.parse(localStorage.getItem('aoe2State')) || {};
 // 'auto' used to be the default; move those visitors to the new default once
 if (storedState.eloType === 'auto' && !storedState.eloDefaultV2) storedState.eloType = '0';
-// Search text is not restored between visits (a forgotten search silently hides lobbies); dropdown filters are
-const state = { ...defaultState, ...storedState, search: '', playerSearch: '', eloDefaultV2: true };
+const state = { ...defaultState, ...storedState, eloDefaultV2: true };
 
 // Filters that narrow the lobby list: [state key, DOM select id or null, label]
 const LOBBY_FILTERS = [
@@ -464,7 +463,7 @@ function filterLobbies() {
 }
 
 function applyFiltersAndRender() {
-    const { rawMatches, search, playerSearch, ...saved } = state;
+    const { rawMatches, ...saved } = state; // the lobby list itself is not worth saving
     localStorage.setItem('aoe2State', JSON.stringify(saved));
     const clearBtn = document.getElementById('clearFiltersBtn');
     if (clearBtn) clearBtn.hidden = state.currentView !== 'lobbies' || activeLobbyFilters().length === 0;
