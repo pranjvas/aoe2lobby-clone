@@ -10,6 +10,7 @@ const defaultState = {
     startAge: 'all',
     resources: 'all',
     treaty: 'all',
+    server: 'all',
     currentView: 'lobbies',
     playerSort: 'elo-desc',
     playerSearch: '',
@@ -18,7 +19,37 @@ const defaultState = {
 const storedState = JSON.parse(localStorage.getItem('aoe2State')) || {};
 // 'auto' used to be the default; move those visitors to the new default once
 if (storedState.eloType === 'auto' && !storedState.eloDefaultV2) storedState.eloType = '0';
-const state = { ...defaultState, ...storedState, eloDefaultV2: true };
+// Search text is not restored between visits (a forgotten search silently hides lobbies); dropdown filters are
+const state = { ...defaultState, ...storedState, search: '', playerSearch: '', eloDefaultV2: true };
+
+// Filters that narrow the lobby list: [state key, DOM select id or null, label]
+const LOBBY_FILTERS = [
+    ['gameType', 'gameTypeFilter', 'Game Type'], ['map', 'mapFilter', 'Map'], ['minElo', 'eloFilter', 'Min ELO'],
+    ['status', 'statusFilter', 'Status'], ['mod', 'modFilter', 'Mods'], ['startAge', 'startAgeFilter', 'Start Age'],
+    ['resources', 'resourcesFilter', 'Resources'], ['treaty', 'treatyFilter', 'Treaty'], ['server', 'serverFilter', 'Server']
+];
+
+function activeLobbyFilters() {
+    const active = [];
+    if (state.search) active.push(`Search "${state.search}"`);
+    for (const [key, id, label] of LOBBY_FILTERS) {
+        if (state[key] === defaultState[key]) continue;
+        const el = document.getElementById(id);
+        active.push(`${label}: ${el && el.selectedOptions[0] ? el.selectedOptions[0].textContent : state[key]}`);
+    }
+    return active;
+}
+
+function clearLobbyFilters() {
+    state.search = '';
+    if (searchInput) searchInput.value = '';
+    for (const [key, id] of LOBBY_FILTERS) {
+        state[key] = defaultState[key];
+        const el = document.getElementById(id);
+        if (el) el.value = String(defaultState[key]);
+    }
+    applyFiltersAndRender();
+}
 
 // DOM Elements
 const lobbyGrid = document.getElementById('lobbyGrid');
@@ -35,6 +66,7 @@ const eloTypeFilter = document.getElementById('eloTypeFilter');
 const startAgeFilter = document.getElementById('startAgeFilter');
 const resourcesFilter = document.getElementById('resourcesFilter');
 const treatyFilter = document.getElementById('treatyFilter');
+const serverFilter = document.getElementById('serverFilter');
 
 const LATER_AGES = ['Feudal Age', 'Castle Age', 'Imperial Age', 'Post-Imperial Age'];
 const MORE_RESOURCES = ['Medium', 'High', 'Ultra High', 'Infinite'];
@@ -66,6 +98,7 @@ function init() {
     if(startAgeFilter) startAgeFilter.value = state.startAge;
     if(resourcesFilter) resourcesFilter.value = state.resources;
     if(treatyFilter) treatyFilter.value = state.treaty;
+    if(serverFilter) serverFilter.value = state.server;
     if(playerSort) playerSort.value = state.playerSort;
     if(playerSearch) playerSearch.value = state.playerSearch;
 
@@ -190,7 +223,7 @@ function parseRelicLobby(match) {
         startingAge: startingAge,
         resources: resources,
         treaty: treaty,
-        server: match.server || "Global", 
+        server: match.server || null, 
         currentPlayers: currentPlayers,
         maxPlayers: maxPlayers,
         ping: Math.floor(Math.random() * 50) + 20,
@@ -236,6 +269,14 @@ async function fetchRealLobbies() {
                     modFilter.value = 'all';
                     state.mod = 'all';
                 }
+            }
+
+            if (serverFilter) {
+                const servers = [...new Set(lobbies.map(l => l.server).filter(Boolean))].sort();
+                if (state.server !== 'all' && !servers.includes(state.server)) servers.push(state.server);
+                serverFilter.innerHTML = '<option value="all">All Servers</option>' +
+                    servers.map(sv => `<option value="${sv}">${sv}</option>`).join('');
+                serverFilter.value = state.server;
             }
 
             hasUnknownMap = lobbies.some(lobby => lobby.map === "Unknown Map");
@@ -295,6 +336,11 @@ function setupEventListeners() {
         state.treaty = e.target.value;
         applyFiltersAndRender();
     });
+    serverFilter.addEventListener('change', (e) => {
+        state.server = e.target.value;
+        applyFiltersAndRender();
+    });
+    document.getElementById('clearFiltersBtn').addEventListener('click', clearLobbyFilters);
     if (eloTypeFilter) {
         eloTypeFilter.addEventListener('change', (e) => {
             state.eloType = e.target.value;
@@ -412,12 +458,16 @@ function filterLobbies() {
         const matchesTreaty = state.treaty === 'all' ||
             (state.treaty === 'any' ? lobby.treaty > 0 : lobby.treaty === 0);
         return matchesSearch && matchesType && matchesMap && matchesStatus && matchesMod && matchesElo &&
-            matchesStartAge && matchesResources && matchesTreaty;
+            matchesStartAge && matchesResources && matchesTreaty &&
+            (state.server === 'all' || lobby.server === state.server);
     });
 }
 
 function applyFiltersAndRender() {
-    localStorage.setItem('aoe2State', JSON.stringify(state));
+    const { rawMatches, search, playerSearch, ...saved } = state;
+    localStorage.setItem('aoe2State', JSON.stringify(saved));
+    const clearBtn = document.getElementById('clearFiltersBtn');
+    if (clearBtn) clearBtn.hidden = state.currentView !== 'lobbies' || activeLobbyFilters().length === 0;
     if (state.currentView === 'lobbies') {
         const filteredLobbies = filterLobbies();
         itemCount.textContent = filteredLobbies.length;
@@ -449,7 +499,7 @@ function aggregatePlayers() {
                         population: lobby.population,
                         speed: lobby.speed,
                         modInfo: lobby.modInfo || 'No Mods',
-                        server: lobby.server || 'Global',
+                        server: lobby.server,
                         lastSeen: lobby.lastSeen || 0,
                         playersHtml: lobby.playersHtml
                     });
@@ -541,7 +591,7 @@ function renderPlayers(players) {
                     </div>
                     <div class="tags-row" style="margin-top: 10px;">
                         <span class="badge status-badge" style="background: ${p.isPlaying ? 'rgba(212, 175, 55, 0.2)' : 'rgba(46, 160, 67, 0.2)'}; color: ${p.isPlaying ? '#d4af37' : '#2ea043'}; border-color: ${p.isPlaying ? '#d4af37' : '#2ea043'}">${p.isPlaying ? '&#x1F3AE; Playing' : '&#x23F3; Waiting'}</span>
-                        <span class="badge server-badge" title="Server">&#x1F310; ${p.server}</span>
+                        ${p.server ? `<span class="badge server-badge" title="Server">&#x1F310; ${p.server}</span>` : ''}
                         ${renderInfoBadges(p)}
                     </div>
                 </div>
@@ -581,7 +631,7 @@ function renderInfoBadges(item) {
 // Everything shown on a card except the live player list / count / status, which update in place
 function lobbyDetailsKey(lobby) {
     return JSON.stringify([lobby.host, lobby.elo, lobby.title, lobby.map, lobby.type, lobby.matchType, lobby.mapSize,
-        lobby.population, lobby.speed, lobby.modInfo, lobby.startingAge, lobby.resources, lobby.treaty, lobby.isPlaying]);
+        lobby.population, lobby.speed, lobby.modInfo, lobby.startingAge, lobby.resources, lobby.treaty, lobby.isPlaying, lobby.server]);
 }
 
 function renderSettingBadges(lobby) {
@@ -609,8 +659,8 @@ function lobbyCardHtml(lobby) {
     const joinClass = joinLink === '#' ? 'btn-join disabled' : 'btn-join';
     
     const statusIndicator = lobby.isPlaying ? 
-        '<span style="color: #d4af37">&#x1F3AE; Playing</span> ' + lobby.server : 
-        '<span style="color: #2ea043">&#x23F3; Waiting</span> ' + lobby.server;
+        '<span style="color: #d4af37">&#x1F3AE; Playing</span> ' + (lobby.server || '') : 
+        '<span style="color: #2ea043">&#x23F3; Waiting</span> ' + (lobby.server || '');
 
     return `
         <div class="card-header">
@@ -679,9 +729,13 @@ function renderLobbies(filteredLobbies) {
             emptyState = document.createElement('div');
             emptyState.id = 'emptyState';
             emptyState.className = 'empty-state';
-            emptyState.innerHTML = `<h3>No Lobbies Found</h3><p>Try adjusting your filters or search criteria.</p>`;
             lobbyGrid.appendChild(emptyState);
         }
+        const active = activeLobbyFilters();
+        const html = active.length
+            ? `<h3>No lobbies match your filters</h3><p>${lobbies.length} lobbies are open, but none match: ${active.map(a => `<strong>${a}</strong>`).join(' · ')}</p><button class="btn clear-filters-btn" onclick="clearLobbyFilters()">Clear all filters</button>`
+            : `<h3>No open lobbies right now</h3><p>New lobbies appear here automatically.</p>`;
+        if (emptyState.dataset.html !== html) { emptyState.innerHTML = html; emptyState.dataset.html = html; }
         emptyState.style.display = 'block';
     } else {
         if(emptyState) emptyState.style.display = 'none';
@@ -726,8 +780,8 @@ function renderLobbies(filteredLobbies) {
             }
             if (sBadge) {
                 sBadge.innerHTML = lobby.isPlaying ? 
-                    '<span style="color: #d4af37">&#x1F3AE; Playing</span> ' + lobby.server : 
-                    '<span style="color: #2ea043">&#x23F3; Waiting</span> ' + lobby.server;
+                    '<span style="color: #d4af37">&#x1F3AE; Playing</span> ' + (lobby.server || '') : 
+                    '<span style="color: #2ea043">&#x23F3; Waiting</span> ' + (lobby.server || '');
             }
         } else {
             const div = document.createElement('div');

@@ -59,7 +59,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     
     <!-- Styles -->
-    <link rel="stylesheet" href="./styles.css?v=12">
+    <link rel="stylesheet" href="./styles.css?v=13">
 </head>
 <body>
     <!-- Background Elements -->
@@ -177,6 +177,12 @@
                             <option value="any">Has Treaty</option>
                         </select>
                     </div>
+                    <div class="filter-group">
+                        <label for="serverFilter">Server</label>
+                        <select id="serverFilter">
+                            <option value="all">All Servers</option>
+                        </select>
+                    </div>
                 </div>
             </section>
 
@@ -196,6 +202,7 @@
                     </div>
                     <div class="lobbies-stats" style="color: #8a9bb2; font-weight: 500;">
                         <span id="itemCount" style="color: var(--accent); font-weight: 700; font-size: 1.2em;">0</span> <span id="countLabel">lobbies</span> found
+                        <button id="clearFiltersBtn" class="clear-filters-btn" type="button" hidden>Clear filters</button>
                     </div>
                 </div>
             </div>
@@ -266,7 +273,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="app.js?v=15"></script>
+    <script src="app.js?v=16"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>

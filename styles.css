@@ -855,3 +855,25 @@ select:focus, select:hover {
 .about-section details p {
     margin: 0.5rem 0 0;
 }
+
+/* "Clear filters": next to the lobby count, and inside the empty state */
+.clear-filters-btn {
+    margin-left: 0.75rem;
+    padding: 4px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--gold-primary);
+    background: var(--gold-dim);
+    color: var(--gold-primary);
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.clear-filters-btn:hover {
+    background: rgba(212, 175, 55, 0.3);
+}
+
+.empty-state .clear-filters-btn {
+    margin: 1rem 0 0;
+}

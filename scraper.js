@@ -17,6 +17,10 @@ const FALLBACK_SCHEMA = {
         5: "Huge", 6: "Ludicrous", 7: "Giant", 8: "Massive", 9: "Enormous", 10: "Colossal", 11: "Incredible", 12: "Monstrous"
     },
     speed: { 0: "Slow", 1: "Casual", 2: "Normal", 3: "Fast" },
+    server: {
+        0: "brazilsouth", 1: "australiasoutheast", 2: "ukwest", 3: "southeastasia", 4: "westeurope", 5: "westus3",
+        6: "koreacentral", 7: "centralindia", 8: "eastus", 9: "chilecentral", 10: "southcentralus"
+    },
     starting_age: { 0: "Standard", 1: "Dark Age", 2: "Feudal Age", 3: "Castle Age", 4: "Imperial Age", 5: "Post-Imperial Age" },
     resources: { 0: "Standard", 1: "Low", 2: "Medium", 3: "High", 4: "Ultra High", 5: "Infinite", 6: "Random" }
 };
@@ -142,7 +146,7 @@ async function dumpData() {
                 Resources: label('resources', lobby.resources, lobby.resources == null ? "Unknown" : "Custom"),
                 Treaty: lobby.treaty_length || 0, // minutes, 0 = none
                 "Data Mod": lobby.data_mod || "No Mods",
-                Server: "Global"
+                Server: label('server', lobby.server)
             }
         };
     }

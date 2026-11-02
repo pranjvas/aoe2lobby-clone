@@ -38,6 +38,17 @@ function httpsGet(url) {
     });
 }
 
+// Lobby relay regions are Azure region names; show them the way players think of them
+const REGION_NAMES = {
+    brazilsouth: "Brazil", australiasoutheast: "Australia", ukwest: "UK", southeastasia: "Southeast Asia",
+    westeurope: "West Europe", westus3: "US West", koreacentral: "Korea", centralindia: "India",
+    eastus: "US East", chilecentral: "Chile", southcentralus: "US South Central"
+};
+function regionName(region) {
+    if (!region || region === "Unknown" || region === "Global") return null;
+    return REGION_NAMES[region] || region;
+}
+
 // Relic lobby options: zlib -> JSON string holding base64 -> 1-byte entry count, then entries of
 // [uint32 LE length]["key:value"]. Returns { key: value }.
 function parseRelicOptions(optionsBase64) {
@@ -487,7 +498,7 @@ const server = http.createServer(async (req, res) => {
                     let startingAge = undefined;
                     let resources = undefined;
                     let treaty = undefined;
-                    let serverRegion = "Global";
+                    let serverRegion = regionName(m.relayserver_region);
 
                     let sm = scrapedMatchesStats[hostName];
 
@@ -548,7 +559,7 @@ const server = http.createServer(async (req, res) => {
                         if (sm.startingAge !== undefined) startingAge = sm.startingAge;
                         if (sm.resources !== undefined) resources = sm.resources;
                         if (sm.treaty !== undefined) treaty = sm.treaty;
-                        if (sm.server !== undefined) serverRegion = sm.server;
+                        if (!serverRegion && regionName(sm.server)) serverRegion = regionName(sm.server);
                     }
                     
 
@@ -597,6 +608,7 @@ const server = http.createServer(async (req, res) => {
                         resources: resources,
                         treaty: treaty,
                         server: serverRegion,
+                        serverRegion: m.relayserver_region || undefined,
                         isPasswordProtected: m.passwordprotected === 1,
                         maxPlayers: m.maxplayers,
                         isPlaying: m.isPlaying,
@@ -646,7 +658,8 @@ const server = http.createServer(async (req, res) => {
                             startingAge: lobby.settings?.['Starting Age'],
                             resources: lobby.settings?.Resources,
                             treaty: lobby.settings?.Treaty,
-                            server: lobby.settings?.Server || "Global",
+                            server: regionName(lobby.settings?.Server),
+                            serverRegion: lobby.settings?.Server,
                             isPasswordProtected: false,
                             maxPlayers: 8,
                             isPlaying: lobby.isPlaying || false,

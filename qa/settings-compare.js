@@ -13,6 +13,7 @@ const FIELDS = [
     ['resources', 'resources', 'label'],
     ['treaty', 'treaty_length', 'raw'],
     ['modInfo', 'data_mod', 'mod'],
+    ['serverRegion', 'server', 'label'],
 ];
 
 function snapshot() {
