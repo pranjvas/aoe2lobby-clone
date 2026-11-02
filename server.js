@@ -29,6 +29,37 @@ function httpsGet(url) {
     });
 }
 
+// Leaderboard ids are the same on Relic and aoe2lobby.com: 0 Unranked, 3/4 RM 1v1/team, 13/14 EW 1v1/team
+function ladderFor(matchType, mapName, slotsTotal) {
+    const is1v1 = slotsTotal === 2;
+    if (matchType === "Random Map" && mapName !== "Custom Scenario" && !String(mapName || "").toLowerCase().includes("cba")) {
+        return is1v1 ? "3" : "4";
+    }
+    if (matchType === "Empire Wars") return is1v1 ? "13" : "14";
+    return "0";
+}
+
+// The lobby's own ladder, else the ladder the player has played most
+function pickStat(stats, ladder) {
+    if (!stats) return null;
+    if (stats[ladder]) return stats[ladder];
+    let best = null;
+    for (const key in stats) {
+        if (!best || stats[key].games > best.games) best = stats[key];
+    }
+    return best;
+}
+
+function applyStat(player, stats, ladder) {
+    player.allStats = stats || undefined;
+    const stat = pickStat(stats, ladder);
+    if (!stat) return;
+    player.elo = stat.rating;
+    player.totalGames = stat.games;
+    player.totalWins = stat.wins;
+    player.winRate = stat.winp + "%";
+}
+
 async function fetchProfilesBatch(ids) {
     if (ids.length === 0) return;
     const chunkSize = 50;
@@ -45,7 +76,8 @@ async function fetchProfilesBatch(ids) {
                         const profileId = member.profile_id;
                         let alias = member.alias || 'Unknown';
                         
-                        let currentRating = 1000 + (profileId % 1000);
+                        let currentRating = null;
+                        const ladderStats = {};
                         let totalWins = 0;
                         let totalGames = 0;
                         let winRate = "0.0";
@@ -53,6 +85,14 @@ async function fetchProfilesBatch(ids) {
                         if (parsed.leaderboardStats) {
                             const stats = parsed.leaderboardStats.filter(ls => ls.statgroup_id === sg.id);
                             if (stats && stats.length > 0) {
+                                stats.forEach(ls => {
+                                    const games = (ls.wins || 0) + (ls.losses || 0);
+                                    ladderStats[String(ls.leaderboard_id)] = {
+                                        rating: ls.rating, games, wins: ls.wins || 0,
+                                        winp: games > 0 ? Math.round((ls.wins || 0) / games * 100) : 0,
+                                        highest: ls.highestrating, streak: ls.streak
+                                    };
+                                });
                                 // Prioritize Team RM (4) and 1v1 RM (3) over other leaderboards like Unranked (0)
                                 const sorted = [...stats].sort((a, b) => {
                                     const rankA = a.leaderboard_id === 3 ? 2 : (a.leaderboard_id === 4 ? 1 : 0);
@@ -71,7 +111,7 @@ async function fetchProfilesBatch(ids) {
                                 }
                             }
                         }
-                        profileCache.set(profileId, { alias, rating: currentRating, totalGames, totalWins, winRate });
+                        profileCache.set(profileId, { alias, rating: currentRating, totalGames, totalWins, winRate, stats: ladderStats });
                     }
                 });
             }
@@ -309,6 +349,12 @@ const server = http.createServer(async (req, res) => {
                     }
                 } catch (e) {}
 
+                const scrapedStatsById = {};
+                for (const name in scrapedPlayersStats) {
+                    const sp = scrapedPlayersStats[name];
+                    if (sp && sp.profileId && sp.stats) scrapedStatsById[String(sp.profileId)] = sp.stats;
+                }
+
                 let scrapedMatchesStats = {};
                 let scrapedMatchesByTitle = {};
                 try {
@@ -342,11 +388,15 @@ const server = http.createServer(async (req, res) => {
                                 scrapedMatchesStats[hostName] = {
                                     mapName: item.map,
                                     isPlaying: item.isPlaying,
+                                    slotsTotal: item.slotsTotal,
                                     matchType: item.settings?.Mode,
                                     mapSize: item.settings?.Size,
                                     modInfo: finalModInfo,
                                     population: item.settings?.Population,
                                     speed: item.settings?.Speed,
+                                    startingAge: item.settings?.['Starting Age'],
+                                    resources: item.settings?.Resources,
+                                    treaty: item.settings?.Treaty,
                                     server: item.settings?.Server
                                 };
                             }
@@ -355,11 +405,15 @@ const server = http.createServer(async (req, res) => {
                                     realHost: hostName,
                                     mapName: item.map,
                                     isPlaying: item.isPlaying,
+                                    slotsTotal: item.slotsTotal,
                                     matchType: item.settings?.Mode,
                                     mapSize: item.settings?.Size,
                                     modInfo: finalModInfo,
                                     population: item.settings?.Population,
                                     speed: item.settings?.Speed,
+                                    startingAge: item.settings?.['Starting Age'],
+                                    resources: item.settings?.Resources,
+                                    treaty: item.settings?.Treaty,
                                     server: item.settings?.Server
                                 };
                             }
@@ -434,6 +488,9 @@ const server = http.createServer(async (req, res) => {
                     let modInfo = undefined;
                     let population = undefined;
                     let speed = undefined;
+                    let startingAge = undefined;
+                    let resources = undefined;
+                    let treaty = undefined;
                     let serverRegion = "Global";
 
                     let sm = scrapedMatchesStats[hostName];
@@ -455,7 +512,7 @@ const server = http.createServer(async (req, res) => {
                                     if (scrapedPlayer.winRate !== undefined && scrapedPlayer.winRate !== "") parsedPlayers[0].winRate = scrapedPlayer.winRate;
                                 }
                             } else if (parsedPlayers.length === 0 && hostName) {
-                                let fallbackP = { id: 0, name: hostName, team: 0, elo: 1000, totalGames: 0, totalWins: 0, winRate: "0.0" };
+                                let fallbackP = { id: 0, name: hostName, team: 0, elo: null, totalGames: 0, totalWins: 0, winRate: "0.0" };
                                 const scrapedPlayer = scrapedPlayersStats[hostName.toLowerCase()];
                                 if (scrapedPlayer) {
                                     if (scrapedPlayer.elo !== undefined && scrapedPlayer.elo !== "") fallbackP.elo = scrapedPlayer.elo;
@@ -494,6 +551,9 @@ const server = http.createServer(async (req, res) => {
                         if (sm.modInfo !== undefined) modInfo = sm.modInfo;
                         if (sm.population !== undefined) population = sm.population;
                         if (sm.speed !== undefined) speed = sm.speed;
+                        if (sm.startingAge !== undefined) startingAge = sm.startingAge;
+                        if (sm.resources !== undefined) resources = sm.resources;
+                        if (sm.treaty !== undefined) treaty = sm.treaty;
                         if (sm.server !== undefined) serverRegion = sm.server;
                     }
                     
@@ -519,35 +579,14 @@ const server = http.createServer(async (req, res) => {
                         }
                     }
 
-                    let targetMode = "0"; // Unranked fallback
-                    if (matchType === "Random Map" && finalMapName !== "Custom Scenario" && !finalMapName.toLowerCase().includes("cba")) {
-                        targetMode = (m.maxplayers === 2) ? "3" : "4";
-                    } else if (matchType === "Empire Wars") {
-                        targetMode = (m.maxplayers === 2) ? "13" : "14";
-                    }
+                    const slotsTotal = (sm && sm.slotsTotal) || m.maxplayers;
+                    const targetMode = ladderFor(matchType, finalMapName, slotsTotal);
 
                     parsedPlayers.forEach(p => {
-                        const scrapedPlayer = scrapedPlayersStats[p.name.toLowerCase()];
-                        if (scrapedPlayer && scrapedPlayer.stats) {
-                            let bestStat = scrapedPlayer.stats[targetMode];
-                            if (!bestStat) {
-                                // Fallback to the mode with the most games if the target mode is missing
-                                let maxGames = -1;
-                                for (const modeKey in scrapedPlayer.stats) {
-                                    if (scrapedPlayer.stats[modeKey].games > maxGames) {
-                                        maxGames = scrapedPlayer.stats[modeKey].games;
-                                        bestStat = scrapedPlayer.stats[modeKey];
-                                    }
-                                }
-                            }
-                            if (bestStat) {
-                                p.elo = bestStat.rating || p.elo;
-                                p.totalGames = bestStat.games !== undefined ? bestStat.games : p.totalGames;
-                                p.totalWins = bestStat.wins !== undefined ? bestStat.wins : p.totalWins;
-                                p.winRate = bestStat.winp !== undefined ? bestStat.winp + "%" : p.winRate;
-                            }
-                            p.allStats = scrapedPlayer.stats;
-                        }
+                        const stats = scrapedStatsById[String(p.id)]
+                            || scrapedPlayersStats[p.name.toLowerCase()]?.stats
+                            || profileCache.get(p.id)?.stats;
+                        applyStat(p, stats && Object.keys(stats).length ? stats : null, targetMode);
                     });
 
                     return {
@@ -560,6 +599,9 @@ const server = http.createServer(async (req, res) => {
                         modInfo: modInfo,
                         population: population,
                         speed: speed,
+                        startingAge: startingAge,
+                        resources: resources,
+                        treaty: treaty,
                         server: serverRegion,
                         isPasswordProtected: m.passwordprotected === 1,
                         maxPlayers: m.maxplayers,
@@ -589,15 +631,13 @@ const server = http.createServer(async (req, res) => {
                 for (const host of Object.keys(scrapedLobbiesObj)) {
                     if (!knownHosts.has(host.toLowerCase())) {
                         const lobby = scrapedLobbiesObj[host];
-                        const parsedPlayers = (lobby.players || []).map(p => ({
-                            id: 0, 
-                            name: p.name, 
-                            team: 0, 
-                            elo: p.elo ? parseInt(p.elo) : 1000,
-                            totalGames: p.totalGames ? parseInt(p.totalGames) : 0,
-                            totalWins: p.totalWins ? parseInt(p.totalWins) : 0,
-                            winRate: p.winRate || "0.0%"
-                        }));
+                        const ladder = ladderFor(lobby.settings?.Mode, lobby.map, lobby.slotsTotal);
+                        const parsedPlayers = (lobby.players || []).map(p => {
+                            const player = { id: p.profileId || 0, name: p.name, team: 0, elo: null, totalGames: 0, totalWins: 0, winRate: "0.0%" };
+                            const stats = (p.profileId && scrapedStatsById[String(p.profileId)]) || p.stats;
+                            applyStat(player, stats && Object.keys(stats).length ? stats : null, ladder);
+                            return player;
+                        });
                         
                         allMatchesArray.push({
                             id: `scraped_${host}`,
@@ -609,6 +649,9 @@ const server = http.createServer(async (req, res) => {
                             modInfo: lobby.settings?.['Data Mod'] || lobby.settings?.Dataset || "No Mods",
                             population: lobby.settings?.Population || undefined,
                             speed: lobby.settings?.Speed || undefined,
+                            startingAge: lobby.settings?.['Starting Age'],
+                            resources: lobby.settings?.Resources,
+                            treaty: lobby.settings?.Treaty,
                             server: lobby.settings?.Server || "Global",
                             isPasswordProtected: false,
                             maxPlayers: 8,

@@ -13,7 +13,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     
     <!-- Styles -->
-    <link rel="stylesheet" href="./styles.css?v=9">
+    <link rel="stylesheet" href="./styles.css?v=10">
 </head>
 <body>
     <!-- Background Elements -->
@@ -98,6 +98,39 @@
                             <option value="Mods Enabled">Mods Enabled</option>
                         </select>
                     </div>
+                    <div class="filter-group">
+                        <label for="startAgeFilter">Start Age</label>
+                        <select id="startAgeFilter">
+                            <option value="all">Any Age</option>
+                            <option value="later">Feudal or later</option>
+                            <option value="Standard">Standard</option>
+                            <option value="Feudal Age">Feudal Age</option>
+                            <option value="Castle Age">Castle Age</option>
+                            <option value="Imperial Age">Imperial Age</option>
+                            <option value="Post-Imperial Age">Post-Imperial</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="resourcesFilter">Resources</label>
+                        <select id="resourcesFilter">
+                            <option value="all">Any Resources</option>
+                            <option value="more">Medium or more</option>
+                            <option value="Standard">Standard</option>
+                            <option value="Low">Low</option>
+                            <option value="Medium">Medium</option>
+                            <option value="High">High</option>
+                            <option value="Ultra High">Ultra High</option>
+                            <option value="Infinite">Infinite</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="treatyFilter">Treaty</label>
+                        <select id="treatyFilter">
+                            <option value="all">Any Treaty</option>
+                            <option value="none">No Treaty</option>
+                            <option value="any">Has Treaty</option>
+                        </select>
+                    </div>
                 </div>
             </section>
 
@@ -155,7 +188,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="app.js?v=13"></script>
+    <script src="app.js?v=14"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>

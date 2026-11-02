@@ -7,13 +7,18 @@ const defaultState = {
     minElo: 0,
     status: 'all',
     mod: 'all',
+    startAge: 'all',
+    resources: 'all',
+    treaty: 'all',
     currentView: 'lobbies',
     playerSort: 'elo-desc',
     playerSearch: '',
-    eloType: 'auto'
+    eloType: '0' // Unranked, the same default rating aoe2lobby.com shows
 };
 const storedState = JSON.parse(localStorage.getItem('aoe2State')) || {};
-const state = { ...defaultState, ...storedState };
+// 'auto' used to be the default; move those visitors to the new default once
+if (storedState.eloType === 'auto' && !storedState.eloDefaultV2) storedState.eloType = '0';
+const state = { ...defaultState, ...storedState, eloDefaultV2: true };
 
 // DOM Elements
 const lobbyGrid = document.getElementById('lobbyGrid');
@@ -27,6 +32,12 @@ const eloFilter = document.getElementById('eloFilter');
 const statusFilter = document.getElementById('statusFilter');
 const modFilter = document.getElementById('modFilter');
 const eloTypeFilter = document.getElementById('eloTypeFilter');
+const startAgeFilter = document.getElementById('startAgeFilter');
+const resourcesFilter = document.getElementById('resourcesFilter');
+const treatyFilter = document.getElementById('treatyFilter');
+
+const LATER_AGES = ['Feudal Age', 'Castle Age', 'Imperial Age', 'Post-Imperial Age'];
+const MORE_RESOURCES = ['Medium', 'High', 'Ultra High', 'Infinite'];
 
 // New UI Elements
 const viewLobbiesBtn = document.getElementById('viewLobbiesBtn');
@@ -52,6 +63,9 @@ function init() {
     if(statusFilter) statusFilter.value = state.status;
     if(modFilter) modFilter.value = state.mod;
     if(eloTypeFilter) eloTypeFilter.value = state.eloType;
+    if(startAgeFilter) startAgeFilter.value = state.startAge;
+    if(resourcesFilter) resourcesFilter.value = state.resources;
+    if(treatyFilter) treatyFilter.value = state.treaty;
     if(playerSort) playerSort.value = state.playerSort;
     if(playerSearch) playerSearch.value = state.playerSearch;
 
@@ -102,6 +116,9 @@ function parseRelicLobby(match) {
     let modInfo = match.modInfo || "No Mods";
     let population = match.population || "200";
     let speed = match.speed || "Normal";
+    let startingAge = match.startingAge && match.startingAge !== 'Unknown' ? match.startingAge : null;
+    let resources = match.resources && match.resources !== 'Unknown' ? match.resources : null;
+    let treaty = parseInt(match.treaty) || 0;
 
     let currentPlayers = match.players ? match.players.length : 1;
     let maxPlayers = match.maxPlayers || 8;
@@ -144,7 +161,7 @@ function parseRelicLobby(match) {
                     </button>
                     <span class="player-stats">${statsHtml}</span>
                 </span>
-                <span class="player-elo">${p.displayElo !== null ? p.displayElo : 'Unranked'}</span>
+                <span class="player-elo">${p.displayElo != null ? p.displayElo : '&mdash;'}</span>
             </div>
             `;
         }).join('');
@@ -166,6 +183,9 @@ function parseRelicLobby(match) {
         modInfo: modInfo,
         population: population,
         speed: speed,
+        startingAge: startingAge,
+        resources: resources,
+        treaty: treaty,
         server: match.server || "Global", 
         currentPlayers: currentPlayers,
         maxPlayers: maxPlayers,
@@ -257,6 +277,18 @@ function setupEventListeners() {
     });
     modFilter.addEventListener('change', (e) => {
         state.mod = e.target.value;
+        applyFiltersAndRender();
+    });
+    startAgeFilter.addEventListener('change', (e) => {
+        state.startAge = e.target.value;
+        applyFiltersAndRender();
+    });
+    resourcesFilter.addEventListener('change', (e) => {
+        state.resources = e.target.value;
+        applyFiltersAndRender();
+    });
+    treatyFilter.addEventListener('change', (e) => {
+        state.treaty = e.target.value;
         applyFiltersAndRender();
     });
     if (eloTypeFilter) {
@@ -369,7 +401,14 @@ function filterLobbies() {
         const matchesMod = state.mod === 'all' || 
             (state.mod === 'Mods Enabled' ? lobby.modInfo !== 'No Mods' : lobby.modInfo === state.mod);
         const matchesElo = state.minElo === 0 || (lobby.elo && parseInt(lobby.elo) >= state.minElo);
-        return matchesSearch && matchesType && matchesMap && matchesStatus && matchesMod && matchesElo;
+        const matchesStartAge = state.startAge === 'all' ||
+            (state.startAge === 'later' ? LATER_AGES.includes(lobby.startingAge) : lobby.startingAge === state.startAge);
+        const matchesResources = state.resources === 'all' ||
+            (state.resources === 'more' ? MORE_RESOURCES.includes(lobby.resources) : lobby.resources === state.resources);
+        const matchesTreaty = state.treaty === 'all' ||
+            (state.treaty === 'any' ? lobby.treaty > 0 : lobby.treaty === 0);
+        return matchesSearch && matchesType && matchesMap && matchesStatus && matchesMod && matchesElo &&
+            matchesStartAge && matchesResources && matchesTreaty;
     });
 }
 
@@ -528,6 +567,22 @@ function renderPlayers(players) {
     });
 }
 
+function renderSettingBadges(lobby) {
+    let html = '';
+    if (lobby.treaty > 0) {
+        html += `<span class="badge treaty-badge" title="Treaty Length">&#x1F91D; Treaty ${lobby.treaty} min</span>`;
+    }
+    if (lobby.startingAge) {
+        const custom = lobby.startingAge !== 'Standard' && lobby.startingAge !== 'Dark Age' ? ' custom-setting' : '';
+        html += `<span class="badge age-badge${custom}" title="Starting Age">&#x1F3F0; ${lobby.startingAge === 'Standard' ? 'Standard Age' : lobby.startingAge}</span>`;
+    }
+    if (lobby.resources) {
+        const custom = lobby.resources !== 'Standard' && lobby.resources !== 'Low' ? ' custom-setting' : '';
+        html += `<span class="badge resources-badge${custom}" title="Starting Resources">&#x1FA99; ${lobby.resources === 'Standard' ? 'Standard Res' : lobby.resources + ' Res'}</span>`;
+    }
+    return html;
+}
+
 function renderLobbies(filteredLobbies) {
     let emptyState = document.getElementById('emptyState');
     
@@ -645,6 +700,7 @@ function renderLobbies(filteredLobbies) {
                             <span class="badge pop-badge" title="Population">&#x1F465; ${lobby.population}</span>
                             <span class="badge speed-badge" title="Speed">&#x23E9; ${lobby.speed}</span>
                             <span class="badge mod-info-badge" title="Mod Info">&#x2699; ${lobby.modInfo}</span>
+                            ${renderSettingBadges(lobby)}
                         </div>
                     </div>
                 </div>

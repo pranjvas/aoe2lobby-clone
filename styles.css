@@ -693,6 +693,24 @@ select:focus, select:hover {
     color: #c084fc;
 }
 
+.age-badge,
+.resources-badge {
+    background: rgba(139, 148, 158, 0.2);
+    color: #94a3b8;
+}
+
+/* Non-standard start age / resources stand out so players can spot them at a glance */
+.age-badge.custom-setting,
+.resources-badge.custom-setting {
+    background: rgba(46, 160, 67, 0.2);
+    color: #4ade80;
+}
+
+.treaty-badge {
+    background: rgba(56, 139, 253, 0.2);
+    color: #60a5fa;
+}
+
 /* Loader Animation */
 .loader-container {
     display: flex;

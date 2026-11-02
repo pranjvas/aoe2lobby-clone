@@ -15,9 +15,25 @@ const SIZE_MAP = {
 const SPEED_MAP = {
     0: "Slow", 1: "Casual", 2: "Normal", 3: "Fast"
 };
+// Value codes as used by aoe2lobby.com's own UI
+const STARTING_AGE_MAP = {
+    0: "Standard", 1: "Dark Age", 2: "Feudal Age", 3: "Castle Age", 4: "Imperial Age", 5: "Post-Imperial Age"
+};
+const RESOURCES_MAP = {
+    0: "Standard", 1: "Low", 2: "Medium", 3: "High", 4: "Ultra High", 5: "Infinite", 6: "Random"
+};
 
 let lobbyMatchAll = null;
 let lobbyEloUpdate = {}; // { profileId: { mode1: stats, mode2: stats } }
+
+// Leaderboards to receive ratings for. aoe2lobby.com's page only subscribes to its defaults (0, 3, 4),
+// so Empire Wars ratings would otherwise never arrive.
+const ELO_TYPES = ['0', '3', '4', '13', '14'];
+
+function scheduleDump() {
+    clearTimeout(global.dumpTimeout);
+    global.dumpTimeout = setTimeout(dumpData, 2000);
+}
 
 async function dumpData() {
     if (!lobbyMatchAll) return;
@@ -42,11 +58,13 @@ async function dumpData() {
                     const pStats = lobbyEloUpdate[slot.profileid] || {};
                     
                     scrapedPlayers[slot.name.toLowerCase()] = {
+                        profileId: slot.profileid,
                         stats: pStats // Store all stats for all modes!
                     };
 
                     players.push({
                         name: slot.name,
+                        profileId: slot.profileid,
                         civ: slot.civilization ? slot.civilization.toString() : "",
                         stats: pStats
                     });
@@ -64,12 +82,16 @@ async function dumpData() {
             title: lobby.description || "",
             map: lobby.map_name || "Unknown Map",
             isPlaying: lobby.open_slots === false,
+            slotsTotal: lobby.slots_total,
             players: players,
             settings: {
                 Mode: MODE_MAP[lobby.mode] || "Unknown",
                 Size: SIZE_MAP[lobby.size] || "Unknown",
                 Population: lobby.population ? lobby.population.toString() : "200",
                 Speed: SPEED_MAP[lobby.speed] || "Unknown",
+                "Starting Age": STARTING_AGE_MAP[lobby.starting_age] || "Unknown",
+                Resources: lobby.resources == null ? "Unknown" : (RESOURCES_MAP[lobby.resources] || "Custom"),
+                Treaty: lobby.treaty_length || 0, // minutes, 0 = none
                 "Data Mod": lobby.data_mod || "No Mods",
                 Server: "Global"
             }
@@ -89,6 +111,19 @@ async function dumpData() {
         args: process.env.PUPPETEER_NO_SANDBOX ? ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] : []
     });
     const page = await browser.newPage();
+    // Ask aoe2lobby.com's socket for every leaderboard we show, not just the page defaults
+    await page.evaluateOnNewDocument((eloTypes) => {
+        const NativeWebSocket = window.WebSocket;
+        window.WebSocket = function (url, protocols) {
+            const ws = protocols === undefined ? new NativeWebSocket(url) : new NativeWebSocket(url, protocols);
+            ws.addEventListener('open', () => {
+                ws.send(JSON.stringify({ action: 'subscribe', type: 'elotypes', context: 'lobby', ids: eloTypes }));
+            });
+            return ws;
+        };
+        window.WebSocket.prototype = NativeWebSocket.prototype;
+        Object.assign(window.WebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+    }, ELO_TYPES);
     const cdp = await page.target().createCDPSession();
     await cdp.send('Network.enable');
     await cdp.send('Page.enable');
@@ -103,6 +138,21 @@ async function dumpData() {
                     dumpData();
                 }
             }
+            // Live changes between full snapshots: new/changed lobbies and closed lobbies
+            if (lobbyMatchAll && payload.includes('"lobby_match_update":')) {
+                const data = JSON.parse(payload);
+                if (data.lobby_match_update) {
+                    Object.assign(lobbyMatchAll, data.lobby_match_update);
+                    scheduleDump();
+                }
+            }
+            if (lobbyMatchAll && payload.includes('"lobby_match_remove":')) {
+                const data = JSON.parse(payload);
+                if (Array.isArray(data.lobby_match_remove)) {
+                    for (const id of data.lobby_match_remove) delete lobbyMatchAll[id];
+                    scheduleDump();
+                }
+            }
             if (payload.includes('"lobby_elo_update":')) {
                 const data = JSON.parse(payload);
                 if (data.lobby_elo_update) {
@@ -115,10 +165,7 @@ async function dumpData() {
                             newElos++;
                         }
                     }
-                    if (newElos > 0) {
-                        clearTimeout(global.dumpTimeout);
-                        global.dumpTimeout = setTimeout(dumpData, 5000);
-                    }
+                    if (newElos > 0) scheduleDump();
                 }
             }
         } catch (e) { }
