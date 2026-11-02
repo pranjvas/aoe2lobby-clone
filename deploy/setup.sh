@@ -9,7 +9,7 @@ SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y curl ca-certificates gnupg rsync ufw debian-keyring debian-archive-keyring apt-transport-https
+apt-get install -y curl ca-certificates gnupg rsync unzip ufw debian-keyring debian-archive-keyring apt-transport-https
 
 # Node.js 22
 if ! command -v node >/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]; then
@@ -54,7 +54,11 @@ chown -R "$APP_USER":"$APP_USER" "$APP_DIR"
 
 # Install deps (downloads Puppeteer's Chrome into the app user's cache) and install pm2 globally
 npm install -g pm2
-sudo -u "$APP_USER" bash -c "cd $APP_DIR && npm install --omit=dev"
+sudo -u "$APP_USER" bash -c "cd $APP_DIR && npm install --omit=dev" || {
+  # a failed Chrome download leaves a folder without the binary, which blocks every retry
+  rm -rf "/home/$APP_USER/.cache/puppeteer"
+  sudo -u "$APP_USER" bash -c "cd $APP_DIR && npm install --omit=dev"
+}
 
 # Start the app and keep it running across reboots
 sudo -u "$APP_USER" bash -c "cd $APP_DIR && pm2 start ecosystem.config.js --env production && pm2 save"

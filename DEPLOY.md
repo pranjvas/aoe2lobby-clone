@@ -48,12 +48,22 @@ sudo -u aoe2 pm2 logs scraper --lines 30
 curl -I https://aoe2lobby.online
 ```
 
+## Current production
+
+- VPS: Contabo, Ubuntu 24.04, `85.190.254.97`, app in `/opt/aoe2lobby` run by user `aoe2`
+- DNS: Cloudflare (the domain's nameservers point there, not Namecheap). `@` and `www` A records -> VPS, DNS only
+- SSH: `ssh -i ~/.ssh/aoe2lobby_vps root@85.190.254.97` (key added with `deploy/add-key.ps1`)
+- Visits: Cloudflare dashboard -> Analytics -> Web analytics -> aoe2lobby.online (beacon snippet in `index.html`)
+
 ## Updating later
 
+Commit, then from Git Bash in the repo root:
+
 ```bash
-rsync ... (same as above), then on the VPS:
-sudo -u aoe2 bash -c "cd /opt/aoe2lobby && npm install --omit=dev && pm2 reload ecosystem.config.js --env production"
+bash deploy/push.sh
 ```
+
+It ships the committed HEAD (not uncommitted edits), keeps the scraped data on the server, and reloads pm2 and Caddy.
 
 ## Known risks
 
