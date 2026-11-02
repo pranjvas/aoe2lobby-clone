@@ -30,6 +30,50 @@ let lobbyEloUpdate = {}; // { profileId: { mode1: stats, mode2: stats } }
 // so Empire Wars ratings would otherwise never arrive.
 const ELO_TYPES = ['0', '3', '4', '13', '14'];
 
+function mergeElo(update) {
+    let merged = 0;
+    for (const mode in update) {
+        const elos = update[mode];
+        for (const profileId in elos) {
+            if (!lobbyEloUpdate[profileId]) lobbyEloUpdate[profileId] = {};
+            lobbyEloUpdate[profileId][mode] = elos[profileId];
+            merged++;
+        }
+    }
+    return merged;
+}
+
+// aoe2lobby.com sends a full snapshot when a socket connects but no live updates afterwards,
+// so take a fresh snapshot over a short-lived socket every SNAPSHOT_MS (Node 22+ global WebSocket).
+const SNAPSHOT_MS = 15000;
+function takeSnapshot() {
+    return new Promise(resolve => {
+        let ws;
+        let gotMatches = false, gotElo = false;
+        const done = () => {
+            clearTimeout(timer);
+            try { ws.close(); } catch (e) { }
+            resolve();
+        };
+        const timer = setTimeout(done, 10000);
+        try {
+            ws = new WebSocket('wss://aoe2lobby.com/ws/lobby/');
+        } catch (e) {
+            return done();
+        }
+        ws.onopen = () => ws.send(JSON.stringify({ action: 'subscribe', type: 'elotypes', context: 'lobby', ids: ELO_TYPES }));
+        ws.onerror = done;
+        ws.onmessage = (msg) => {
+            try {
+                const data = JSON.parse(msg.data);
+                if (data.lobby_match_all) { lobbyMatchAll = data.lobby_match_all; gotMatches = true; }
+                if (data.lobby_elo_update) { mergeElo(data.lobby_elo_update); gotElo = true; }
+                if (gotMatches && gotElo) { dumpData(); done(); }
+            } catch (e) { }
+        };
+    });
+}
+
 function scheduleDump() {
     clearTimeout(global.dumpTimeout);
     global.dumpTimeout = setTimeout(dumpData, 2000);
@@ -155,18 +199,7 @@ async function dumpData() {
             }
             if (payload.includes('"lobby_elo_update":')) {
                 const data = JSON.parse(payload);
-                if (data.lobby_elo_update) {
-                    let newElos = 0;
-                    for (const mode in data.lobby_elo_update) {
-                        const elos = data.lobby_elo_update[mode];
-                        for (const profileId in elos) {
-                            if (!lobbyEloUpdate[profileId]) lobbyEloUpdate[profileId] = {};
-                            lobbyEloUpdate[profileId][mode] = elos[profileId];
-                            newElos++;
-                        }
-                    }
-                    if (newElos > 0) scheduleDump();
-                }
+                if (data.lobby_elo_update && mergeElo(data.lobby_elo_update) > 0) scheduleDump();
             }
         } catch (e) { }
     });
@@ -175,6 +208,9 @@ async function dumpData() {
     
     // Periodically dump data every 20 seconds as a fallback
     setInterval(dumpData, 20000);
+
+    // Primary freshness source: a direct snapshot every 15 seconds
+    setInterval(takeSnapshot, SNAPSHOT_MS);
 
     // Periodically reload the page to trigger a fresh lobby_match_all payload for new lobbies
     setInterval(() => {
