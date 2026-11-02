@@ -5,23 +5,27 @@ const path = require('path');
 const OUTPUT_PATH = path.join(__dirname, 'scraped_lobbies_v2.json');
 const PLAYERS_PATH = path.join(__dirname, 'scraped_players_v2.json');
 
-const MODE_MAP = {
-    0: "Random Map", 1: "Regicide", 2: "Death Match", 3: "Scenario", 11: "Empire Wars"
+// Value labels as aoe2lobby.com defines them. It also sends this table as "schema" when a socket
+// connects; that live copy wins (see label()), these are the fallback.
+const FALLBACK_SCHEMA = {
+    mode: {
+        0: "Random Map", 1: "Empire Wars", 2: "Regicide", 3: "King of the Hill", 4: "Death Match", 5: "Battle Royale",
+        6: "Sudden Death", 7: "Capture the Relic", 8: "Defend the Wonder", 9: "Wonder Race", 10: "Custom Scenario", 11: "Co-Op Campaign"
+    },
+    size: {
+        0: "Tiny (2 player)", 1: "Small (3 player)", 2: "Medium (4 player)", 3: "Normal (6 player)", 4: "Large (8 player)",
+        5: "Huge", 6: "Ludicrous", 7: "Giant", 8: "Massive", 9: "Enormous", 10: "Colossal", 11: "Incredible", 12: "Monstrous"
+    },
+    speed: { 0: "Slow", 1: "Casual", 2: "Normal", 3: "Fast" },
+    starting_age: { 0: "Standard", 1: "Dark Age", 2: "Feudal Age", 3: "Castle Age", 4: "Imperial Age", 5: "Post-Imperial Age" },
+    resources: { 0: "Standard", 1: "Low", 2: "Medium", 3: "High", 4: "Ultra High", 5: "Infinite", 6: "Random" }
 };
-const SIZE_MAP = {
-    0: "Tiny (2 player)", 1: "Small (3 player)", 2: "Medium (4 player)", 
-    3: "Normal (6 player)", 4: "Large (8 player)", 5: "Huge", 6: "Ludicrous"
-};
-const SPEED_MAP = {
-    0: "Slow", 1: "Casual", 2: "Normal", 3: "Fast"
-};
-// Value codes as used by aoe2lobby.com's own UI
-const STARTING_AGE_MAP = {
-    0: "Standard", 1: "Dark Age", 2: "Feudal Age", 3: "Castle Age", 4: "Imperial Age", 5: "Post-Imperial Age"
-};
-const RESOURCES_MAP = {
-    0: "Standard", 1: "Low", 2: "Medium", 3: "High", 4: "Ultra High", 5: "Infinite", 6: "Random"
-};
+let liveSchema = null;
+
+function label(field, value, unknown = "Unknown") {
+    if (value === null || value === undefined) return unknown;
+    return liveSchema?.[field]?.[String(value)] ?? FALLBACK_SCHEMA[field]?.[value] ?? unknown;
+}
 
 let lobbyMatchAll = null;
 let lobbyEloUpdate = {}; // { profileId: { mode1: stats, mode2: stats } }
@@ -66,6 +70,7 @@ function takeSnapshot() {
         ws.onmessage = (msg) => {
             try {
                 const data = JSON.parse(msg.data);
+                if (data.schema) liveSchema = data.schema;
                 if (data.lobby_match_all) { lobbyMatchAll = data.lobby_match_all; gotMatches = true; }
                 if (data.lobby_elo_update) { mergeElo(data.lobby_elo_update); gotElo = true; }
                 if (gotMatches && gotElo) { dumpData(); done(); }
@@ -129,12 +134,12 @@ async function dumpData() {
             slotsTotal: lobby.slots_total,
             players: players,
             settings: {
-                Mode: MODE_MAP[lobby.mode] || "Unknown",
-                Size: SIZE_MAP[lobby.size] || "Unknown",
-                Population: lobby.population ? lobby.population.toString() : "200",
-                Speed: SPEED_MAP[lobby.speed] || "Unknown",
-                "Starting Age": STARTING_AGE_MAP[lobby.starting_age] || "Unknown",
-                Resources: lobby.resources == null ? "Unknown" : (RESOURCES_MAP[lobby.resources] || "Custom"),
+                Mode: label('mode', lobby.mode),
+                Size: label('size', lobby.size),
+                Population: lobby.population ? lobby.population.toString() : "Unknown",
+                Speed: label('speed', lobby.speed),
+                "Starting Age": label('starting_age', lobby.starting_age),
+                Resources: label('resources', lobby.resources, lobby.resources == null ? "Unknown" : "Custom"),
                 Treaty: lobby.treaty_length || 0, // minutes, 0 = none
                 "Data Mod": lobby.data_mod || "No Mods",
                 Server: "Global"
@@ -175,6 +180,10 @@ async function dumpData() {
     cdp.on('Network.webSocketFrameReceived', response => {
         try {
             const payload = response.response.payloadData;
+            if (payload.includes('"schema":')) {
+                const data = JSON.parse(payload);
+                if (data.schema) liveSchema = data.schema;
+            }
             if (payload.includes('"lobby_match_all":')) {
                 const data = JSON.parse(payload);
                 if (data.lobby_match_all) {

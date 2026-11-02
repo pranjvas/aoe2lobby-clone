@@ -101,9 +101,14 @@ function parseRelicLobby(match) {
         else if (tLower.includes('dodge')) map = 'Dodgeball';
     }
 
+    const known = (v) => (v !== undefined && v !== null && v !== '' && v !== 'Unknown') ? v : null;
+    let matchType = known(match.matchType);
+
     let type = "Random Map";
     if (title.toLowerCase().includes("death")) type = "Death Match";
     if (title.toLowerCase().includes("empire")) type = "Empire Wars";
+    if (matchType === 'Custom Scenario') type = 'Custom';
+    else if (matchType) type = matchType;
 
     let mapIcon = '&#x1F5FA;';
     if(map.toLowerCase().includes('arabia')) mapIcon = '&#x1F3DC;';
@@ -111,11 +116,10 @@ function parseRelicLobby(match) {
     if(map.toLowerCase().includes('nomad')) mapIcon = '&#x26FA;';
     if(map.toLowerCase().includes('arena')) mapIcon = '&#x1F3F0;';
     
-    let matchType = match.matchType || (match.ranked ? "Ranked" : "Unranked");
-    let mapSize = match.mapSize || "Normal";
+    let mapSize = known(match.mapSize);
     let modInfo = match.modInfo || "No Mods";
-    let population = match.population || "200";
-    let speed = match.speed || "Normal";
+    let population = known(match.population);
+    let speed = known(match.speed);
     let startingAge = match.startingAge && match.startingAge !== 'Unknown' ? match.startingAge : null;
     let resources = match.resources && match.resources !== 'Unknown' ? match.resources : null;
     let treaty = parseInt(match.treaty) || 0;
@@ -440,10 +444,10 @@ function aggregatePlayers() {
                         lobbyTitle: lobby.title,
                         lobbyMap: lobby.map,
                         isPlaying: lobby.isPlaying,
-                        matchType: lobby.matchType || 'Unknown',
-                        mapSize: lobby.mapSize || 'Normal',
-                        population: lobby.population || '200',
-                        speed: lobby.speed || 'Normal',
+                        matchType: lobby.matchType,
+                        mapSize: lobby.mapSize,
+                        population: lobby.population,
+                        speed: lobby.speed,
                         modInfo: lobby.modInfo || 'No Mods',
                         server: lobby.server || 'Global',
                         lastSeen: lobby.lastSeen || 0,
@@ -538,11 +542,7 @@ function renderPlayers(players) {
                     <div class="tags-row" style="margin-top: 10px;">
                         <span class="badge status-badge" style="background: ${p.isPlaying ? 'rgba(212, 175, 55, 0.2)' : 'rgba(46, 160, 67, 0.2)'}; color: ${p.isPlaying ? '#d4af37' : '#2ea043'}; border-color: ${p.isPlaying ? '#d4af37' : '#2ea043'}">${p.isPlaying ? '&#x1F3AE; Playing' : '&#x23F3; Waiting'}</span>
                         <span class="badge server-badge" title="Server">&#x1F310; ${p.server}</span>
-                        <span class="badge match-type-badge">${p.matchType}</span>
-                        <span class="badge map-size-badge" title="Map Size">&#x1F5FA; ${p.mapSize}</span>
-                        <span class="badge pop-badge" title="Population">&#x1F465; ${p.population}</span>
-                        <span class="badge speed-badge" title="Speed">&#x23E9; ${p.speed}</span>
-                        <span class="badge mod-info-badge" title="Mod Info">&#x2699; ${p.modInfo}</span>
+                        ${renderInfoBadges(p)}
                     </div>
                 </div>
             </div>
@@ -567,6 +567,23 @@ function renderPlayers(players) {
     });
 }
 
+// Badges for values we actually know; unknown values are left out rather than guessed
+function renderInfoBadges(item) {
+    let html = '';
+    if (item.matchType) html += `<span class="badge match-type-badge">${item.matchType}</span>`;
+    if (item.mapSize) html += `<span class="badge map-size-badge" title="Map Size">&#x1F5FA; ${item.mapSize}</span>`;
+    if (item.population) html += `<span class="badge pop-badge" title="Population">&#x1F465; ${item.population}</span>`;
+    if (item.speed) html += `<span class="badge speed-badge" title="Speed">&#x23E9; ${item.speed}</span>`;
+    html += `<span class="badge mod-info-badge" title="Mod Info">&#x2699; ${item.modInfo || 'No Mods'}</span>`;
+    return html;
+}
+
+// Everything shown on a card except the live player list / count / status, which update in place
+function lobbyDetailsKey(lobby) {
+    return JSON.stringify([lobby.host, lobby.elo, lobby.title, lobby.map, lobby.type, lobby.matchType, lobby.mapSize,
+        lobby.population, lobby.speed, lobby.modInfo, lobby.startingAge, lobby.resources, lobby.treaty, lobby.isPlaying]);
+}
+
 function renderSettingBadges(lobby) {
     let html = '';
     if (lobby.treaty > 0) {
@@ -581,6 +598,67 @@ function renderSettingBadges(lobby) {
         html += `<span class="badge resources-badge${custom}" title="Starting Resources">&#x1FA99; ${lobby.resources === 'Standard' ? 'Standard Res' : lobby.resources + ' Res'}</span>`;
     }
     return html;
+}
+
+function lobbyCardHtml(lobby) {
+    const fillPercentage = (lobby.currentPlayers / lobby.maxPlayers) * 100;
+    const joinLink = (!lobby.isPlaying) 
+        ? `aoe2de://0/${lobby.id}`
+        : '#';
+    const joinText = joinLink === '#' ? (lobby.isPlaying ? 'In Progress' : 'Cannot Join') : 'Join Game';
+    const joinClass = joinLink === '#' ? 'btn-join disabled' : 'btn-join';
+    
+    const statusIndicator = lobby.isPlaying ? 
+        '<span style="color: #d4af37">&#x1F3AE; Playing</span> ' + lobby.server : 
+        '<span style="color: #2ea043">&#x23F3; Waiting</span> ' + lobby.server;
+
+    return `
+        <div class="card-header">
+            <div class="host-info">
+                <div class="host-name">
+                    ${lobby.host}
+                    ${lobby.elo ? `<span class="elo-badge">${lobby.elo}</span>` : ''}
+                </div>
+                <div class="game-title" title="${lobby.title}">${lobby.title}</div>
+            </div>
+            <div class="server-badge">
+                ${statusIndicator}
+            </div>
+        </div>
+        
+        <div class="card-body">
+            <div class="map-icon-wrapper" style="position: relative;">
+                <div class="map-icon">${lobby.mapIcon}</div>
+                ${lobby.map === 'Unknown Map' ? '<div class="map-spinner" title="Resolving map..."></div>' : ''}
+            </div>
+            <div class="game-details">
+                <div class="detail-row">
+                    <span class="detail-icon" style="opacity: 0.7;">⚔️</span> <span style="font-weight: 500;">${lobby.type}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-icon" style="opacity: 0.7;">🗺️</span> <span style="font-weight: 500;">${lobby.map}</span>
+                </div>
+                <div class="tags-row">
+                    ${renderInfoBadges(lobby)}
+                    ${renderSettingBadges(lobby)}
+                </div>
+            </div>
+        </div>
+        
+        <div class="player-list">
+            ${lobby.playersHtml}
+        </div>
+        
+        <div class="card-footer">
+            <div class="players-count">
+                <span class="players-count-text">&#x1F464; ${lobby.currentPlayers}/${lobby.maxPlayers}</span>
+                <div class="fill-bar">
+                    <div class="fill-progress" style="width: ${fillPercentage}%"></div>
+                </div>
+            </div>
+            <a href="${joinLink}" class="${joinClass}">${joinText}</a>
+        </div>
+    `;
 }
 
 function renderLobbies(filteredLobbies) {
@@ -628,7 +706,11 @@ function renderLobbies(filteredLobbies) {
         const id = 'lobby-' + lobby.id;
         const fillPercentage = (lobby.currentPlayers / lobby.maxPlayers) * 100;
 
-        if (existingNodes.has(id)) {
+        if (existingNodes.has(id) && existingNodes.get(id).dataset.details !== lobbyDetailsKey(lobby)) {
+            const node = existingNodes.get(id);
+            node.innerHTML = lobbyCardHtml(lobby);
+            node.dataset.details = lobbyDetailsKey(lobby);
+        } else if (existingNodes.has(id)) {
             const node = existingNodes.get(id);
             const countText = node.querySelector('.players-count-text');
             const progress = node.querySelector('.fill-progress');
@@ -658,67 +740,8 @@ function renderLobbies(filteredLobbies) {
                 div.classList.toggle('expanded');
             };
             
-            const joinLink = (!lobby.isPlaying) 
-                ? `aoe2de://0/${lobby.id}`
-                : '#';
-            const joinText = joinLink === '#' ? (lobby.isPlaying ? 'In Progress' : 'Cannot Join') : 'Join Game';
-            const joinClass = joinLink === '#' ? 'btn-join disabled' : 'btn-join';
-            
-            const statusIndicator = lobby.isPlaying ? 
-                '<span style="color: #d4af37">&#x1F3AE; Playing</span> ' + lobby.server : 
-                '<span style="color: #2ea043">&#x23F3; Waiting</span> ' + lobby.server;
-
-            div.innerHTML = `
-                <div class="card-header">
-                    <div class="host-info">
-                        <div class="host-name">
-                            ${lobby.host}
-                            ${lobby.elo ? `<span class="elo-badge">${lobby.elo}</span>` : ''}
-                        </div>
-                        <div class="game-title" title="${lobby.title}">${lobby.title}</div>
-                    </div>
-                    <div class="server-badge">
-                        ${statusIndicator}
-                    </div>
-                </div>
-                
-                <div class="card-body">
-                    <div class="map-icon-wrapper" style="position: relative;">
-                        <div class="map-icon">${lobby.mapIcon}</div>
-                        ${lobby.map === 'Unknown Map' ? '<div class="map-spinner" title="Resolving map..."></div>' : ''}
-                    </div>
-                    <div class="game-details">
-                        <div class="detail-row">
-                            <span class="detail-icon" style="opacity: 0.7;">⚔️</span> <span style="font-weight: 500;">${lobby.type}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-icon" style="opacity: 0.7;">🗺️</span> <span style="font-weight: 500;">${lobby.map}</span>
-                        </div>
-                        <div class="tags-row">
-                            <span class="badge match-type-badge">${lobby.matchType}</span>
-                            <span class="badge map-size-badge" title="Map Size">&#x1F5FA; ${lobby.mapSize}</span>
-                            <span class="badge pop-badge" title="Population">&#x1F465; ${lobby.population}</span>
-                            <span class="badge speed-badge" title="Speed">&#x23E9; ${lobby.speed}</span>
-                            <span class="badge mod-info-badge" title="Mod Info">&#x2699; ${lobby.modInfo}</span>
-                            ${renderSettingBadges(lobby)}
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="player-list">
-                    ${lobby.playersHtml}
-                </div>
-                
-                <div class="card-footer">
-                    <div class="players-count">
-                        <span class="players-count-text">&#x1F464; ${lobby.currentPlayers}/${lobby.maxPlayers}</span>
-                        <div class="fill-bar">
-                            <div class="fill-progress" style="width: ${fillPercentage}%"></div>
-                        </div>
-                    </div>
-                    <a href="${joinLink}" class="${joinClass}">${joinText}</a>
-                </div>
-            `;
+            div.innerHTML = lobbyCardHtml(lobby);
+            div.dataset.details = lobbyDetailsKey(lobby);
             
             lobbyGrid.appendChild(div);
         }

@@ -29,6 +29,24 @@ function httpsGet(url) {
     });
 }
 
+// Relic lobby options: zlib -> JSON string holding base64 -> 1-byte entry count, then entries of
+// [uint32 LE length]["key:value"]. Returns { key: value }.
+function parseRelicOptions(optionsBase64) {
+    const inner = JSON.parse(zlib.inflateSync(Buffer.from(optionsBase64, 'base64')).toString('utf-8'));
+    const buf = Buffer.from(inner, 'base64');
+    const options = {};
+    let i = 1;
+    for (let n = 0; n < buf[0] && i + 4 <= buf.length; n++) {
+        const len = buf.readUInt32LE(i);
+        i += 4;
+        const entry = buf.subarray(i, i + len).toString('utf-8');
+        i += len;
+        const colon = entry.indexOf(':');
+        if (colon > 0) options[entry.slice(0, colon)] = entry.slice(colon + 1);
+    }
+    return options;
+}
+
 // Leaderboard ids are the same on Relic and aoe2lobby.com: 0 Unranked, 3/4 RM 1v1/team, 13/14 EW 1v1/team
 function ladderFor(matchType, mapName, slotsTotal) {
     const is1v1 = slotsTotal === 2;
@@ -200,59 +218,23 @@ const server = http.createServer(async (req, res) => {
                     // Deep decode the options payload to find the hidden map hash!
                     try {
                         if (m.options) {
-                            const decompressed = zlib.inflateSync(Buffer.from(m.options, 'base64'));
-                            const innerStr = decompressed.toString('utf-8');
-                            const innerBase64 = JSON.parse(innerStr);
-                            const innerBytes = Buffer.from(innerBase64, 'base64').toString('utf-8');
-                            
-                            // Extract the hidden 16-byte mod hash (typically prefixed with 52:)
-                            const hashMatch = innerBytes.match(/52:([A-Za-z0-9+/=]+)/);
-                            if (hashMatch && hashMatch[1]) {
-                                const modHash = hashMatch[1];
+                            const options = parseRelicOptions(m.options);
+
+                            // 52 = map/mod hash. Only options verified against aoe2lobby.com are read here
+                            // (63 data mod, 28 population, 41 speed); Relic's mode and size codes don't map
+                            // to aoe2lobby.com's, so those come from the scraper only.
+                            const modHash = options['52'];
+                            if (modHash) {
                                 m.modHash = modHash;
                                 
-                                const modStrMatch = innerBytes.match(/63:([^\x00]+)/);
-                                if (modStrMatch && modStrMatch[1]) {
-                                    m.modInfo = modStrMatch[1].replace(/[\x00-\x1F\x7F-\x9F]/g, '').trim();
-                                }
-                                
-                                const popMatch = innerBytes.match(/28:([^\x00]+)/);
-                                if (popMatch && popMatch[1]) {
-                                    m.relicPopulation = parseInt(popMatch[1].replace(/[^\d]/g, ''), 10);
-                                }
-                                
-                                const speedMatch = innerBytes.match(/41:([^\x00]+)/);
-                                if (speedMatch && speedMatch[1]) {
-                                    const speedVal = speedMatch[1].replace(/[^\d]/g, '');
-                                    if (speedVal === '0') m.relicSpeed = 'Slow';
-                                    else if (speedVal === '1') m.relicSpeed = 'Casual';
-                                    else if (speedVal === '2') m.relicSpeed = 'Normal';
-                                    else if (speedVal === '3') m.relicSpeed = 'Fast';
-                                }
-                                
-                                const modeMatch = innerBytes.match(/5:([^\x00]+)/);
-                                if (modeMatch && modeMatch[1]) {
-                                    const modeVal = modeMatch[1].replace(/[^\d]/g, '');
-                                    if (modeVal === '0') m.relicMode = 'Random Map';
-                                    else if (modeVal === '1') m.relicMode = 'Regicide';
-                                    else if (modeVal === '2') m.relicMode = 'Death Match';
-                                    else if (modeVal === '3') m.relicMode = 'Scenario';
-                                    else if (modeVal === '11') m.relicMode = 'Empire Wars';
-                                }
-                                
-                                const sizeMatch = innerBytes.match(/0:([^\x00]+)/);
-                                if (sizeMatch && sizeMatch[1]) {
-                                    const sizeVal = sizeMatch[1].replace(/[^\d]/g, '');
-                                    if (sizeVal === '0') m.relicSize = 'Tiny (2 player)';
-                                    else if (sizeVal === '1') m.relicSize = 'Small (3 player)';
-                                    else if (sizeVal === '2') m.relicSize = 'Medium (4 player)';
-                                    else if (sizeVal === '3') m.relicSize = 'Normal (6 player)';
-                                    else if (sizeVal === '4') m.relicSize = 'Large (8 player)';
-                                    else if (sizeVal === '5') m.relicSize = 'Huge';
-                                    else if (sizeVal === '6') m.relicSize = 'Ludicrous';
-                                }
+                                if (options['63']) m.modInfo = options['63'].replace(/[\x00-\x1F\x7F-\x9F]/g, '').trim();
+                                if (/^\d+$/.test(options['28'] || '')) m.relicPopulation = parseInt(options['28'], 10);
+                                const speedVal = options['41'];
+                                if (speedVal === '0') m.relicSpeed = 'Slow';
+                                else if (speedVal === '1') m.relicSpeed = 'Casual';
+                                else if (speedVal === '2') m.relicSpeed = 'Normal';
+                                else if (speedVal === '3') m.relicSpeed = 'Fast';
 
-                                
                                 // Global Self-Learning Map Hash Dictionary
                                 if (!global.mapDictionary) {
                                     global.mapDictionary = {
@@ -535,8 +517,6 @@ const server = http.createServer(async (req, res) => {
                     
                     if (m.relicPopulation) population = m.relicPopulation;
                     if (m.relicSpeed) speed = m.relicSpeed;
-                    if (m.relicMode) matchType = m.relicMode;
-                    if (m.relicSize) mapSize = m.relicSize;
 
                     if (sm) {
                         const genericMaps = ["unknown map", "my map", "custom map", ""];
