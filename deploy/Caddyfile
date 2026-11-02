@@ -1,0 +1,4 @@
+aoe2lobby.online, www.aoe2lobby.online {
+	encode gzip zstd
+	reverse_proxy 127.0.0.1:3002
+}

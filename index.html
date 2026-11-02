@@ -10,10 +10,10 @@
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     
     <!-- Styles -->
-    <link rel="stylesheet" href="./styles.css">
+    <link rel="stylesheet" href="./styles.css?v=9">
 </head>
 <body>
     <!-- Background Elements -->
@@ -28,10 +28,7 @@
                 <span class="logo-icon">🛡️</span>
                 <h1>AoE2<span>Lobby</span></h1>
             </div>
-            <div class="nav-actions">
-                <button class="btn btn-secondary">Sign In</button>
-                <button class="btn btn-primary">Download Client</button>
-            </div>
+
         </header>
 
         <!-- Main Content -->
@@ -63,6 +60,17 @@
                             <option value="Black Forest">Black Forest</option>
                             <option value="Nomad">Nomad</option>
                             <option value="MegaRandom">MegaRandom</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="eloTypeFilter">Elo Type</label>
+                        <select id="eloTypeFilter">
+                            <option value="auto">Auto (Match Mode)</option>
+                            <option value="0">Unranked</option>
+                            <option value="3">RM 1v1</option>
+                            <option value="4">RM Team</option>
+                            <option value="13">EW 1v1</option>
+                            <option value="14">EW Team</option>
                         </select>
                     </div>
                     <div class="filter-group">
@@ -102,22 +110,31 @@
                         <button id="viewPlayersBtn" class="btn" style="padding: 6px 16px; border-radius: 6px; font-size: 0.9em; background: transparent; border: 1px solid transparent; color: #8a9bb2;">Players</button>
                     </div>
                 </div>
-                <div class="lobbies-stats" style="color: #8a9bb2; font-weight: 500;">
-                    <span id="itemCount" style="color: var(--accent); font-weight: 700; font-size: 1.2em;">0</span> <span id="countLabel">lobbies</span> found
+                <div style="display: flex; gap: 20px; align-items: center;">
+                    <div class="layout-toggles" style="display: flex; background: rgba(255,255,255,0.05); padding: 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
+                        <button id="layoutGridBtn" class="btn" style="padding: 6px 12px; border-radius: 6px; font-size: 1.1em; background: rgba(88, 101, 242, 0.2); border: 1px solid var(--accent); color: white;" title="Grid View">&#x25EB;</button>
+                        <button id="layoutListBtn" class="btn" style="padding: 6px 12px; border-radius: 6px; font-size: 1.1em; background: transparent; border: 1px solid transparent; color: #8a9bb2;" title="List View">&#x2630;</button>
+                    </div>
+                    <div class="lobbies-stats" style="color: #8a9bb2; font-weight: 500;">
+                        <span id="itemCount" style="color: var(--accent); font-weight: 700; font-size: 1.2em;">0</span> <span id="countLabel">lobbies</span> found
+                    </div>
                 </div>
             </div>
 
             <!-- Player Filters (Hidden by default) -->
             <section class="filters-section glass-panel" id="playerFilters" style="display: none; margin-bottom: 20px;">
-                <div class="filter-controls" style="display: flex; gap: 20px; align-items: center;">
-                    <div class="filter-group" style="flex: 1;">
-                        <input type="text" id="playerSearch" placeholder="Search Players or Maps..." style="padding: 10px; border-radius: 8px; background: #1a1f2e; border: 1px solid #3d4a60; color: #fff; width: 100%;">
-                    </div>
+                <div class="search-container">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="search-icon"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    <input type="text" id="playerSearch" placeholder="Search Players or Maps..." aria-label="Search players">
+                </div>
+                
+                <div class="filter-controls">
                     <div class="filter-group">
                         <label for="playerSort">Sort Players By</label>
                         <select id="playerSort">
                             <option value="elo-desc">Elo (Highest First)</option>
                             <option value="elo-asc">Elo (Lowest First)</option>
+                            <option value="active-desc">Recently Active (Newest First)</option>
                             <option value="wr-desc">Win Rate (Highest First)</option>
                             <option value="games-desc">Total Games Played</option>
                         </select>
@@ -138,6 +155,6 @@
     </div>
 
     <!-- Scripts -->
-    <script src="app.js?v=2"></script>
+    <script src="app.js?v=13"></script>
 </body>
 </html>

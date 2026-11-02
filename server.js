@@ -2,11 +2,14 @@ const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
 const fs = require('fs');
+const path = require('path');
 
 process.on('uncaughtException', (err) => { console.error('Uncaught Exception:', err); setTimeout(() => process.exit(1), 1000); });
 process.on('unhandledRejection', (err) => { console.error('Unhandled Rejection:', err); setTimeout(() => process.exit(1), 1000); });
 
-const PORT = process.env.PORT || 3000;
+const API_PORT = process.env.API_PORT || 3002;
+const HOST = process.env.HOST || '0.0.0.0';
+const PUBLIC_FILES = new Set(['/index.html', '/app.js', '/styles.css', '/favicon.png', '/favicon.ico']);
 const profileCache = new Map(); // Cache profile_id -> { alias, rating }
 const activeMatches = new Map(); // Keep track of matches to simulate "Playing" state
 
@@ -52,8 +55,8 @@ async function fetchProfilesBatch(ids) {
                             if (stats && stats.length > 0) {
                                 // Prioritize Team RM (4) and 1v1 RM (3) over other leaderboards like Unranked (0)
                                 const sorted = [...stats].sort((a, b) => {
-                                    const rankA = a.leaderboard_id === 4 ? 2 : (a.leaderboard_id === 3 ? 1 : 0);
-                                    const rankB = b.leaderboard_id === 4 ? 2 : (b.leaderboard_id === 3 ? 1 : 0);
+                                    const rankA = a.leaderboard_id === 3 ? 2 : (a.leaderboard_id === 4 ? 1 : 0);
+                                    const rankB = b.leaderboard_id === 3 ? 2 : (b.leaderboard_id === 4 ? 1 : 0);
                                     if (rankA !== rankB) return rankB - rankA;
                                     return b.last_match_time - a.last_match_time;
                                 });
@@ -107,11 +110,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    if (req.url === '/') {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('OK');
-        return;
-    }
+
 
     if (req.url.startsWith('/api/lobbies')) {
         try {
@@ -209,8 +208,8 @@ const server = http.createServer(async (req, res) => {
                                     else if (sizeVal === '2') m.relicSize = 'Medium (4 player)';
                                     else if (sizeVal === '3') m.relicSize = 'Normal (6 player)';
                                     else if (sizeVal === '4') m.relicSize = 'Large (8 player)';
-                                    else if (sizeVal === '5') m.relicSize = 'Giant';
-                                    else if (sizeVal === '6') m.relicSize = 'LudiKRIS';
+                                    else if (sizeVal === '5') m.relicSize = 'Huge';
+                                    else if (sizeVal === '6') m.relicSize = 'Ludicrous';
                                 }
 
                                 
@@ -287,31 +286,34 @@ const server = http.createServer(async (req, res) => {
                     }
                 }
                 
-                // Track missing matches as playing
+                // Remove matches that drop off the Relic API feed
                 for (const [id, m] of activeMatches.entries()) {
                     if (!currentMatchIds.has(id)) {
-                        m.isPlaying = true;
-                        // Remove if playing for more than 1 hour
-                        if (now - m.lastSeen > 3600000) {
-                            activeMatches.delete(id);
-                        }
+                        activeMatches.delete(id);
                     }
                 }
                 
                 let scrapedData = {};
                 try {
                     const fs = require('fs');
-                    if (fs.existsSync('scraped_maps.json')) {
-                        scrapedData = JSON.parse(fs.readFileSync('scraped_maps.json', 'utf-8'));
+                    if (fs.existsSync(path.join(__dirname, 'scraped_maps.json'))) {
+                        scrapedData = JSON.parse(fs.readFileSync(path.join(__dirname, 'scraped_maps.json'), 'utf-8'));
                     }
                 } catch (e) {}
 
                 let scrapedPlayersStats = {};
+                try {
+                    const fs = require('fs');
+                    if (fs.existsSync(path.join(__dirname, 'scraped_players_v2.json'))) {
+                        scrapedPlayersStats = JSON.parse(fs.readFileSync(path.join(__dirname, 'scraped_players_v2.json'), 'utf-8'));
+                    }
+                } catch (e) {}
+
                 let scrapedMatchesStats = {};
                 let scrapedMatchesByTitle = {};
                 try {
                     const fs = require('fs');
-                    const scrapedLobbiesPath = 'C:\\Users\\pranj\\.gemini\\antigravity\\scratch\\aoe2lobby-clone\\scraped_lobbies.json';
+                    const scrapedLobbiesPath = path.join(__dirname, 'scraped_lobbies_v2.json');
                     if (fs.existsSync(scrapedLobbiesPath)) {
                         const rawData = JSON.parse(fs.readFileSync(scrapedLobbiesPath, 'utf-8'));
                         const processPlayer = (p) => {
@@ -349,7 +351,7 @@ const server = http.createServer(async (req, res) => {
                                 };
                             }
                             if (item.title) {
-                                scrapedMatchesByTitle[item.title.toLowerCase()] = {
+                                scrapedMatchesByTitle[item.title.toLowerCase().replace(/\s+/g, '')] = {
                                     realHost: hostName,
                                     mapName: item.map,
                                     isPlaying: item.isPlaying,
@@ -382,9 +384,23 @@ const server = http.createServer(async (req, res) => {
                     console.error("Error reading scraped lobbies:", e);
                 }
                 
+                // Prune expired or finished playing matches
+                const hasScrapedData = Object.keys(scrapedMatchesStats).length > 20;
+                for (const [id, m] of activeMatches.entries()) {
+                    let hostName = m.players && m.players.length > 0 ? m.players[0].name.toLowerCase() : "";
+                    
+                    // If a match is playing, but the host is completely gone from aoe2lobby's live data, it's over!
+                    if (m.isPlaying && hasScrapedData && hostName && !scrapedMatchesStats[hostName] && !scrapedMatchesStats[hostName.replace(/^player_/, '')]) {
+                        // Allow a 2 minute grace period just in case of transient websocket drops
+                        if (now - m.lastSeen > 2 * 60 * 1000) {
+                            activeMatches.delete(id);
+                        }
+                    }
+                }
+                
                 const allMatchesArray = Array.from(activeMatches.values()).map(m => {
                     const parsedPlayers = m.rawPlayers ? m.rawPlayers.map(p => {
-                        const cached = profileCache.get(p.id) || { alias: 'Player_' + p.id, rating: 1000 + (p.id % 1000), totalGames: 0, totalWins: 0, winRate: "0.0" };
+                        const cached = profileCache.get(p.id) || { alias: 'Player_' + p.id, rating: null, totalGames: 0, totalWins: 0, winRate: "0.0" };
                         
                         let finalElo = cached.rating;
                         let finalTotalGames = cached.totalGames || 0;
@@ -423,14 +439,33 @@ const server = http.createServer(async (req, res) => {
                     let sm = scrapedMatchesStats[hostName];
 
                     if ((!sm || hostName === "unknown" || hostName === "player_0" || hostName === "") && m.description) {
-                        const mTitleLower = m.description.toLowerCase();
+                        const mTitleLower = m.description.toLowerCase().replace(/\s+/g, '');
                         if (scrapedMatchesByTitle[mTitleLower]) {
                             sm = scrapedMatchesByTitle[mTitleLower];
                             hostName = sm.realHost;
                             if (parsedPlayers.length > 0 && (parsedPlayers[0].name === "Unknown" || parsedPlayers[0].name.startsWith("Player_")) && hostName) {
                                 parsedPlayers[0].name = hostName;
+                                const scrapedPlayer = scrapedPlayersStats[hostName.toLowerCase()];
+                                if (scrapedPlayer) {
+                                    if (scrapedPlayer.elo !== undefined && scrapedPlayer.elo !== "") parsedPlayers[0].elo = scrapedPlayer.elo;
+                                    if (scrapedPlayer.totalGames !== undefined && scrapedPlayer.totalGames !== "") parsedPlayers[0].totalGames = scrapedPlayer.totalGames;
+                                    else if (scrapedPlayer.games !== undefined && scrapedPlayer.games !== "") parsedPlayers[0].totalGames = scrapedPlayer.games;
+                                    if (scrapedPlayer.totalWins !== undefined && scrapedPlayer.totalWins !== "") parsedPlayers[0].totalWins = scrapedPlayer.totalWins;
+                                    else if (scrapedPlayer.wins !== undefined && scrapedPlayer.wins !== "") parsedPlayers[0].totalWins = scrapedPlayer.wins;
+                                    if (scrapedPlayer.winRate !== undefined && scrapedPlayer.winRate !== "") parsedPlayers[0].winRate = scrapedPlayer.winRate;
+                                }
                             } else if (parsedPlayers.length === 0 && hostName) {
-                                parsedPlayers.push({ id: 0, name: hostName, team: 0, elo: 1000, totalGames: 0, totalWins: 0, winRate: "0.0" });
+                                let fallbackP = { id: 0, name: hostName, team: 0, elo: 1000, totalGames: 0, totalWins: 0, winRate: "0.0" };
+                                const scrapedPlayer = scrapedPlayersStats[hostName.toLowerCase()];
+                                if (scrapedPlayer) {
+                                    if (scrapedPlayer.elo !== undefined && scrapedPlayer.elo !== "") fallbackP.elo = scrapedPlayer.elo;
+                                    if (scrapedPlayer.totalGames !== undefined && scrapedPlayer.totalGames !== "") fallbackP.totalGames = scrapedPlayer.totalGames;
+                                    else if (scrapedPlayer.games !== undefined && scrapedPlayer.games !== "") fallbackP.totalGames = scrapedPlayer.games;
+                                    if (scrapedPlayer.totalWins !== undefined && scrapedPlayer.totalWins !== "") fallbackP.totalWins = scrapedPlayer.totalWins;
+                                    else if (scrapedPlayer.wins !== undefined && scrapedPlayer.wins !== "") fallbackP.totalWins = scrapedPlayer.wins;
+                                    if (scrapedPlayer.winRate !== undefined && scrapedPlayer.winRate !== "") fallbackP.winRate = scrapedPlayer.winRate;
+                                }
+                                parsedPlayers.push(fallbackP);
                             }
                         }
                     }
@@ -484,6 +519,37 @@ const server = http.createServer(async (req, res) => {
                         }
                     }
 
+                    let targetMode = "0"; // Unranked fallback
+                    if (matchType === "Random Map" && finalMapName !== "Custom Scenario" && !finalMapName.toLowerCase().includes("cba")) {
+                        targetMode = (m.maxplayers === 2) ? "3" : "4";
+                    } else if (matchType === "Empire Wars") {
+                        targetMode = (m.maxplayers === 2) ? "13" : "14";
+                    }
+
+                    parsedPlayers.forEach(p => {
+                        const scrapedPlayer = scrapedPlayersStats[p.name.toLowerCase()];
+                        if (scrapedPlayer && scrapedPlayer.stats) {
+                            let bestStat = scrapedPlayer.stats[targetMode];
+                            if (!bestStat) {
+                                // Fallback to the mode with the most games if the target mode is missing
+                                let maxGames = -1;
+                                for (const modeKey in scrapedPlayer.stats) {
+                                    if (scrapedPlayer.stats[modeKey].games > maxGames) {
+                                        maxGames = scrapedPlayer.stats[modeKey].games;
+                                        bestStat = scrapedPlayer.stats[modeKey];
+                                    }
+                                }
+                            }
+                            if (bestStat) {
+                                p.elo = bestStat.rating || p.elo;
+                                p.totalGames = bestStat.games !== undefined ? bestStat.games : p.totalGames;
+                                p.totalWins = bestStat.wins !== undefined ? bestStat.wins : p.totalWins;
+                                p.winRate = bestStat.winp !== undefined ? bestStat.winp + "%" : p.winRate;
+                            }
+                            p.allStats = scrapedPlayer.stats;
+                        }
+                    });
+
                     return {
                         id: m.id,
                         steamLobbyId: m.steamlobbyid,
@@ -505,7 +571,7 @@ const server = http.createServer(async (req, res) => {
                 let scrapedLobbiesObj = {};
                 try {
                     const fs = require('fs');
-                    const scrapedLobbiesPath = 'C:\\Users\\pranj\\.gemini\\antigravity\\scratch\\aoe2lobby-clone\\scraped_lobbies.json';
+                    const scrapedLobbiesPath = path.join(__dirname, 'scraped_lobbies_v2.json');
                     if (fs.existsSync(scrapedLobbiesPath)) {
                         scrapedLobbiesObj = JSON.parse(fs.readFileSync(scrapedLobbiesPath, 'utf-8'));
                     }
@@ -567,13 +633,62 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(fallback);
     } else {
-        res.writeHead(404);
-        res.end('Not found');
+        // Serve static files
+        let filePath = req.url === '/' ? '/index.html' : req.url;
+        // Strip query params for file matching
+        filePath = filePath.split('?')[0];
+        
+        const extname = String(path.extname(filePath)).toLowerCase();
+        const mimeTypes = {
+            '.html': 'text/html',
+            '.js': 'text/javascript',
+            '.css': 'text/css',
+            '.json': 'application/json',
+            '.png': 'image/png',
+            '.jpg': 'image/jpg',
+            '.gif': 'image/gif',
+            '.svg': 'image/svg+xml',
+            '.wav': 'audio/wav',
+            '.mp4': 'video/mp4',
+            '.woff': 'application/font-woff',
+            '.ttf': 'application/font-ttf',
+            '.eot': 'application/vnd.ms-fontobject',
+            '.otf': 'application/font-otf',
+            '.wasm': 'application/wasm'
+        };
+
+        const contentType = mimeTypes[extname] || 'application/octet-stream';
+        
+        // Only serve the public frontend assets (never source, logs or scraped dumps)
+        if (!PUBLIC_FILES.has(filePath)) {
+            res.writeHead(404);
+            res.end('File not found');
+            return;
+        }
+
+        // Prevent directory traversal
+        const safePath = path.normalize(filePath).replace(/^(\.\.(\/|\\|$))+/, '');
+        const absolutePath = path.join(__dirname, safePath);
+
+        fs.readFile(absolutePath, (error, content) => {
+            if (error) {
+                if (error.code === 'ENOENT') {
+                    res.writeHead(404);
+                    res.end('File not found');
+                } else {
+                    res.writeHead(500);
+                    res.end('Server error: ' + error.code);
+                }
+            } else {
+                res.writeHead(200, { 'Content-Type': contentType });
+                res.end(content, 'utf-8');
+            }
+        });
     }
 });
 
-server.listen(3001, () => {
-    console.log(`API Server listening on port 3001`);
+server.listen(API_PORT, HOST, () => {
+    console.log(`API Server listening on ${HOST}:${API_PORT}`);
 });
 
 // Heartbeat to prevent task from being killed

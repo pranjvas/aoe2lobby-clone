@@ -3,3 +3,4 @@ node_modules/
 scraped_lobbies.json
 scraped_lobbies_relic.json
 *.log
+cloudflared.exe

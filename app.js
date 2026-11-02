@@ -9,7 +9,8 @@ const defaultState = {
     mod: 'all',
     currentView: 'lobbies',
     playerSort: 'elo-desc',
-    playerSearch: ''
+    playerSearch: '',
+    eloType: 'auto'
 };
 const storedState = JSON.parse(localStorage.getItem('aoe2State')) || {};
 const state = { ...defaultState, ...storedState };
@@ -25,6 +26,7 @@ const mapFilter = document.getElementById('mapFilter');
 const eloFilter = document.getElementById('eloFilter');
 const statusFilter = document.getElementById('statusFilter');
 const modFilter = document.getElementById('modFilter');
+const eloTypeFilter = document.getElementById('eloTypeFilter');
 
 // New UI Elements
 const viewLobbiesBtn = document.getElementById('viewLobbiesBtn');
@@ -37,6 +39,7 @@ const viewTitleText = document.getElementById('viewTitleText');
 
 // Initialize
 let pollTimer;
+let isInitialLoad = true;
 
 function init() {
     setupEventListeners();
@@ -48,9 +51,18 @@ function init() {
     if(eloFilter) eloFilter.value = state.minElo;
     if(statusFilter) statusFilter.value = state.status;
     if(modFilter) modFilter.value = state.mod;
+    if(eloTypeFilter) eloTypeFilter.value = state.eloType;
     if(playerSort) playerSort.value = state.playerSort;
     if(playerSearch) playerSearch.value = state.playerSearch;
 
+    if(state.layout === 'list') {
+        const layoutListBtn = document.getElementById('layoutListBtn');
+        if (layoutListBtn) layoutListBtn.click();
+    } else {
+        const layoutGridBtn = document.getElementById('layoutGridBtn');
+        if (layoutGridBtn) layoutGridBtn.click();
+    }
+    
     if(state.currentView === 'players') {
         viewPlayersBtn.click();
     } else {
@@ -96,13 +108,46 @@ function parseRelicLobby(match) {
     
     let playersHtml = '';
     if (match.players && match.players.length > 0) {
+        // First mutate the players based on eloType
+        match.players.forEach(p => {
+            if (state.eloType !== 'auto' && p.allStats && p.allStats[state.eloType]) {
+                const stat = p.allStats[state.eloType];
+                p.displayElo = stat.rating;
+                p.displayGames = stat.games;
+                p.displayWR = stat.winp + '%';
+            } else if (state.eloType !== 'auto') {
+                p.displayElo = null;
+                p.displayGames = 0;
+                p.displayWR = '0%';
+            } else {
+                p.displayElo = p.elo;
+                p.displayGames = p.totalGames;
+                p.displayWR = p.winRate;
+            }
+        });
+
         match.players.sort((a,b) => a.team - b.team);
-        playersHtml = match.players.map(p => `
-            <div class="player-item">
-                <span class="player-name">T${p.team} - ${p.name} <span class="player-stats">(${p.totalGames} Games, ${p.winRate ? (String(p.winRate).endsWith('%') ? p.winRate : p.winRate + '%') : 'N/A'} WR)</span></span>
-                <span class="player-elo">${p.elo}</span>
+        playersHtml = match.players.map(p => {
+            let statsHtml = `${p.displayGames} Games, ${p.displayWR ? (String(p.displayWR).endsWith('%') ? p.displayWR : p.displayWR + '%') : 'N/A'} WR`;
+            
+            // If we have literally 0 games and 0 winrate (meaning not yet fully scraped or new account)
+            if (p.displayGames === 0 && (!p.displayWR || p.displayWR === '0%' || p.displayWR === '0.0%')) {
+                statsHtml = `<div class="spinner-inline" title="Loading player stats..."></div>`;
+            }
+
+            return `
+            <div class="player-item" style="display: flex; align-items: center; justify-content: space-between;">
+                <span class="player-name" style="display: flex; align-items: center; gap: 6px;">
+                    T${p.team} - ${p.name}
+                    <button onclick="copyPlayerHandle(event, this, '${p.name.replace(/'/g, "\\'")}')" style="background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 0; display: flex; align-items: center;" title="Copy Handle">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                    </button>
+                    <span class="player-stats">${statsHtml}</span>
+                </span>
+                <span class="player-elo">${p.displayElo !== null ? p.displayElo : 'Unranked'}</span>
             </div>
-        `).join('');
+            `;
+        }).join('');
     } else {
         playersHtml = `<div class="player-item">No player data available.</div>`;
     }
@@ -111,7 +156,7 @@ function parseRelicLobby(match) {
         id: match.id,
         steamLobbyId: match.steamLobbyId,
         host: match.players && match.players.length > 0 ? match.players[0].name : `Unknown`,
-        elo: match.players && match.players.length > 0 ? match.players[0].elo : null,
+        elo: match.players && match.players.length > 0 ? match.players[0].displayElo : null,
         title: title,
         map: map,
         mapIcon: mapIcon,
@@ -127,20 +172,52 @@ function parseRelicLobby(match) {
         ping: Math.floor(Math.random() * 50) + 20,
         playersHtml: playersHtml,
         isPlaying: match.isPlaying,
+        lastSeen: match.lastSeen,
         rawPlayers: match.players || []
     };
 }
 
 async function fetchRealLobbies() {
     try {
-        const response = await fetch('http://localhost:3001/api/lobbies?t=' + Date.now());
+        const response = await fetch('/api/lobbies?t=' + Date.now());
         const data = await response.json();
         
         let hasUnknownMap = false;
 
         if (data && data.matches) {
+            state.rawMatches = data.matches;
             lobbies = data.matches.map(parseRelicLobby);
+            
+            // Dynamically populate Mod Filter
+            const modFilter = document.getElementById('modFilter');
+            if (modFilter) {
+                const currentModSelection = modFilter.value;
+                const uniqueMods = [...new Set(lobbies.map(l => l.modInfo).filter(m => m && m !== 'No Mods'))].sort();
+                
+                modFilter.innerHTML = `
+                    <option value="all">All Mods</option>
+                    <option value="No Mods">No Mods</option>
+                    <option value="Mods Enabled">Any Mods Enabled</option>
+                `;
+                uniqueMods.forEach(mod => {
+                    const opt = document.createElement('option');
+                    opt.value = mod;
+                    opt.textContent = mod;
+                    modFilter.appendChild(opt);
+                });
+                
+                if (uniqueMods.includes(currentModSelection) || ['all', 'No Mods', 'Mods Enabled'].includes(currentModSelection)) {
+                    modFilter.value = currentModSelection;
+                } else {
+                    modFilter.value = 'all';
+                    state.mod = 'all';
+                }
+            }
+
             hasUnknownMap = lobbies.some(lobby => lobby.map === "Unknown Map");
+            if (isInitialLoad) {
+                isInitialLoad = false;
+            }
             applyFiltersAndRender();
         }
         
@@ -182,6 +259,17 @@ function setupEventListeners() {
         state.mod = e.target.value;
         applyFiltersAndRender();
     });
+    if (eloTypeFilter) {
+        eloTypeFilter.addEventListener('change', (e) => {
+            state.eloType = e.target.value;
+            // We need to re-parse all lobbies so the UI updates
+            lobbies = lobbies.map(l => {
+                const rawMatch = state.rawMatches.find(rm => rm.id === l.id);
+                return rawMatch ? parseRelicLobby(rawMatch) : l;
+            });
+            applyFiltersAndRender();
+        });
+    }
 
     // View Toggles
     viewLobbiesBtn.addEventListener('click', () => {
@@ -191,9 +279,9 @@ function setupEventListeners() {
         viewLobbiesBtn.style.color = 'white';
         viewPlayersBtn.style.background = 'transparent';
         viewPlayersBtn.style.border = '1px solid transparent';
-        viewPlayersBtn.style.color = '#8a9bb2';
+        viewPlayersBtn.style.color = 'var(--text-secondary)';
         
-        lobbyGrid.style.display = 'grid';
+        lobbyGrid.style.display = state.layout === 'list' ? 'flex' : 'grid';
         playerGrid.style.display = 'none';
         lobbyFilters.style.display = 'flex';
         playerFilters.style.display = 'none';
@@ -209,14 +297,54 @@ function setupEventListeners() {
         viewPlayersBtn.style.color = 'white';
         viewLobbiesBtn.style.background = 'transparent';
         viewLobbiesBtn.style.border = '1px solid transparent';
-        viewLobbiesBtn.style.color = '#8a9bb2';
+        viewLobbiesBtn.style.color = 'var(--text-secondary)';
         
         lobbyGrid.style.display = 'none';
-        playerGrid.style.display = 'grid';
+        playerGrid.style.display = state.layout === 'list' ? 'flex' : 'grid';
         lobbyFilters.style.display = 'none';
         playerFilters.style.display = 'flex';
         viewTitleText.textContent = 'Players';
         countLabel.textContent = 'players';
+        applyFiltersAndRender();
+    });
+
+    // Layout Toggles
+    const layoutGridBtn = document.getElementById('layoutGridBtn');
+    const layoutListBtn = document.getElementById('layoutListBtn');
+
+    layoutGridBtn.addEventListener('click', () => {
+        state.layout = 'grid';
+        layoutGridBtn.style.background = 'rgba(88, 101, 242, 0.2)';
+        layoutGridBtn.style.border = '1px solid var(--accent)';
+        layoutGridBtn.style.color = 'white';
+        layoutListBtn.style.background = 'transparent';
+        layoutListBtn.style.border = '1px solid transparent';
+        layoutListBtn.style.color = 'var(--text-secondary)';
+        lobbyGrid.classList.remove('list-layout');
+        playerGrid.classList.remove('list-layout');
+        if (state.currentView === 'lobbies') {
+            lobbyGrid.style.display = 'grid';
+        } else {
+            playerGrid.style.display = 'grid';
+        }
+        applyFiltersAndRender();
+    });
+
+    layoutListBtn.addEventListener('click', () => {
+        state.layout = 'list';
+        layoutListBtn.style.background = 'rgba(88, 101, 242, 0.2)';
+        layoutListBtn.style.border = '1px solid var(--accent)';
+        layoutListBtn.style.color = 'white';
+        layoutGridBtn.style.background = 'transparent';
+        layoutGridBtn.style.border = '1px solid transparent';
+        layoutGridBtn.style.color = 'var(--text-secondary)';
+        lobbyGrid.classList.add('list-layout');
+        playerGrid.classList.add('list-layout');
+        if (state.currentView === 'lobbies') {
+            lobbyGrid.style.display = 'flex';
+        } else {
+            playerGrid.style.display = 'flex';
+        }
         applyFiltersAndRender();
     });
 
@@ -238,7 +366,8 @@ function filterLobbies() {
         const matchesStatus = state.status === 'all' || 
             (state.status === 'open' && !lobby.isPlaying) || 
             (state.status === 'playing' && lobby.isPlaying);
-        const matchesMod = state.mod === 'all' || lobby.modInfo === state.mod;
+        const matchesMod = state.mod === 'all' || 
+            (state.mod === 'Mods Enabled' ? lobby.modInfo !== 'No Mods' : lobby.modInfo === state.mod);
         const matchesElo = state.minElo === 0 || (lobby.elo && parseInt(lobby.elo) >= state.minElo);
         return matchesSearch && matchesType && matchesMap && matchesStatus && matchesMod && matchesElo;
     });
@@ -277,7 +406,9 @@ function aggregatePlayers() {
                         population: lobby.population || '200',
                         speed: lobby.speed || 'Normal',
                         modInfo: lobby.modInfo || 'No Mods',
-                        server: lobby.server || 'Global'
+                        server: lobby.server || 'Global',
+                        lastSeen: lobby.lastSeen || 0,
+                        playersHtml: lobby.playersHtml
                     });
                 }
             });
@@ -294,10 +425,11 @@ function aggregatePlayers() {
     
     // Sorting logic
     allPlayers.sort((a, b) => {
-        if (state.playerSort === 'elo-desc') return (parseInt(b.elo) || 0) - (parseInt(a.elo) || 0);
-        if (state.playerSort === 'elo-asc') return (parseInt(a.elo) || 0) - (parseInt(b.elo) || 0);
-        if (state.playerSort === 'wr-desc') return (parseFloat(b.winRate) || 0) - (parseFloat(a.winRate) || 0);
-        if (state.playerSort === 'games-desc') return (parseInt(b.totalGames) || 0) - (parseInt(a.totalGames) || 0);
+        if (state.playerSort === 'elo-desc') return (parseInt(b.displayElo) || 0) - (parseInt(a.displayElo) || 0);
+        if (state.playerSort === 'elo-asc') return (parseInt(a.displayElo) || 0) - (parseInt(b.displayElo) || 0);
+        if (state.playerSort === 'active-desc') return (b.lastSeen || 0) - (a.lastSeen || 0);
+        if (state.playerSort === 'wr-desc') return (parseFloat(b.displayWR) || 0) - (parseFloat(a.displayWR) || 0);
+        if (state.playerSort === 'games-desc') return (parseInt(b.displayGames) || 0) - (parseInt(a.displayGames) || 0);
         return 0;
     });
     
@@ -306,6 +438,17 @@ function aggregatePlayers() {
 
 function renderPlayers(players) {
     let emptyState = document.getElementById('emptyStatePlayers');
+    
+    if (isInitialLoad) {
+        playerGrid.innerHTML = `
+            <div class="loader-container">
+                <div class="spinner"></div>
+                <p>Loading Players...</p>
+            </div>
+        `;
+        return;
+    }
+
     if(players.length === 0) {
         if(!emptyState) {
             emptyState = document.createElement('div');
@@ -330,12 +473,12 @@ function renderPlayers(players) {
                 <div class="host-info">
                     <div class="host-name" style="display: flex; align-items: center; gap: 8px;">
                         ${p.name}
-                        <button onclick="copyPlayerHandle(this, '${p.name.replace(/'/g, "\\'")}')" style="background: none; border: none; cursor: pointer; color: #8a9bb2; padding: 0; display: flex;" title="Copy Handle">
+                        <button onclick="copyPlayerHandle(event, this, '${p.name.replace(/'/g, "\\'")}')" style="background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 0; display: flex;" title="Copy Handle">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                         </button>
-                        ${p.elo ? `<span class="elo-badge">${p.elo}</span>` : ''}
+                        ${p.displayElo !== null ? `<span class="elo-badge">${p.displayElo}</span>` : '<span class="elo-badge" style="background: rgba(138, 155, 178, 0.2); color: var(--text-secondary); border-color: transparent;">Unranked</span>'}
                     </div>
-                    <div class="game-title" style="font-size: 0.8em; color: #8a9bb2;">In lobby: ${p.lobbyTitle}</div>
+                    <div class="game-title" style="font-size: 0.8em; color: var(--text-secondary);">In lobby: ${p.lobbyTitle}</div>
                 </div>
             </div>
             
@@ -343,11 +486,11 @@ function renderPlayers(players) {
                 <div class="game-details">
                     <div class="detail-row">
                         <span class="detail-icon">&#x1F3C6;</span>
-                        Win Rate: ${p.winRate ? (p.winRate.endsWith('%') ? p.winRate : p.winRate + '%') : 'N/A'}
+                        Win Rate: ${p.displayWR ? (String(p.displayWR).endsWith('%') ? p.displayWR : p.displayWR + '%') : 'N/A'}
                     </div>
                     <div class="detail-row">
                         <span class="detail-icon">&#x1F4CA;</span>
-                        Total Games: ${p.totalGames || '0'}
+                        Total Games: ${p.displayGames || '0'}
                     </div>
                     <div class="detail-row">
                         <span class="detail-icon">&#x1F5FA;</span>
@@ -365,16 +508,39 @@ function renderPlayers(players) {
                 </div>
             </div>
             
-            <div class="card-footer">
-                <a href="aoe2de://0/${p.lobbyId}" class="btn-join" style="width: 100%;">Join Lobby</a>
+            <div class="player-list">
+                ${p.playersHtml}
             </div>
+            
+            ${p.isPlaying ? '' : `
+            <div class="card-footer">
+                <a href="aoe2de://0/${p.lobbyId}" class="btn-join" style="margin-left: auto;">Join Lobby</a>
+            </div>
+            `}
         `;
+        
+        div.onclick = (e) => {
+            if(e.target.tagName === 'BUTTON' || e.target.tagName === 'A' || e.target.closest('button')) return;
+            div.classList.toggle('expanded');
+        };
+        
         playerGrid.appendChild(div);
     });
 }
 
 function renderLobbies(filteredLobbies) {
     let emptyState = document.getElementById('emptyState');
+    
+    if (isInitialLoad) {
+        lobbyGrid.innerHTML = `
+            <div class="loader-container">
+                <div class="spinner"></div>
+                <p>Fetching Lobbies...</p>
+            </div>
+        `;
+        return;
+    }
+
     if(filteredLobbies.length === 0) {
         if(!emptyState) {
             emptyState = document.createElement('div');
@@ -468,12 +634,10 @@ function renderLobbies(filteredLobbies) {
                     </div>
                     <div class="game-details">
                         <div class="detail-row">
-                            <span class="detail-icon">&#x2694;</span>
-                            ${lobby.type}
+                            <span class="detail-icon" style="opacity: 0.7;">⚔️</span> <span style="font-weight: 500;">${lobby.type}</span>
                         </div>
                         <div class="detail-row">
-                            <span class="detail-icon">&#x1F5FA;</span>
-                            ${lobby.map}
+                            <span class="detail-icon" style="opacity: 0.7;">🗺️</span> <span style="font-weight: 500;">${lobby.map}</span>
                         </div>
                         <div class="tags-row">
                             <span class="badge match-type-badge">${lobby.matchType}</span>
@@ -507,7 +671,8 @@ function renderLobbies(filteredLobbies) {
 
 document.addEventListener('DOMContentLoaded', init);
 
-window.copyPlayerHandle = function(btn, handle) {
+window.copyPlayerHandle = function(e, btn, handle) {
+    if (e) e.stopPropagation();
     navigator.clipboard.writeText(handle).then(() => {
         const originalIcon = btn.innerHTML;
         btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2ea043" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
@@ -515,4 +680,33 @@ window.copyPlayerHandle = function(btn, handle) {
             btn.innerHTML = originalIcon;
         }, 1000);
     });
+};
+
+window.viewLobby = function(id) {
+    document.getElementById('viewLobbiesBtn').click();
+    state.search = '';
+    document.getElementById('searchInput').value = '';
+    applyFiltersAndRender();
+    setTimeout(() => {
+        const card = document.getElementById('lobby-' + id);
+        if (card) {
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            if (!card.classList.contains('expanded')) card.classList.add('expanded');
+            
+            const originalShadow = card.style.boxShadow;
+            card.style.boxShadow = '0 0 30px rgba(212, 175, 55, 0.8)';
+            card.style.transition = 'box-shadow 0.3s ease-out';
+            setTimeout(() => {
+                card.style.boxShadow = originalShadow;
+            }, 1500);
+        }
+    }, 100);
+};
+
+window.togglePlayerCard = function(e, btn) {
+    if (e) e.stopPropagation();
+    const card = btn.closest('.lobby-card');
+    if (card) {
+        card.classList.toggle('expanded');
+    }
 };
