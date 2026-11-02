@@ -137,7 +137,8 @@ async function dumpData() {
             title: lobby.description || "",
             map: lobby.map_name || "Unknown Map",
             isPlaying: lobby.open_slots === false,
-            slotsTotal: lobby.slots_total,
+            slotsTotal: lobby.slots_total, // slots a player can take (open + taken); closed and AI slots excluded
+            aiSlots: Object.values(lobby.slots || {}).filter(slot => slot.status === 2).length,
             players: players,
             settings: {
                 Mode: label('mode', lobby.mode),

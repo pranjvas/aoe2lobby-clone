@@ -204,7 +204,8 @@ function parseRelicLobby(match) {
     let treaty = parseInt(match.treaty) || 0;
 
     let currentPlayers = match.players ? match.players.length : 1;
-    let maxPlayers = match.maxPlayers || 8;
+    let maxPlayers = match.maxPlayers || 8; // joinable slots; closed and AI slots aren't counted
+    let aiSlots = match.aiSlots || 0;
     
     let playersHtml = '';
     if (match.players && match.players.length > 0) {
@@ -273,6 +274,7 @@ function parseRelicLobby(match) {
         server: match.server || null, 
         currentPlayers: currentPlayers,
         maxPlayers: maxPlayers,
+        aiSlots: aiSlots,
         ping: Math.floor(Math.random() * 50) + 20,
         playersHtml: playersHtml,
         isPlaying: match.isPlaying,
@@ -689,6 +691,11 @@ function renderSettingBadges(lobby) {
     return html;
 }
 
+function playerCountText(lobby) {
+    return `&#x1F464; ${lobby.currentPlayers}/${lobby.maxPlayers}` +
+        (lobby.aiSlots ? ` <span class="ai-count" title="Slots filled by AI">· ${lobby.aiSlots} AI</span>` : '');
+}
+
 function lobbyCardHtml(lobby) {
     const fillPercentage = (lobby.currentPlayers / lobby.maxPlayers) * 100;
     const joinLink = (!lobby.isPlaying) 
@@ -740,7 +747,7 @@ function lobbyCardHtml(lobby) {
         
         <div class="card-footer">
             <div class="players-count">
-                <span class="players-count-text">&#x1F464; ${lobby.currentPlayers}/${lobby.maxPlayers}</span>
+                <span class="players-count-text">${playerCountText(lobby)}</span>
                 <div class="fill-bar">
                     <div class="fill-progress" style="width: ${fillPercentage}%"></div>
                 </div>
@@ -811,7 +818,7 @@ function renderLobbies(filteredLobbies) {
             const sBadge = node.querySelector('.server-badge');
             
             if(countText && progress) {
-                countText.innerHTML = `&#x1F464; ${lobby.currentPlayers}/${lobby.maxPlayers}`;
+                countText.innerHTML = playerCountText(lobby);
                 progress.style.width = `${fillPercentage}%`;
             }
             if(pList && pList.innerHTML !== lobby.playersHtml) {

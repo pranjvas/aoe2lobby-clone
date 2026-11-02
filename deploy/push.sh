@@ -7,7 +7,7 @@ set -euo pipefail
 SERVER=${SERVER:-root@85.190.254.97}
 KEY=${KEY:-$HOME/.ssh/aoe2lobby_vps}
 
-git archive --format=tar HEAD | ssh -i "$KEY" "$SERVER" '
+git archive --format=tar HEAD | ssh -i "$KEY" -o ServerAliveInterval=15 -o ServerAliveCountMax=8 "$SERVER" '
   set -e
   rm -rf /root/aoe2lobby && mkdir -p /root/aoe2lobby && tar -x -C /root/aoe2lobby
   rsync -a /root/aoe2lobby/ /opt/aoe2lobby/

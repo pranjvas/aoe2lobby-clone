@@ -988,3 +988,8 @@ input.filter-active {
     justify-content: center;
     padding: 1rem 0;
 }
+
+.ai-count {
+    color: var(--text-secondary);
+    font-size: 0.85em;
+}
