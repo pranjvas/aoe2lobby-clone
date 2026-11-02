@@ -3,9 +3,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AoE2Lobby - Live Age of Empires II Lobbies</title>
-    <meta name="description" content="A beautiful and modern live lobby browser for Age of Empires II.">
-    <link rel="icon" type="image/png" href="favicon.png">
+    <title>AoE2 Lobby Browser – Live Age of Empires II: DE Lobbies</title>
+    <meta name="description" content="Live Age of Empires II: DE lobbies with every player's ELO. Filter by map, mods, treaty, starting age and resources, then join in one click.">
+    <link rel="canonical" href="https://aoe2lobby.online/">
+    <meta name="robots" content="index, follow, max-image-preview:large">
+    <meta name="theme-color" content="#0d1117">
+
+    <!-- Icons -->
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+    <link rel="manifest" href="site.webmanifest">
+
+    <!-- Link previews (Discord, Steam, Reddit, X) -->
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="AoE2Lobby.online">
+    <meta property="og:title" content="AoE2 Lobby Browser – Live Age of Empires II: DE Lobbies">
+    <meta property="og:description" content="Live AoE2: DE lobbies with ELO, treaty, starting age, resources and mod filters. Join in one click.">
+    <meta property="og:url" content="https://aoe2lobby.online/">
+    <meta property="og:image" content="https://aoe2lobby.online/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="AoE2Lobby.online – live Age of Empires II lobby browser">
+    <meta name="twitter:card" content="summary_large_image">
+
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@graph": [
+            {
+                "@type": "WebSite",
+                "@id": "https://aoe2lobby.online/#website",
+                "url": "https://aoe2lobby.online/",
+                "name": "AoE2Lobby.online",
+                "alternateName": "AoE2 Lobby Browser",
+                "description": "Live lobby browser for Age of Empires II: Definitive Edition."
+            },
+            {
+                "@type": "WebApplication",
+                "name": "AoE2 Lobby Browser",
+                "url": "https://aoe2lobby.online/",
+                "applicationCategory": "GameApplication",
+                "operatingSystem": "Any (web browser)",
+                "browserRequirements": "Requires JavaScript",
+                "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+                "about": { "@type": "VideoGame", "name": "Age of Empires II: Definitive Edition" },
+                "featureList": "Live lobby list, player ELO and win rate, filters for map, ELO, mods, treaty length, starting age and starting resources, one-click join"
+            }
+        ]
+    }
+    </script>
     
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -13,7 +59,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     
     <!-- Styles -->
-    <link rel="stylesheet" href="./styles.css?v=11">
+    <link rel="stylesheet" href="./styles.css?v=12">
 </head>
 <body>
     <!-- Background Elements -->
@@ -26,7 +72,7 @@
         <header class="navbar">
             <div class="nav-logo">
                 <span class="logo-icon">🛡️</span>
-                <h1>AoE2<span>Lobby</span></h1>
+                <h1>AoE2<span>Lobby</span> <small class="nav-tagline">Live Age of Empires II lobby browser</small></h1>
             </div>
 
         </header>
@@ -183,6 +229,38 @@
             <!-- Player Grid -->
             <section class="lobby-grid" id="playerGrid" style="display: none;">
                 <!-- Players will be injected here by app.js -->
+            </section>
+
+            <noscript>
+                <p class="about-section glass-panel">This live lobby list needs JavaScript. Turn it on to see open Age of Empires II: DE lobbies.</p>
+            </noscript>
+
+            <!-- About + FAQ: plain text so search engines and new visitors know what the page does -->
+            <section class="about-section glass-panel" id="about">
+                <h2>Find Age of Empires II: DE lobbies faster</h2>
+                <p>AoE2Lobby.online lists every open Age of Empires II: Definitive Edition multiplayer lobby as it happens, with each player's ELO, games played and win rate. Filter by game mode, map, minimum ELO, mods, treaty length, starting age and starting resources to skip the games you don't want, like Dark Age starts or low-resource lobbies, then join straight from your browser.</p>
+
+                <h2>Frequently asked questions</h2>
+                <details>
+                    <summary>How do I join a lobby?</summary>
+                    <p>Press <strong>Join Game</strong> on a lobby card. Your browser opens Age of Empires II: DE and joins that lobby; the game needs to be installed and you need to be signed in. Games that have already started show <strong>In Progress</strong> instead.</p>
+                </details>
+                <details>
+                    <summary>Which ELO is shown for each player?</summary>
+                    <p>By default the Unranked rating is shown, the same default aoe2lobby.com uses. Use <strong>Elo Type</strong> to switch to Random Map 1v1, Random Map Team, Empire Wars 1v1 or Empire Wars Team, or to Auto, which picks the ladder that matches the lobby.</p>
+                </details>
+                <details>
+                    <summary>Can I hide Dark Age or low-resource lobbies?</summary>
+                    <p>Yes. Set <strong>Start Age</strong> to "Feudal or later" and <strong>Resources</strong> to "Medium or more". Treaty length, starting age and resources are also shown on every lobby card.</p>
+                </details>
+                <details>
+                    <summary>How often is the list updated?</summary>
+                    <p>Lobbies and player ratings refresh automatically every few seconds. You don't need to reload the page.</p>
+                </details>
+                <details>
+                    <summary>Where does the data come from?</summary>
+                    <p>Lobby data comes from the game's public lobby service and player ratings from aoe2lobby.com. AoE2Lobby.online is a fan-made site and isn't affiliated with Microsoft, Xbox Game Studios, World's Edge or Forgotten Empires.</p>
+                </details>
             </section>
         </main>
     </div>

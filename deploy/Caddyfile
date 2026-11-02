@@ -1,4 +1,14 @@
-aoe2lobby.online, www.aoe2lobby.online {
+aoe2lobby.online {
 	encode gzip zstd
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
 	reverse_proxy 127.0.0.1:3002
+}
+
+# One canonical site for search engines: www permanently redirects to the bare domain
+www.aoe2lobby.online {
+	redir https://aoe2lobby.online{uri} permanent
 }

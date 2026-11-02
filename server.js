@@ -9,7 +9,16 @@ process.on('unhandledRejection', (err) => { console.error('Unhandled Rejection:'
 
 const API_PORT = process.env.API_PORT || 3002;
 const HOST = process.env.HOST || '0.0.0.0';
-const PUBLIC_FILES = new Set(['/index.html', '/app.js', '/styles.css', '/favicon.png', '/favicon.ico']);
+const PUBLIC_FILES = new Set([
+    '/index.html', '/app.js', '/styles.css', '/favicon.png',
+    '/favicon-32.png', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/og-image.png', '/site.webmanifest',
+    '/robots.txt', '/sitemap.xml',
+    '/7e7c007e5148f7d5a2953120e8410d70.txt' // IndexNow key (lets Bing/Yandex accept our URL submissions)
+]);
+const FILE_ALIASES = { '/favicon.ico': '/favicon-32.png' };
+// Every visitor polls /api/lobbies; build it at most once per LOBBIES_CACHE_MS and share the result
+const LOBBIES_CACHE_MS = 4000;
+let lobbiesCache = { at: 0, body: null };
 const profileCache = new Map(); // Cache profile_id -> { alias, rating }
 const activeMatches = new Map(); // Keep track of matches to simulate "Playing" state
 
@@ -171,6 +180,11 @@ const server = http.createServer(async (req, res) => {
 
 
     if (req.url.startsWith('/api/lobbies')) {
+        if (lobbiesCache.body && Date.now() - lobbiesCache.at < LOBBIES_CACHE_MS) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(lobbiesCache.body);
+            return;
+        }
         try {
             let allMatches = [];
             
@@ -643,6 +657,7 @@ const server = http.createServer(async (req, res) => {
                 }
 
                 const responseData = JSON.stringify({ matches: allMatchesArray });
+                lobbiesCache = { at: Date.now(), body: responseData };
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(responseData);
                 return;
@@ -659,11 +674,16 @@ const server = http.createServer(async (req, res) => {
         // Serve static files
         let filePath = req.url === '/' ? '/index.html' : req.url;
         // Strip query params for file matching
+        const isVersioned = /[?&]v=/.test(filePath);
         filePath = filePath.split('?')[0];
+        filePath = FILE_ALIASES[filePath] || filePath;
         
         const extname = String(path.extname(filePath)).toLowerCase();
         const mimeTypes = {
-            '.html': 'text/html',
+            '.html': 'text/html; charset=utf-8',
+            '.txt': 'text/plain; charset=utf-8',
+            '.xml': 'application/xml; charset=utf-8',
+            '.webmanifest': 'application/manifest+json',
             '.js': 'text/javascript',
             '.css': 'text/css',
             '.json': 'application/json',
@@ -703,8 +723,12 @@ const server = http.createServer(async (req, res) => {
                     res.end('Server error: ' + error.code);
                 }
             } else {
-                res.writeHead(200, { 'Content-Type': contentType });
-                res.end(content, 'utf-8');
+                // HTML revalidates every time; ?v= assets never change; everything else for a day
+                const cacheControl = extname === '.html' ? 'no-cache'
+                    : isVersioned ? 'public, max-age=31536000, immutable'
+                    : 'public, max-age=86400';
+                res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': cacheControl });
+                res.end(content);
             }
         });
     }
