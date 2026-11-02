@@ -218,9 +218,56 @@ function fetchSpectateSnapshot() {
     });
 }
 
+// Map-pool and some custom maps arrive from aoe2lobby.com as a bare id (e.g. "10979"). Their names are looked up
+// once per id from aoe2companion's public match API (via one player's current match) and kept in map_names.json.
+const MAP_NAMES_PATH = path.join(__dirname, 'map_names.json');
+let mapNames = {};
+try { mapNames = JSON.parse(fs.readFileSync(MAP_NAMES_PATH, 'utf8')); } catch (e) { mapNames = {}; }
+const mapLookupFailedAt = {};
+const MAP_LOOKUP_RETRY_MS = 10 * 60 * 1000;
+let mapLookupRunning = false;
+
+function mapDisplayName(mapName, mapId, schema) {
+    if (!/^\d+$/.test(String(mapName))) return mapName || 'Unknown Map';
+    return mapNames[mapName] || schema?.mapid?.[String(mapId)] || `Map #${mapName}`;
+}
+
+// samples: { mapId: { matchId, profileId } } — one game in progress per unknown map id
+async function resolveMapNames(samples) {
+    if (mapLookupRunning) return false;
+    mapLookupRunning = true;
+    let added = false;
+    try {
+        for (const [mapId, sample] of Object.entries(samples).slice(0, 15)) {
+            if (mapNames[mapId] || Date.now() - (mapLookupFailedAt[mapId] || 0) < MAP_LOOKUP_RETRY_MS) continue;
+            try {
+                const r = await fetch(`https://data.aoe2companion.com/api/matches?profile_ids=${sample.profileId}&page=1`, {
+                    headers: { 'User-Agent': 'aoe2lobby.online (map name lookup)' }
+                });
+                const data = await r.json();
+                const match = (data.matches || []).find(x => String(x.matchId) === String(sample.matchId));
+                if (match && typeof match.mapName === 'string' && match.mapName) {
+                    mapNames[mapId] = match.mapName;
+                    added = true;
+                } else {
+                    mapLookupFailedAt[mapId] = Date.now();
+                }
+            } catch (e) {
+                mapLookupFailedAt[mapId] = Date.now();
+            }
+            await new Promise(r => setTimeout(r, 1000)); // be gentle with aoe2companion
+        }
+        if (added) fs.writeFileSync(MAP_NAMES_PATH, JSON.stringify(mapNames, null, 2));
+    } finally {
+        mapLookupRunning = false;
+    }
+    return added;
+}
+
 function buildSpectateGames({ schema, matches, elo }) {
     const label = (field, value) => (value === null || value === undefined) ? null : (schema[field]?.[String(value)] ?? null);
     const games = [];
+    const unknownMaps = {};
     for (const m of Object.values(matches)) {
         if (m.observable === false) continue;
         const players = [];
@@ -239,6 +286,10 @@ function buildSpectateGames({ schema, matches, elo }) {
             });
         }
         if (!players.length) continue;
+        if (/^\d+$/.test(String(m.map_name)) && !mapNames[m.map_name] && !unknownMaps[m.map_name]) {
+            const withId = players.find(p => p.id);
+            if (withId) unknownMaps[m.map_name] = { matchId: m.matchid, profileId: withId.id };
+        }
         const mode = label('mode', m.mode);
         const isRanked = m.description === 'AUTOMATCH';
         const ladder = ladderFor(mode, m.map_name, players.length === 2 ? 2 : 8);
@@ -249,8 +300,7 @@ function buildSpectateGames({ schema, matches, elo }) {
             id: m.matchid,
             title: isRanked ? 'Ranked match' : (m.description || 'Age of Empires II Game'),
             isRanked,
-            // Map-pool and custom maps arrive as a bare number (negative mapid); show that honestly
-            map: /^\d+$/.test(String(m.map_name)) ? (schema.mapid?.[String(m.mapid)] || `Map #${m.map_name}`) : (m.map_name || 'Unknown Map'),
+            map: mapDisplayName(m.map_name, m.mapid, schema),
             matchType: mode,
             mapSize: label('size', m.size),
             speed: label('speed', m.speed),
@@ -265,13 +315,24 @@ function buildSpectateGames({ schema, matches, elo }) {
         });
     }
     games.sort((a, b) => b.startTime - a.startTime);
-    return games;
+    return { games, unknownMaps };
+}
+
+function spectateBody(snapshot) {
+    const { games, unknownMaps } = buildSpectateGames(snapshot);
+    return { body: JSON.stringify({ updatedAt: Math.floor(Date.now() / 1000), games }), unknownMaps };
 }
 
 async function refreshSpectate() {
     const snapshot = await fetchSpectateSnapshot();
-    const games = buildSpectateGames(snapshot);
-    spectateCache = { at: Date.now(), body: JSON.stringify({ updatedAt: Math.floor(Date.now() / 1000), games }), loading: null };
+    const { body, unknownMaps } = spectateBody(snapshot);
+    spectateCache = { at: Date.now(), body, loading: null };
+    // Look up unknown map names in the background, then rebuild this snapshot with them
+    if (Object.keys(unknownMaps).length) {
+        resolveMapNames(unknownMaps).then(added => {
+            if (added) spectateCache.body = spectateBody(snapshot).body;
+        }).catch(() => { });
+    }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -702,6 +763,7 @@ const server = http.createServer(async (req, res) => {
                         }
                     }
 
+                    finalMapName = mapDisplayName(finalMapName);
                     const slotsTotal = (sm && sm.slotsTotal) || m.maxplayers;
                     const targetMode = ladderFor(matchType, finalMapName, slotsTotal);
 
@@ -755,6 +817,7 @@ const server = http.createServer(async (req, res) => {
                 for (const host of Object.keys(scrapedLobbiesObj)) {
                     if (!knownHosts.has(host.toLowerCase())) {
                         const lobby = scrapedLobbiesObj[host];
+                        lobby.map = mapDisplayName(lobby.map);
                         const ladder = ladderFor(lobby.settings?.Mode, lobby.map, lobby.slotsTotal);
                         const parsedPlayers = (lobby.players || []).map(p => {
                             const player = { id: p.profileId || 0, name: p.name, team: 0, elo: null, totalGames: 0, totalWins: 0, winRate: "0.0%", steamProfile: p.steamProfile || null };
