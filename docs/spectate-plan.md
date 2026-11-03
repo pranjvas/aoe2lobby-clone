@@ -85,8 +85,9 @@ Every request to an external service goes through `server.js`, because the CSP i
   `id === matchId`, with `startgametime === start_time` as a check. It has no CORS headers, so it is called from
   `server.js` only.
 - **`aoe.ms/replay/?gameId=<id>&profileId=<pid>`**: redirects to a ZIP holding the `.aoe2record`. A plain top-level
-  link works (the CSP does not apply to navigation). Use it only for a player whose replay size is above 0, and
-  never when `record` is false.
+  link works (the CSP does not apply to navigation). Use it only for a player whose replay size is above 0.
+  `record: false` is the host's own setting, not the lobby's: in 518418201 (`record: false`) only the host's row is
+  `-1` and the other five players uploaded, so it doesn't hide their replays.
 - **aoe2companion `/api/matches?profile_ids=`**: resolves civs the feed doesn't label. Search `matches[]` by id;
   never assume `matches[0]`.
 
@@ -140,12 +141,16 @@ Every request to an external service goes through `server.js`, because the CSP i
 - **Timing:** a finished game appeared 11 s after `completiontime` in the one direct measurement, and rating
   changes are filled in from the first appearance.
   - Poll from the game's end: wait at least 20 s between attempts for the first 3 minutes, then at least 60 s.
-  - Give up 15 minutes after the game left the feed.
+  - Give up 15 minutes after the first lookup (normally right after the game left the feed), so a game first asked
+    for later (a shared link, a tab that was hidden) is still looked up.
 - **Winner:** `matchhistorymember[].outcome === 1` means a win, and 0 a loss. It agrees with
   `matchhistoryreportresults[].resulttype`. Every ranked game had exactly one winning team.
   - Custom lobbies can have several winning team ids, everyone winning (co-op) or nobody winning.
   - Show a winning team only when every winner has the same feed team and no loser shares it. Otherwise list the
     winning players, or "No result reported" when nobody won.
+  - AI players have no rows, so in a game with AI opponents (AI not on a human's team) where no human won, the AI
+    won (`aiWon`): every probe vs-AI game with no winning row is one where every human lost (aoe2companion
+    `won: false`). Show the AI's team when the AI opponents share one ("Team 4 (AI) won"), else "The AI won".
 - **Teams:** Relic `teamid` has no fixed offset from the feed's team, so join players by `profile_id` and label
   teams with the feed's team numbers.
 - **Rating change:** `newrating - oldrating`. Unranked custom lobbies change a separate **unranked** rating, and
@@ -157,7 +162,8 @@ Every request to an external service goes through `server.js`, because the CSP i
   - Link `https://aoe.ms/replay/?gameId=<id>&profileId=<pid>`, using the uploader with the largest size. It
     redirects (301) to `api.ageofempires.com`'s ZIP download.
   - Never fetch or link `matchurls[].url`: it returns 409 without a signed query string.
-  - Hide the link when the feed's `record` is `false`.
+  - The feed's `record: false` doesn't hide the link (see above). With no upload, such a lobby says it didn't
+    record a replay.
 
 ### Current bugs this branch fixes (server.js)
 
@@ -219,6 +225,7 @@ When `status` is `ended`, `result` becomes the following:
   "completedAt": 1793697000, "duration": 1342,
   "winningTeam": 1,
   "noWinner": false,
+  "aiWon": false,
   "ratingKind": "ranked | quickplay | unranked",
   "players": [ { "id": 123, "won": true, "oldRating": 1234, "newRating": 1250 } ],
   "replay": { "available": true, "profileId": 123 }
@@ -229,15 +236,18 @@ When `status` is `ended`, `result` becomes the following:
 - **`winningTeam`:** the display team, or `null` when the winners don't form one feed team. The page then lists the
   winning players.
 - **`noWinner`:** `true` when nobody won.
+- **`aiWon`:** `true` when the AI side won (no human won, and the game has AI opponents). `winningTeam` is then the
+  AI's display team when they share one, else `null`, and `noWinner` is `false`.
 - **`players`:** human players matched by `profile_id`.
-- **`replay`:** `available` is `false` when the feed's `record` was `false` or nobody uploaded a replay. The page
-  builds the link `https://aoe.ms/replay/?gameId=<game.id>&profileId=<replay.profileId>`.
+- **`replay`:** `available` is `false` when nobody uploaded a replay. The page builds the link
+  `https://aoe.ms/replay/?gameId=<game.id>&profileId=<replay.profileId>`.
 
 - **`unknown`:** the server never saw the game, for example after a restart or a wrong link. `game` and `result`
   are `null`. With `stale: true` it only means the server has no usable live data (no snapshot, or one over 10
   minutes old), so it can't tell: a game of a stale snapshot is never reported `live`.
 - **`pending`:** the result is still being looked up. The page polls again.
-- **`unavailable`:** the lookup gave up, about 15 minutes after the game left the feed.
+- **`unavailable`:** the lookup gave up, about 15 minutes after its first attempt. The page says the result
+  couldn't be found in the match history.
 
 ### Server behaviour
 
@@ -255,7 +265,8 @@ When `status` is `ended`, `result` becomes the following:
   - Across all games, at most one World's Edge request runs at a time, requests start at least 1 s apart, and at
     most 30 start per minute. A request that would break these limits is skipped, and the result stays `pending`.
   - Retries rotate across the game's human players. A game with no human players settles as `unavailable` at once.
-  - A settled result is cached. The lookup gives up about 15 minutes after `endedAt`.
+  - A settled result is cached. The lookup gives up about 15 minutes after its first request (a game no request
+    has been made for yet is never given up on unasked).
   - Every upstream number is validated. Signed URLs are never requested, logged or returned.
 - **`/spectate/<matchId>`:** serves `index.html` with these tags replaced, all with escaped feed text:
   - `<title>`;

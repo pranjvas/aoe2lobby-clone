@@ -584,10 +584,10 @@ async function freshSpectate() {
 // A game missing from a new snapshot has ended; its page then shows the winner, rating changes and replay link.
 const ENDED_KEEP_MS = 2 * 60 * 60 * 1000;
 const ENDED_MAX = 5000;
-const RESULT_GIVE_UP_S = 15 * 60; // after the game left the feed
+const RESULT_GIVE_UP_S = 15 * 60; // after the first lookup (normally right after the game left the feed)
 const RESULT_FAST_S = 3 * 60; // retries are >= 20 s apart for this long after the game ended, then >= 60 s
 const RESULT_WAIT_MS = 3000; // the longest a detail request waits for a lookup in flight
-const endedGames = new Map(); // match id -> { game (with endedAt), result, lookup, lastTryAt, tries }, oldest first
+const endedGames = new Map(); // match id -> { game (with endedAt), result, lookup, firstTryAt, lastTryAt, tries }, oldest first
 // World's Edge serves the lobby list too: lookups run one at a time, >= 1 s apart, at most 30 a minute
 let resultLookupBusy = false;
 const resultLookupStarts = []; // start times (ms) within the last minute
@@ -596,7 +596,7 @@ const resultLookupStarts = []; // start times (ms) within the last minute
 function noteEndedGames(prevGames, games, snapAt) {
     const endedAt = Math.floor(snapAt / 1000);
     for (const [id, game] of prevGames) {
-        if (!games.has(id)) endedGames.set(id, { game: { ...game, endedAt }, result: null, lookup: null, lastTryAt: 0, tries: 0 });
+        if (!games.has(id)) endedGames.set(id, { game: { ...game, endedAt }, result: null, lookup: null, firstTryAt: 0, lastTryAt: 0, tries: 0 });
     }
     for (const id of games.keys()) endedGames.delete(id);
     pruneEndedGames();
@@ -621,7 +621,7 @@ function spectateGameById(cache, id) {
 }
 
 function emptyResult(state) {
-    return { state, completedAt: null, duration: null, winningTeam: null, noWinner: null, ratingKind: null, players: null, replay: null };
+    return { state, completedAt: null, duration: null, winningTeam: null, noWinner: null, aiWon: null, ratingKind: null, players: null, replay: null };
 }
 
 // The result of `game` from one getRecentMatchHistory response, or null while the game isn't in it. The history is
@@ -654,13 +654,24 @@ function parseMatchResult(data, game) {
     const winnerTeams = players.filter(p => p.won).map(p => teamOf.get(p.id));
     const loserTeams = players.filter(p => !p.won).map(p => teamOf.get(p.id));
     const team = winnerTeams[0] ?? null;
-    const winningTeam = (team !== null && winnerTeams.every(t => t === team) && !loserTeams.includes(team)) ? team : null;
+    let winningTeam = (team !== null && winnerTeams.every(t => t === team) && !loserTeams.includes(team)) ? team : null;
+    // AI players have no rows, so when no human won a game with AI opponents (AI not on a human's team), the AI won:
+    // their team when they all share one, else just "the AI"
+    const humanWon = members.some(m => num(own(m, 'outcome')) === 1);
+    const humanTeams = new Set(game.players.filter(p => p.kind === 'human' && p.team !== null).map(p => p.team));
+    const aiOpponents = game.players.filter(p => p.kind === 'ai' && (p.team === null || !humanTeams.has(p.team)));
+    const aiWon = !humanWon && members.length > 0 && aiOpponents.length > 0;
+    if (aiWon) {
+        const aiTeam = aiOpponents[0].team;
+        winningTeam = (aiTeam !== null && aiOpponents.every(p => p.team === aiTeam)) ? aiTeam : null;
+    }
     const completedAt = num(own(entry, 'completiontime'));
     const done = Number.isSafeInteger(completedAt) && completedAt >= game.startTime && game.startTime > 0;
-    // The largest upload among the game's humans; size -1 or no row means that player has no replay (not a temporary state)
+    // The largest upload among the game's humans; size -1 or no row means that player has no replay (not a temporary state).
+    // The feed's record: false is the host's own setting: other players still upload theirs, so it doesn't hide them.
     const humanIds = new Set(game.players.filter(p => p.kind === 'human').map(p => p.id));
     let replay = { available: false, profileId: null }, best = 0;
-    if (game.record !== false && Array.isArray(entry.matchurls)) {
+    if (Array.isArray(entry.matchurls)) {
         for (const u of entry.matchurls) {
             const id = profileIdOf(own(u, 'profile_id')), size = num(own(u, 'size'));
             if (humanIds.has(id) && Number.isSafeInteger(size) && size > best) {
@@ -674,7 +685,8 @@ function parseMatchResult(data, game) {
         completedAt: done ? completedAt : null,
         duration: done ? completedAt - game.startTime : null,
         winningTeam,
-        noWinner: !members.some(m => num(own(m, 'outcome')) === 1),
+        noWinner: !humanWon && !aiWon,
+        aiWon,
         // Unranked custom lobbies change a separate unranked rating, and Quick Play games their own Quick Play rating
         ratingKind: game.isRanked ? 'ranked' : game.isQuickPlay ? 'quickplay' : 'unranked',
         players,
@@ -689,7 +701,9 @@ function startResultLookup(ended) {
     const now = Date.now();
     const humans = ended.game.players.filter(p => p.kind === 'human');
     const sinceEnd = now / 1000 - ended.game.endedAt;
-    if (!humans.length || sinceEnd > RESULT_GIVE_UP_S) {
+    // The window starts at the first lookup, so a game first asked for late (a shared link, a tab that was hidden) is
+    // still looked up rather than given up on unasked
+    if (!humans.length || (ended.tries > 0 && now - ended.firstTryAt > RESULT_GIVE_UP_S * 1000)) {
         ended.result = emptyResult('unavailable');
         return;
     }
@@ -698,6 +712,7 @@ function startResultLookup(ended) {
     if (resultLookupBusy || resultLookupStarts.length >= 30 || now - (resultLookupStarts.at(-1) ?? 0) < 1000) return;
     resultLookupBusy = true;
     resultLookupStarts.push(now);
+    if (!ended.tries) ended.firstTryAt = now;
     ended.lastTryAt = now;
     // Each retry asks for a different player's history, in case one player's list is slow to update
     const profileId = humans[ended.tries++ % humans.length].id;

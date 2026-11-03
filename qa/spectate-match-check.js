@@ -99,13 +99,13 @@ function gameProblems(g, { detail, ended }) {
 function resultProblems(r) {
     if (!r || typeof r !== 'object') return ['not an object'];
     if (!['pending', 'found', 'unavailable'].includes(r.state)) return ['state'];
-    const fields = ['completedAt', 'duration', 'winningTeam', 'noWinner', 'ratingKind', 'players', 'replay'];
+    const fields = ['completedAt', 'duration', 'winningTeam', 'noWinner', 'aiWon', 'ratingKind', 'players', 'replay'];
     if (r.state !== 'found') return fields.filter(k => r[k] !== null).map(k => k + ' should be null while ' + r.state);
     const problems = [];
     const expect = (ok, what) => { if (!ok) problems.push(what); };
     expect(nullOr(r.completedAt, isInt) && nullOr(r.duration, d => isInt(d) && d >= 0), 'completedAt/duration');
     expect(nullOr(r.winningTeam, t => isInt(t) && t >= 1 && t <= 4), 'winningTeam');
-    expect(typeof r.noWinner === 'boolean', 'noWinner');
+    expect(typeof r.noWinner === 'boolean' && typeof r.aiWon === 'boolean' && !(r.noWinner && r.aiWon), 'noWinner/aiWon');
     expect(['ranked', 'quickplay', 'unranked'].includes(r.ratingKind), 'ratingKind');
     expect(Array.isArray(r.players) && r.players.every(p => isInt(p.id) && typeof p.won === 'boolean' && nullOr(p.oldRating, isInt) && nullOr(p.newRating, isInt)), 'players');
     expect(r.replay && typeof r.replay.available === 'boolean' && (r.replay.available ? isInt(r.replay.profileId) : r.replay.profileId === null), 'replay');

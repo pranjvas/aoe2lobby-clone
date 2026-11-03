@@ -1359,6 +1359,7 @@ function normalizeMatchResult(r) {
         duration: duration !== null && duration >= 0 ? duration : null,
         winningTeam: intIn(r.winningTeam, 1, 4),
         noWinner: r.noWinner === true,
+        aiWon: r.aiWon === true,
         ratingKind: ['ranked', 'quickplay', 'unranked'].includes(r.ratingKind) ? r.ratingKind : null,
         players,
         replay: { available: replayBy !== null, profileId: replayBy }
@@ -1529,18 +1530,22 @@ function matchResultHtml(d) {
     const r = d.result;
     const body = r.state === 'pending'
         ? '<p class="match-result-pending"><span class="spinner-inline" aria-hidden="true"></span>Game over &mdash; getting the result&hellip;</p>'
-        : r.state === 'unavailable' ? '<p>The result hasn\'t been reported.</p>' : matchFoundHtml(d.game, r);
+        : r.state === 'unavailable' ? '<p>The result couldn\'t be found in the game\'s match history.</p>' : matchFoundHtml(d.game, r);
     return `<section class="match-result glass-panel"><h2>Result</h2>${body}</section>`;
 }
 
 function matchFoundHtml(g, r) {
     const humans = new Map(g.players.filter(p => p.kind === 'human').map(p => [p.id, p]));
     const names = (list) => `<span class="match-winner-names">${list.map(p => esc(p.name)).join(', ')}</span>`;
-    // A team only when the winners form one; otherwise the winning players by name
+    // A team only when the winners form one; otherwise the winning players by name (AI players have no rows, so an AI
+    // win is the AI's team, or just "the AI")
     let winner = 'No result reported';
     if (!r.noWinner && r.winningTeam !== null) {
         const team = g.players.filter(p => p.team === r.winningTeam);
-        winner = `Team ${r.winningTeam} won${team.length ? `: ${names(team)}` : ''}`;
+        winner = team.length && team.every(p => p.kind === 'ai') ? `Team ${r.winningTeam} (AI) won`
+            : `Team ${r.winningTeam} won${team.length ? `: ${names(team)}` : ''}`;
+    } else if (r.aiWon) {
+        winner = 'The AI won';
     } else if (!r.noWinner) {
         const won = r.players.filter(p => p.won && humans.has(p.id)).map(p => humans.get(p.id));
         if (won.length) winner = `${names(won)} won`;
@@ -1555,11 +1560,12 @@ function matchFoundHtml(g, r) {
                 ${ratingChangeHtml(row, r.ratingKind)}
             </li>` : '';
     }).join('');
-    // The aoe.ms link redirects to the official replay download; it is never shown for a lobby that didn't record
-    const replay = g.record === false ? '<p class="match-note">This lobby didn\'t record a replay.</p>'
-        : (r.replay.available && isMatchId(g.id))
-            ? `<p class="match-replay"><a class="btn-join" href="https://aoe.ms/replay/?gameId=${g.id}&amp;profileId=${r.replay.profileId}" rel="noopener">Download replay</a>
+    // The aoe.ms link redirects to the official replay download. A lobby set not to record is only the host's setting:
+    // other players' uploads still count
+    const replay = (r.replay.available && isMatchId(g.id))
+        ? `<p class="match-replay"><a class="btn-join" href="https://aoe.ms/replay/?gameId=${g.id}&amp;profileId=${r.replay.profileId}" rel="noopener">Download replay</a>
                 <span class="match-note">Downloads the official replay ZIP (an .aoe2record file) from Age of Empires.</span></p>`
+        : g.record === false ? '<p class="match-note">This lobby didn\'t record a replay.</p>'
             : '<p class="match-note">No replay was uploaded for this game.</p>';
     return `
         <p class="match-winner"><span aria-hidden="true">&#x1F3C6;</span> ${winner}</p>
