@@ -16,7 +16,7 @@ const PUBLIC_FILES = new Set([
     '/index.html', '/app.js', '/styles.css', '/favicon.png',
     '/favicon-32.png', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/og-image.png', '/site.webmanifest',
     '/robots.txt', '/sitemap.xml',
-    '/fonts/cinzel-400.woff2', '/fonts/cinzel-600.woff2', '/fonts/cinzel-700.woff2', '/fonts/outfit-variable.woff2', '/fonts/cinzel-ext.woff2', '/fonts/outfit-ext.woff2', '/fonts/OFL.txt', // self-hosted fonts
+    '/fonts/cinzel-variable.woff2', '/fonts/outfit-variable.woff2', '/fonts/cinzel-ext.woff2', '/fonts/outfit-ext.woff2', '/fonts/OFL.txt', // self-hosted fonts
     '/7e7c007e5148f7d5a2953120e8410d70.txt' // IndexNow key (lets Bing/Yandex accept our URL submissions)
 ]);
 const FILE_ALIASES = { '/favicon.ico': '/favicon-32.png' };

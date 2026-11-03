@@ -13,8 +13,15 @@ const FIELDS = [
     ['resources', 'resources', 'label'],
     ['treaty', 'treaty_length', 'raw'],
     ['modInfo', 'data_mod', 'mod'],
-    ['serverRegion', 'server', 'label'],
+    ['server', 'server', 'region'],
 ];
+
+// The readable names server.js shows for aoe2lobby.com's Azure region labels
+const REGION_NAMES = {
+    brazilsouth: 'Brazil', australiasoutheast: 'Australia', ukwest: 'UK', southeastasia: 'Southeast Asia',
+    westeurope: 'West Europe', westus3: 'US West', koreacentral: 'Korea', centralindia: 'India',
+    eastus: 'US East', chilecentral: 'Chile', southcentralus: 'US South Central'
+};
 
 function snapshot() {
     return new Promise((resolve, reject) => {
@@ -42,6 +49,7 @@ function snapshot() {
     const expected = (kind, field, value) => {
         if (kind === 'mod') return value || 'No Mods';
         if (kind === 'label') return schema?.[field]?.[String(value)] ?? String(value);
+        if (kind === 'region') { const raw = schema?.[field]?.[String(value)]; return REGION_NAMES[raw] ?? String(raw); }
         return String(value);
     };
 
