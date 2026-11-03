@@ -80,6 +80,7 @@ cat > /etc/fail2ban/jail.d/sshd-local.conf <<'EOF'
 [sshd]
 enabled = true
 mode = normal
+backend = systemd
 maxretry = 5
 findtime = 10m
 bantime = 1h

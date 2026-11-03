@@ -41,7 +41,7 @@ let liveSchema = null;
 
 // Own string entries only, so a feed value such as "__proto__" or "constructor" cannot return a prototype member
 function label(field, value, unknown = "Unknown") {
-    if (value === null || value === undefined) return unknown;
+    if (typeof value !== 'string' && typeof value !== 'number') return unknown;
     const key = String(value);
     const live = liveSchema?.[field];
     if (live && typeof live === 'object' && Object.hasOwn(live, key) && typeof live[key] === 'string') return live[key];
@@ -60,6 +60,9 @@ let lobbyMatchAll = null;
 let lastDataAt = 0; // when the last lobby_match_all arrived
 const startedAt = Date.now();
 let lobbyEloUpdate = Object.create(null); // { profileId: { mode1: stats, mode2: stats } }
+// When each player's ratings last arrived; players not seen for ELO_KEEP_MS are dropped so memory stays bounded
+const eloSeenAt = new Map();
+const ELO_KEEP_MS = 6 * 60 * 60 * 1000;
 
 // Leaderboards to receive ratings for. aoe2lobby.com's page only subscribes to its defaults (0, 3, 4),
 // so Empire Wars ratings would otherwise never arrive.
@@ -78,6 +81,7 @@ function mergeElo(update) {
             if (!stats || typeof stats !== 'object') continue;
             if (!lobbyEloUpdate[profileId]) lobbyEloUpdate[profileId] = Object.create(null);
             lobbyEloUpdate[profileId][mode] = stats;
+            eloSeenAt.set(profileId, Date.now());
             merged++;
         }
     }
@@ -183,12 +187,19 @@ function dumpData() {
     const scrapedLobbies = Object.create(null);
     const scrapedPlayers = Object.create(null);
 
+    const now = Date.now();
+    for (const [profileId, seenAt] of eloSeenAt) {
+        if (now - seenAt > ELO_KEEP_MS) { eloSeenAt.delete(profileId); delete lobbyEloUpdate[profileId]; }
+    }
+
     for (const key of Object.keys(lobbyMatchAll)) {
+      // One malformed lobby is skipped, never the whole write
+      try {
         const lobby = lobbyMatchAll[key];
         if (!lobby || typeof lobby !== 'object') continue;
         const matchId = toId(lobby.matchid) ?? toId(key);
         if (matchId === null) continue;
-        const hostProfileId = toId(lobby.host_profileid);
+        let hostProfileId = toId(lobby.host_profileid);
 
         let hostName = 'UNKNOWN';
         const players = [];
@@ -210,7 +221,9 @@ function dumpData() {
         }
 
         if (hostName === 'UNKNOWN' && players.length > 0) {
+            // The listed host isn't in the slots: use the first player for both the name and the id
             hostName = players[0].name;
+            hostProfileId = players[0].profileId;
         }
         if (hostName === 'UNKNOWN') continue;
 
@@ -228,15 +241,18 @@ function dumpData() {
             settings: {
                 Mode: label('mode', lobby.mode),
                 Size: label('size', lobby.size),
-                Population: lobby.population ? lobby.population.toString() : "Unknown",
+                Population: Number.isFinite(lobby.population) && lobby.population > 0 ? String(lobby.population) : "Unknown",
                 Speed: label('speed', lobby.speed),
                 "Starting Age": label('starting_age', lobby.starting_age),
                 Resources: label('resources', lobby.resources, lobby.resources == null ? "Unknown" : "Custom"),
-                Treaty: lobby.treaty_length || 0, // minutes, 0 = none
-                "Data Mod": lobby.data_mod || "No Mods",
+                Treaty: Number.isFinite(lobby.treaty_length) && lobby.treaty_length > 0 ? lobby.treaty_length : 0, // minutes, 0 = none
+                "Data Mod": typeof lobby.data_mod === 'string' && lobby.data_mod ? lobby.data_mod : "No Mods",
                 Server: label('server', lobby.server)
             }
         };
+      } catch (e) {
+        console.error('Skipped malformed lobby', key + ':', e.message);
+      }
     }
 
     const savedLobbies = writeJsonAtomic(OUTPUT_PATH, scrapedLobbies);

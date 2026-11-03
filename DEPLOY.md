@@ -120,7 +120,8 @@ deploy with the new `push.sh`:
    debugging files):
    ```bash
    rsync -an --delete --itemize-changes --exclude /node_modules/ --exclude "/scraped_*_v2.json" \
-     --exclude "/scraped_*_v2.json.*.tmp" --exclude /map_names.json --exclude /deploy/ \
+     --exclude "/scraped_*_v2.json.*.tmp" --exclude /scraped_maps.json --exclude /map_names.json \
+     --exclude "/map_names.json.*.tmp" --exclude /deploy/ \
      /root/aoe2lobby/ /opt/aoe2lobby/
    ```
 3. Move pm2 under systemd (a few seconds of downtime):

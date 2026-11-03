@@ -58,13 +58,16 @@ INSTALL='
   [ -e /var/log/caddy/access.log ] || install -o caddy -g caddy -m 600 /dev/null /var/log/caddy/access.log
   caddy validate --adapter caddyfile --config /root/aoe2lobby/deploy/Caddyfile || exit 3
   systemctl is-active --quiet pm2-aoe2 || { echo "pm2-aoe2.service is not active: run pm2 under systemd first (DEPLOY.md)" >&2; exit 3; }
-  NEED_NPM=0; cmp -s package-lock.json /opt/aoe2lobby/package-lock.json || NEED_NPM=1
+  # Compare with the lock of the last successful npm install (not /opt, which rsync overwrites before npm runs)
+  NEED_NPM=0; cmp -s package-lock.json /root/aoe2lobby-installed.lock || NEED_NPM=1
   rsync -a --delete --exclude /node_modules/ --exclude "/scraped_*_v2.json" --exclude "/scraped_*_v2.json.*.tmp" \
-    --exclude /map_names.json --exclude /deploy/ /root/aoe2lobby/ /opt/aoe2lobby/
+    --exclude /scraped_maps.json --exclude /map_names.json --exclude "/map_names.json.*.tmp" --exclude /deploy/ \
+    /root/aoe2lobby/ /opt/aoe2lobby/
   chown -R aoe2:aoe2 /opt/aoe2lobby
   install -o root -g root -m 644 /root/aoe2lobby/deploy/Caddyfile /etc/caddy/Caddyfile
   { systemctl reload caddy || systemctl restart caddy; }
   sudo -u aoe2 bash -c "cd /opt/aoe2lobby && { [ $NEED_NPM = 0 ] || npm install --omit=dev --no-audit --no-fund; } && pm2 reload ecosystem.config.js --env production"
+  cp package-lock.json /root/aoe2lobby-installed.lock
   ok=0; for i in $(seq 15); do curl -fsS --max-time 3 -o /dev/null http://127.0.0.1:3002/robots.txt && { ok=1; break; }; sleep 1; done
   [ $ok = 1 ] || { echo "Health check failed: nothing answers on 127.0.0.1:3002" >&2; sudo -u aoe2 pm2 logs server --lines 30 --nostream || true; exit 3; }
   sudo -u aoe2 pm2 save

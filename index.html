@@ -54,7 +54,7 @@
     </script>
 
     <!-- Styles (fonts are self-hosted from /fonts, see styles.css) -->
-    <link rel="stylesheet" href="./styles.css?v=21">
+    <link rel="stylesheet" href="./styles.css?v=22">
 </head>
 <body>
     <!-- Background Elements -->
@@ -326,7 +326,7 @@
                 <details>
                     <summary>Privacy and contact</summary>
                     <p>AoE2Lobby.online has no accounts and sets no cookies. The only thing it stores in your browser is your filter and view choices, under the <code>aoe2State</code> key in local storage, so they are still set on your next visit; clearing this site's data removes them. Visits are counted with Cloudflare Web Analytics, which is cookieless.</p>
-                    <p>Player names, ratings and Steam links come from the sources above: the game's public lobby service and aoe2lobby.com (aoe2companion.com is only used to look up map names). The server keeps player profiles in memory only, so they are gone when it restarts. Its access logs keep visitors' IP addresses masked (the last part removed) for 30 days.</p>
+                    <p>Player names, ratings and Steam links come from the sources above: the game's public lobby service and aoe2lobby.com (aoe2companion.com is only used to look up map names). The server keeps player profiles in memory, plus a file with the current lobby list that is overwritten every few seconds, so nothing is kept once players leave the lobby list. Its access logs keep visitors' IP addresses masked (the last part removed) for 30 days.</p>
                     <p>Contact details, including how to ask for something to be removed, will be added here.</p>
                 </details>
             </section>
@@ -334,7 +334,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="app.js?v=23"></script>
+    <script src="app.js?v=24"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>

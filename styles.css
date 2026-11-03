@@ -27,6 +27,25 @@
 }
 
 /* Outfit is a variable font: one file covers weights 300 to 700 */
+/* Latin Extended (Polish, Turkish, Czech, Romanian... letters in player names). Fonts: SIL OFL 1.1, see fonts/OFL.txt */
+@font-face {
+    font-family: 'Cinzel';
+    font-style: normal;
+    font-weight: 400 700;
+    font-display: swap;
+    src: url('fonts/cinzel-ext.woff2') format('woff2');
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+    font-family: 'Outfit';
+    font-style: normal;
+    font-weight: 300 700;
+    font-display: swap;
+    src: url('fonts/outfit-ext.woff2') format('woff2');
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 @font-face {
     font-family: 'Outfit';
     font-style: normal;
@@ -1064,4 +1083,15 @@ input.filter-active {
     padding: 0.1rem 0.5rem;
     border-radius: 10px;
     white-space: nowrap;
+}
+
+/* Lobby Full / Cannot Join / Cannot Spectate: not clickable, so don't look like the gold Join button */
+.btn-join.disabled,
+.lobby-card:hover .btn-join.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+    background: transparent;
+    color: var(--text-secondary);
+    border-color: var(--border-color);
 }

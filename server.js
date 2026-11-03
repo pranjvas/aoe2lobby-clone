@@ -16,7 +16,7 @@ const PUBLIC_FILES = new Set([
     '/index.html', '/app.js', '/styles.css', '/favicon.png',
     '/favicon-32.png', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/og-image.png', '/site.webmanifest',
     '/robots.txt', '/sitemap.xml',
-    '/fonts/cinzel-400.woff2', '/fonts/cinzel-600.woff2', '/fonts/cinzel-700.woff2', '/fonts/outfit-variable.woff2', // self-hosted fonts
+    '/fonts/cinzel-400.woff2', '/fonts/cinzel-600.woff2', '/fonts/cinzel-700.woff2', '/fonts/outfit-variable.woff2', '/fonts/cinzel-ext.woff2', '/fonts/outfit-ext.woff2', '/fonts/OFL.txt', // self-hosted fonts
     '/7e7c007e5148f7d5a2953120e8410d70.txt' // IndexNow key (lets Bing/Yandex accept our URL submissions)
 ]);
 const FILE_ALIASES = { '/favicon.ico': '/favicon-32.png' };
@@ -219,6 +219,14 @@ async function fetchProfilesBatch(ids) {
                             profileCache.set(profileId, { alias, rating: currentRating, totalGames, totalWins, winRate, stats: ladderStats, steamProfile, fetchedAt: now, lastSeen: now });
                         }
                     });
+                    // Ids Relic answered for but returned nothing about: cache an empty entry so they stop showing as
+                    // pending and aren't re-requested on every build (the 6 h refresh retries them)
+                    const now = Date.now();
+                    for (const id of chunk) {
+                        if (!profileCache.has(id)) {
+                            profileCache.set(id, { alias: 'Unknown', rating: null, totalGames: 0, totalWins: 0, winRate: "0.0", stats: {}, steamProfile: null, fetchedAt: now, lastSeen: now });
+                        }
+                    }
                 }
             } catch(e) {
                 console.error("Error fetching profile batch:", e.message);
@@ -813,7 +821,9 @@ async function buildLobbiesBody() {
     for (const l of allMatchesArray) for (const p of l.players) if (isProfileId(p.id)) relicPlayerIds.add(p.id);
     for (const lobby of scrapedById.values()) {
         const numericId = /^\d+$/.test(lobby.matchId) && Number.isSafeInteger(Number(lobby.matchId)) ? Number(lobby.matchId) : null;
-        const id = numericId ?? 'scraped_' + lobby.host.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+        // Non-Latin host names sanitize to underscores, so add the host's profile id to keep different lobbies apart
+        const id = numericId ?? 'scraped_' + lobby.host.toLowerCase().replace(/[^a-z0-9_-]/g, '_') +
+            (isProfileId(lobby.hostProfileId) ? '_' + lobby.hostProfileId : '');
         if (seenIds.has(String(id))) continue;
         // Without a match id (an older file keyed by host name) the lobby can't be matched to Relic's; skip it
         // when its players are already in a Relic lobby, so it isn't listed twice
@@ -887,7 +897,8 @@ async function handleRequest(req, res) {
                     })
                     .finally(() => { spectateLoading = null; });
             }
-            if (!spectateCache.body && spectateLoading) await spectateLoading;
+            // Wait for the refresh when there is nothing usable yet: no snapshot, or one too old to show
+            if (spectateLoading && (!spectateCache.body || Date.now() - spectateCache.snapAt > SPECTATE_STALE_MS)) await spectateLoading;
             let body = spectateCache.body;
             if (!body) body = JSON.stringify({ updatedAt: null, stale: true, games: [] });
             else if (Date.now() - spectateCache.snapAt > SPECTATE_STALE_MS) {

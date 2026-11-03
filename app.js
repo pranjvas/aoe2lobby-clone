@@ -1112,9 +1112,9 @@ function spectateCardHtml(g) {
         <div class="spectate-teams">${teamsHtml}</div>
         <div class="card-footer">
             <div class="players-count"><span class="players-count-text">&#x1F464; ${g.players.length} players</span></div>
-            <a href="aoe2de://1/${gid}" class="btn-join spectate-btn${wait ? ' waiting' : ''}" title="Opens Age of Empires II: DE as a spectator">
+            ${gid ? `<a href="aoe2de://1/${gid}" class="btn-join spectate-btn${wait ? ' waiting' : ''}" title="Opens Age of Empires II: DE as a spectator">
                 &#x1F441; Spectate<span class="spectate-countdown" data-ready-at="${readyAt}">${wait ? ' &#x23F3; ' + wait : ''}</span>
-            </a>
+            </a>` : `<span class="btn-join spectate-btn disabled">Cannot Spectate</span>`}
         </div>`;
 }
 
