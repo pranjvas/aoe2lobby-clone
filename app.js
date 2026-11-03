@@ -1041,6 +1041,7 @@ function normalizeSpectateGame(g) {
         map: text(g.map, 'Unknown Map'),
         title: text(g.title, 'Age of Empires II Game'),
         isRanked: g.isRanked === true,
+        isQuickPlay: g.isQuickPlay === true,
         matchType: text(g.matchType, null),
         mapSize: text(g.mapSize, null),
         speed: text(g.speed, null),
@@ -1125,7 +1126,8 @@ function filterSpectate() {
         if (state.spectateType === '1v1' && g.players.length !== 2) return false;
         if (state.spectateType === 'team' && g.players.length <= 2) return false;
         if (state.spectateKind === 'ranked' && !g.isRanked) return false;
-        if (state.spectateKind === 'custom' && g.isRanked) return false;
+        if (state.spectateKind === 'quickplay' && !g.isQuickPlay) return false;
+        if (state.spectateKind === 'custom' && (g.isRanked || g.isQuickPlay)) return false;
         if (state.spectateServer !== 'all' && g.server !== state.spectateServer) return false;
         return true;
     });
@@ -1190,7 +1192,7 @@ function spectateCardHtml(g) {
         <div class="card-body">
             <div class="game-details">
                 <div class="tags-row">
-                    ${g.isRanked ? '<span class="badge treaty-badge">Ranked</span>' : ''}
+                    ${g.isRanked ? '<span class="badge treaty-badge">Ranked</span>' : g.isQuickPlay ? '<span class="badge quickplay-badge">Quick Play</span>' : ''}
                     ${renderInfoBadges(g)}
                     ${g.civsHidden ? '<span class="badge civs-hidden-badge" title="This lobby hides civilizations">Civs hidden</span>' : ''}
                 </div>
@@ -1357,7 +1359,7 @@ function normalizeMatchResult(r) {
         duration: duration !== null && duration >= 0 ? duration : null,
         winningTeam: intIn(r.winningTeam, 1, 4),
         noWinner: r.noWinner === true,
-        ratingKind: ['ranked', 'unranked'].includes(r.ratingKind) ? r.ratingKind : null,
+        ratingKind: ['ranked', 'quickplay', 'unranked'].includes(r.ratingKind) ? r.ratingKind : null,
         players,
         replay: { available: replayBy !== null, profileId: replayBy }
     };
@@ -1436,16 +1438,18 @@ function matchHeadHtml(d) {
                 : '<p class="match-subtitle match-loading"><span class="spinner-inline" aria-hidden="true"></span>Loading the game&hellip;</p>'}`;
     }
     const g = d.game, live = d.status === 'live';
+    const ladder = (g.ladder && LADDER_NAMES[g.ladder]) || null; // named on the page: the Spectate cards follow Elo Type instead
     return `
         <div class="match-topline">
             ${live ? '<span class="match-status match-status-live"><span class="pulse-indicator" aria-hidden="true"></span>LIVE</span>'
                 : '<span class="match-status match-status-ended">ENDED</span>'}
-            ${g.isRanked ? '<span class="badge treaty-badge">Ranked</span>' : '<span class="badge mod-info-badge">Unranked</span>'}
+            ${g.isRanked ? '<span class="badge treaty-badge">Ranked</span>' : g.isQuickPlay ? '<span class="badge quickplay-badge">Quick Play</span>' : '<span class="badge mod-info-badge">Unranked</span>'}
             ${live ? `<span class="match-spectators" title="Spectators watching now">&#x1F441; ${g.observers} spectator${g.observers === 1 ? '' : 's'}</span>` : ''}
         </div>
         <h1 class="match-title">${esc(g.map)}</h1>
         <p class="match-subtitle">${esc(g.title)}</p>
         <div class="tags-row">
+            ${ladder ? `<span class="badge ladder-badge" title="The ladder of the player ratings on this page">Ratings: ${esc(ladder)}</span>` : ''}
             ${renderInfoBadges(g)}
             ${g.server ? `<span class="badge server-badge" title="Server">&#x1F310; ${esc(g.server)}</span>` : ''}
             ${g.civsHidden ? '<span class="badge civs-hidden-badge" title="This lobby hides civilizations">Civs hidden</span>' : ''}
@@ -1543,11 +1547,11 @@ function matchFoundHtml(g, r) {
         ${replay}`;
 }
 
-// +17 / −15, labelled with the rating it changed (unranked lobbies change a separate unranked rating)
+// +17 / −15, labelled with the rating it changed (unranked lobbies and Quick Play each change a rating of their own)
 function ratingChangeHtml(row, kind) {
     if (row.oldRating === null || row.newRating === null) return '';
     const diff = Math.round(row.newRating - row.oldRating);
-    const label = kind === 'unranked' ? 'unranked rating' : kind === 'ranked' ? 'ranked' : 'rating';
+    const label = kind === 'unranked' ? 'unranked rating' : kind === 'quickplay' ? 'Quick Play rating' : kind === 'ranked' ? 'ranked' : 'rating';
     return `<span class="rating-change${diff > 0 ? ' rating-up' : diff < 0 ? ' rating-down' : ''}" title="${esc(`${row.oldRating} → ${row.newRating}`)}">${diff > 0 ? '+' + diff : diff < 0 ? '&minus;' + -diff : '&plusmn;0'}</span>
         <span class="rating-kind">${label}</span>`;
 }
@@ -1560,7 +1564,7 @@ function durationText(seconds) {
 
 function matchTeamsHtml(g) {
     const ladder = (g.ladder && LADDER_NAMES[g.ladder]) || null;
-    const ratingTitle = ladder ? `${ladder} rating` : 'Rating';
+    const ratingTitle = ladder ? `${ladder} rating` : g.isQuickPlay ? 'Quick Play ratings are not in the live data' : 'Rating';
     return groupTeams(g.players).map(({ team, players }) => {
         const avg = team !== null ? ratingAverage(players, p => p.rating) : null;
         return `

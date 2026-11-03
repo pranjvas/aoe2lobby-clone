@@ -431,6 +431,14 @@ async function resolveMapNames(samples) {
     return added;
 }
 
+// Ranked queues by the feed's match_typeid (the schema's table) and their ladders, for a ranked game whose mode is
+// missing: RM 1v1 (5, console 16), RM team (6-8, console 17-19), EW 1v1 (10, console 20), EW team (11-13, console 21-23).
+// The console queues get the PC ladders, as they do through ladderFor when the mode is set.
+const QUEUE_LADDERS = Object.assign(Object.create(null), {
+    5: '3', 16: '3', 6: '4', 7: '4', 8: '4', 17: '4', 18: '4', 19: '4',
+    10: '13', 20: '13', 11: '14', 12: '14', 13: '14', 21: '14', 22: '14', 23: '14'
+});
+
 function buildSpectateGames({ schema, matches, elo }) {
     const label = (field, value) => {
         if (value === null || value === undefined) return null;
@@ -475,16 +483,24 @@ function buildSpectateGames({ schema, matches, elo }) {
             if (human) unknownMaps[mapId] = { matchId: gameId, profileId: human.id };
         }
         const mode = label('mode', m.mode);
-        const isRanked = m.description === 'AUTOMATCH';
-        // 1v1 or team counts AI players too (slots_taken and slots_total are unreliable)
-        const ladder = ladderFor(mode, m.map_name, players.length === 2 ? 2 : 8);
+        const queue = num(m.match_typeid);
+        // Quick Play (and Quick Play vs AI) games are matchmaking games too, with the raw Relic queue id negated as their
+        // match_typeid. They change a Quick Play rating, which none of the feed's ladders carry.
+        const isQuickPlay = m.description === 'AUTOMATCH' && queue !== null && queue < 0;
+        const isRanked = m.description === 'AUTOMATCH' && !isQuickPlay;
+        // 1v1 or team counts AI players too (slots_taken and slots_total are unreliable). A ranked game that arrives
+        // without its settings (mode null) takes the ladder from its queue instead.
+        const ladder = isQuickPlay ? null
+            : (isRanked && mode === null) ? (QUEUE_LADDERS[queue] ?? null)
+            : ladderFor(mode, m.map_name, players.length === 2 ? 2 : 8);
         for (const p of players) {
-            if (p.kind === 'human') p.rating = p.ratings[ladder] ?? null; // the lobby's own ladder, like Auto on the lobby list
+            if (p.kind === 'human') p.rating = ladder !== null ? (p.ratings[ladder] ?? null) : null; // the lobby's own ladder, like Auto on the lobby list
         }
         games.push({
             id: gameId,
-            title: isRanked ? 'Ranked match' : (str(m.description) || 'Age of Empires II Game'),
+            title: isRanked ? 'Ranked match' : isQuickPlay ? 'Quick Play' : (str(m.description) || 'Age of Empires II Game'),
             isRanked,
+            isQuickPlay,
             map: mapDisplayName(m.map_name, m.mapid, schema),
             matchType: mode,
             mapSize: label('size', m.size),
@@ -646,7 +662,8 @@ function parseMatchResult(data, game) {
         duration: done ? completedAt - game.startTime : null,
         winningTeam,
         noWinner: !members.some(m => num(own(m, 'outcome')) === 1),
-        ratingKind: game.isRanked ? 'ranked' : 'unranked', // unranked custom lobbies change a separate unranked rating
+        // Unranked custom lobbies change a separate unranked rating, and Quick Play games their own Quick Play rating
+        ratingKind: game.isRanked ? 'ranked' : game.isQuickPlay ? 'quickplay' : 'unranked',
         players,
         replay
     };

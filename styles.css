@@ -752,6 +752,17 @@ select:focus, select:hover {
     color: #60a5fa;
 }
 
+/* Quick Play matchmaking (not the ranked ladder), and the ladder a match page's ratings come from */
+.quickplay-badge {
+    background: rgba(45, 212, 191, 0.18);
+    color: #5eead4;
+}
+
+.ladder-badge {
+    background: rgba(212, 175, 55, 0.15);
+    color: var(--gold-primary);
+}
+
 /* Lobby needs a password (still joinable: the game asks for it) */
 .password-badge {
     background: rgba(248, 113, 113, 0.18);

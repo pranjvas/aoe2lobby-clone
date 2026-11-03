@@ -110,6 +110,14 @@ Every request to an external service goes through `server.js`, because the CSP i
 - **Countries:** ISO-2 codes in mixed case, so lowercase them. A few are null or missing.
 - **Counting players:** count 1v1 versus team from human and AI slots. `slots_taken` and `slots_total` are
   unreliable.
+- **Matchmaking queues:** every matchmaking game has `description` `AUTOMATCH`.
+  - A negative `match_typeid` (-18 to -21, -51) is a **Quick Play** queue, the raw Relic id negated (aoe2companion:
+    `qp_rm_1v1`, `qp_vs_ai`). These games are not ranked: title them "Quick Play". They change a Quick Play rating
+    that none of the feed's ladders (0/3/4/13/14) carries, so `ladder` and each player's `rating` are `null`.
+  - A positive `match_typeid` is a ranked queue (the schema's table).
+  - A few ranked games arrive with `mode` and the other settings null. They take the ladder from the queue:
+    5/16 RM 1v1 (3), 6-8/17-19 RM team (4), 10/20 EW 1v1 (13), 11-13/21-23 EW team (14). Any other queue gets
+    `ladder: null`, never the unranked ladder.
 - **Duplicate listings:** a player can be listed in two games at once (after leaving an older one), so a listed
   game is not guaranteed to be anyone's current game.
 - **Unlabelled civs:** `-61`, `-62` and `-63` are the only civ values the schema doesn't label (about 3% of
@@ -140,8 +148,8 @@ Every request to an external service goes through `server.js`, because the CSP i
     winning players, or "No result reported" when nobody won.
 - **Teams:** Relic `teamid` has no fixed offset from the feed's team, so join players by `profile_id` and label
   teams with the feed's team numbers.
-- **Rating change:** `newrating - oldrating`. Unranked custom lobbies change a separate **unranked** rating, so
-  label it as such. AI players have no rows.
+- **Rating change:** `newrating - oldrating`. Unranked custom lobbies change a separate **unranked** rating, and
+  Quick Play games a **Quick Play** rating, so label them as such. AI players have no rows.
 - **Relic civ ids:** `civilization_id` uses different numbering from the feed. It isn't needed, so don't map it.
 - **Replay:**
   - A `matchurls[]` row with `size > 0` means that player uploaded a replay. `-1` or no row means none, and `-1`
@@ -176,7 +184,8 @@ Player fields are the same in the list and the detail:
 - **`color`:** the display colour, 1-8, or `null`.
 - **`civ`:** the civ name, `"Unknown civ"`, or `null` when `civsHidden`.
 - **`id` and `name`:** an AI has `id: 0` and `name: "AI"`. A nameless human is `Player <id>`.
-- **`rating` and `ratings`:** for humans only. An AI has `rating: null` and `ratings: {}`.
+- **`rating` and `ratings`:** for humans only. An AI has `rating: null` and `ratings: {}`. `rating` is the game's
+  own `ladder`, and `null` when `ladder` is (Quick Play).
 - **`steamProfile`:** humans only, when present.
 - **`country`:** in the detail only, as a lowercase ISO-2 code or `null`.
 
@@ -188,7 +197,7 @@ Player fields are the same in the list and the detail:
   "updatedAt": 1793695667,
   "stale": false,
   "game": {
-    "id": 518421824, "title": "Ranked match", "isRanked": true, "map": "Arabia", "matchType": "Random Map",
+    "id": 518421824, "title": "Ranked match", "isRanked": true, "isQuickPlay": false, "map": "Arabia", "matchType": "Random Map",
     "mapSize": "Tiny (2 player)", "speed": "Normal", "population": 200, "server": "India", "modInfo": "No Mods",
     "startTime": 1793695658, "observerDelay": 2, "observers": 3, "ladder": "3", "civsHidden": false,
     "record": true, "endedAt": null,
@@ -210,7 +219,7 @@ When `status` is `ended`, `result` becomes the following:
   "completedAt": 1793697000, "duration": 1342,
   "winningTeam": 1,
   "noWinner": false,
-  "ratingKind": "ranked | unranked",
+  "ratingKind": "ranked | quickplay | unranked",
   "players": [ { "id": 123, "won": true, "oldRating": 1234, "newRating": 1250 } ],
   "replay": { "available": true, "profileId": 123 }
 }
@@ -263,11 +272,12 @@ When `status` is `ended`, `result` becomes the following:
 - **Teams:** teams are grouped by `team`. Each `team: null` player gets a card of their own, labelled "No team".
   The Spectate list cards use the same grouping, so free-for-all games are no longer lumped into "Team 1".
 - **Player rows:** a colour swatch, the name (AI shows as "AI"), the civ or "Hidden", the country badge, the
-  rating, and the AoE2Insights and Steam links for humans.
+  rating, and the AoE2Insights and Steam links for humans. The ratings are the game's own ladder (not Elo Type, which
+  the Spectate cards follow), so the page names it visibly ("Ratings: RM 1v1"), not only in a tooltip.
 - **Result panel:**
   - the winner (a team or the winning players);
   - Won or Lost for each player;
-  - the rating change, labelled "ranked" or "unranked rating";
+  - the rating change, labelled "ranked", "Quick Play rating" or "unranked rating";
   - the game length;
   - **Download replay**, a plain link to `aoe.ms`.
 - **Spectator delay:** worded as "Spectators watch about N min behind the live game". While elapsed time is under

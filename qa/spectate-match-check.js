@@ -60,13 +60,14 @@ function gameProblems(g, { detail, ended }) {
     if (!g || typeof g !== 'object') return ['not an object'];
     expect(isInt(g.id) && g.id > 0, 'id');
     expect(isText(g.title), 'title');
-    expect(typeof g.isRanked === 'boolean', 'isRanked');
+    expect(typeof g.isRanked === 'boolean' && typeof g.isQuickPlay === 'boolean' && !(g.isRanked && g.isQuickPlay), 'isRanked/isQuickPlay');
     expect(isText(g.map), 'map');
     for (const k of ['matchType', 'mapSize', 'speed', 'server']) expect(nullOr(g[k], isText), k);
     expect(nullOr(g.population, Number.isFinite), 'population');
     expect(typeof g.modInfo === 'string', 'modInfo');
     for (const k of ['startTime', 'observerDelay', 'observers']) expect(Number.isFinite(g[k]), k);
-    expect(typeof g.ladder === 'string' && /^\d+$/.test(g.ladder), 'ladder');
+    // null for Quick Play (its rating is not in the feed), and for a ranked game whose queue names no ladder
+    expect(nullOr(g.ladder, l => typeof l === 'string' && /^\d+$/.test(l)) && (!g.isQuickPlay || g.ladder === null), 'ladder');
     expect(typeof g.civsHidden === 'boolean', 'civsHidden');
     expect(typeof g.record === 'boolean', 'record');
     expect(ended ? isInt(g.endedAt) && g.endedAt > 0 : g.endedAt === null, 'endedAt');
@@ -105,7 +106,7 @@ function resultProblems(r) {
     expect(nullOr(r.completedAt, isInt) && nullOr(r.duration, d => isInt(d) && d >= 0), 'completedAt/duration');
     expect(nullOr(r.winningTeam, t => isInt(t) && t >= 1 && t <= 4), 'winningTeam');
     expect(typeof r.noWinner === 'boolean', 'noWinner');
-    expect(r.ratingKind === 'ranked' || r.ratingKind === 'unranked', 'ratingKind');
+    expect(['ranked', 'quickplay', 'unranked'].includes(r.ratingKind), 'ratingKind');
     expect(Array.isArray(r.players) && r.players.every(p => isInt(p.id) && typeof p.won === 'boolean' && nullOr(p.oldRating, isInt) && nullOr(p.newRating, isInt)), 'players');
     expect(r.replay && typeof r.replay.available === 'boolean' && (r.replay.available ? isInt(r.replay.profileId) : r.replay.profileId === null), 'replay');
     expect(!/https?:|blob/.test(JSON.stringify(r)), 'no URLs in the result');
