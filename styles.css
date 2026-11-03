@@ -1,3 +1,41 @@
+/* Self-hosted fonts (latin subset from Google Fonts, SIL Open Font License): no requests to Google */
+@font-face {
+    font-family: 'Cinzel';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('fonts/cinzel-400.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+    font-family: 'Cinzel';
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url('fonts/cinzel-600.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+    font-family: 'Cinzel';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url('fonts/cinzel-700.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Outfit is a variable font: one file covers weights 300 to 700 */
+@font-face {
+    font-family: 'Outfit';
+    font-style: normal;
+    font-weight: 300 700;
+    font-display: swap;
+    src: url('fonts/outfit-variable.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 :root {
     /* Color Palette */
     --bg-dark: #0a0c10;
@@ -17,7 +55,7 @@
     
     /* Typography */
     --font-heading: 'Cinzel', serif;
-    --font-body: 'Outfit', 'Inter', sans-serif;
+    --font-body: 'Outfit', sans-serif;
 }
 
 * {
@@ -711,6 +749,12 @@ select:focus, select:hover {
     color: #60a5fa;
 }
 
+/* Lobby needs a password (still joinable: the game asks for it) */
+.password-badge {
+    background: rgba(248, 113, 113, 0.18);
+    color: #fca5a5;
+}
+
 /* Loader Animation */
 .loader-container {
     display: flex;
@@ -856,6 +900,10 @@ select:focus, select:hover {
     margin: 0.5rem 0 0;
 }
 
+.about-section a {
+    color: var(--gold-primary);
+}
+
 /* "Clear filters": next to the lobby count, and inside the empty state */
 .clear-filters-btn {
     margin-left: 0.75rem;
@@ -987,6 +1035,18 @@ input.filter-active {
     display: flex;
     justify-content: center;
     padding: 1rem 0;
+}
+
+/* "Live game data unavailable since HH:MM" above the Spectate list */
+.spectate-notice {
+    grid-column: 1 / -1;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    border: 1px solid var(--gold-dim);
+    background: rgba(212, 175, 55, 0.08);
+    color: var(--gold-primary);
+    font-weight: 500;
+    text-align: center;
 }
 
 .ai-count {

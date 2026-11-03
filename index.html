@@ -52,14 +52,9 @@
         ]
     }
     </script>
-    
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    
-    <!-- Styles -->
-    <link rel="stylesheet" href="./styles.css?v=20">
+
+    <!-- Styles (fonts are self-hosted from /fonts, see styles.css) -->
+    <link rel="stylesheet" href="./styles.css?v=21">
 </head>
 <body>
     <!-- Background Elements -->
@@ -306,7 +301,7 @@
                 <h2>Frequently asked questions</h2>
                 <details>
                     <summary>How do I join a lobby?</summary>
-                    <p>Press <strong>Join Game</strong> on a lobby card. Your browser opens Age of Empires II: DE and joins that lobby; the game needs to be installed and you need to be signed in. Lobbies with no open slots show <strong>Lobby Full</strong>.</p>
+                    <p>Press <strong>Join Game</strong> on a lobby card. Your browser opens Age of Empires II: DE and joins that lobby; the game needs to be installed and you need to be signed in. Lobbies with no open slots show <strong>Lobby Full</strong>, and lobbies marked <strong>Password</strong> ask for the password when you join.</p>
                 </details>
                 <details>
                     <summary>Can I watch games that already started?</summary>
@@ -326,14 +321,20 @@
                 </details>
                 <details>
                     <summary>Where does the data come from?</summary>
-                    <p>Lobby data comes from the game's public lobby service and player ratings from aoe2lobby.com. AoE2Lobby.online is a fan-made site and isn't affiliated with Microsoft, Xbox Game Studios, World's Edge or Forgotten Empires.</p>
+                    <p>The lobby list comes from the game's public lobby service. Lobby settings (such as starting age, resources, treaty and mods), AI slots, player ratings, Steam links and the Spectate list come from <a href="https://aoe2lobby.com/" target="_blank" rel="noopener">aoe2lobby.com</a>, and map names from <a href="https://www.aoe2companion.com/" target="_blank" rel="noopener">aoe2companion.com</a>. AoE2Lobby.online is a fan-made site and isn't affiliated with Microsoft, Xbox Game Studios, World's Edge or Forgotten Empires.</p>
+                </details>
+                <details>
+                    <summary>Privacy and contact</summary>
+                    <p>AoE2Lobby.online has no accounts and sets no cookies. The only thing it stores in your browser is your filter and view choices, under the <code>aoe2State</code> key in local storage, so they are still set on your next visit; clearing this site's data removes them. Visits are counted with Cloudflare Web Analytics, which is cookieless.</p>
+                    <p>Player names, ratings and Steam links come from the sources above: the game's public lobby service and aoe2lobby.com (aoe2companion.com is only used to look up map names). The server keeps player profiles in memory only, so they are gone when it restarts. Its access logs keep visitors' IP addresses masked (the last part removed) for 30 days.</p>
+                    <p>Contact details, including how to ask for something to be removed, will be added here.</p>
                 </details>
             </section>
         </main>
     </div>
 
     <!-- Scripts -->
-    <script src="app.js?v=22"></script>
+    <script src="app.js?v=23"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>
