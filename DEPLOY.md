@@ -76,9 +76,9 @@ Use `sudo -u aoe2 pm2 ...` for pm2 commands. Running `pm2` as root starts a seco
 - SSH: `ssh -i ~/.ssh/aoe2lobby_vps root@85.190.254.97` (key added with `deploy/add-key.ps1`)
 - Visits: Cloudflare dashboard -> Analytics -> Web analytics -> aoe2lobby.online (beacon snippet in `index.html`)
 - Caddy: admin API on the unix socket `/var/lib/caddy/admin.sock` (no TCP port 2019), HTTP/1.1 and HTTP/2 only
-  (ufw drops UDP 443). The Content-Security-Policy is sent as `Content-Security-Policy-Report-Only`; once the
-  browser console shows no violations on Lobbies, Players and Spectate, rename the header to
-  `Content-Security-Policy` in `deploy/Caddyfile`.
+  (ufw drops UDP 443). The Content-Security-Policy in `deploy/Caddyfile` is enforced: the page may load
+  scripts, fonts, images and API calls only from its own origin plus Cloudflare Web Analytics. Add an origin
+  there before the page uses a new external resource, or the browser blocks it.
 - Access log: `/var/log/caddy/access.log`, client IPs masked to /24 (IPv4) and /48 (IPv6), rolled at 50 MB,
   5 files kept for at most 30 days.
 

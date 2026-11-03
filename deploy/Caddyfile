@@ -14,8 +14,9 @@ aoe2lobby.online {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
-		# Report-only until the browser console shows no violations; then rename to Content-Security-Policy
-		Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://cloudflareinsights.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+		# Enforced since 3 Nov 2026 (no violations on Lobbies, Players or Spectate while it was report-only).
+		# A new external script, font, image or API needs its origin added here first.
+		Content-Security-Policy "default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://cloudflareinsights.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 	}
 	# Access log with IPs masked to /24 (IPv4) and /48 (IPv6), kept at most 30 days
 	log {
