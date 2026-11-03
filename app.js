@@ -240,6 +240,7 @@ function parseRelicLobby(match) {
             <div class="player-item" style="display: flex; align-items: center; justify-content: space-between;">
                 <span class="player-name" style="display: flex; align-items: center; gap: 6px;">
                     T${p.team} - ${esc(p.name)}
+                    ${p.civ ? `<span class="civ-chip" title="Civilization">${esc(p.civ)}</span>` : ''}
                     <button onclick="copyPlayerHandle(event, this, '${jsArg(p.name)}')" style="background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 0; display: flex; align-items: center;" title="Copy Handle">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                     </button>
@@ -611,7 +612,7 @@ function renderPlayers(players) {
                         </button>
                         ${p.displayElo !== null ? `<span class="elo-badge">${p.displayElo}</span>` : '<span class="elo-badge" style="background: rgba(138, 155, 178, 0.2); color: var(--text-secondary); border-color: transparent;">Unranked</span>'}
                     </div>
-                    <div class="game-title" style="font-size: 0.8em; color: var(--text-secondary);">In lobby: ${esc(p.lobbyTitle)}</div>
+                    <div class="game-title" style="font-size: 0.8em; color: var(--text-secondary);">In lobby: ${esc(p.lobbyTitle)}${p.civ ? ` · Civ: ${esc(p.civ)}` : ''}</div>
                     ${playerLinksHtml(p)}
                 </div>
             </div>
@@ -999,7 +1000,7 @@ function spectateCardHtml(g) {
                     <div class="player-item">
                         <span class="player-name" style="display: flex; align-items: center; gap: 6px;">
                             ${esc(p.name)}
-                            ${p.civ ? `<span class="player-stats">${esc(p.civ)}</span>` : ''}
+                            ${p.civ ? `<span class="civ-chip" title="Civilization">${esc(p.civ)}</span>` : ''}
                             ${playerLinksHtml(p)}
                         </span>
                         <span class="player-elo">${r != null ? r : '&mdash;'}</span>

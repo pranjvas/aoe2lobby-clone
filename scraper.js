@@ -120,7 +120,7 @@ async function dumpData() {
                         name: slot.name,
                         profileId: slot.profileid,
                         steamProfile: slot.steam_profile || null,
-                        civ: slot.civilization ? slot.civilization.toString() : "",
+                        civ: label('civilization', slot.civilization, null), // e.g. Franks, or Random / Custom / Hidden before the game starts
                         stats: pStats
                     });
                 }

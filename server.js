@@ -534,6 +534,7 @@ const server = http.createServer(async (req, res) => {
 
                 const scrapedStatsById = {};
                 const scrapedSteamById = {};
+                const scrapedCivById = {};
                 for (const name in scrapedPlayersStats) {
                     const sp = scrapedPlayersStats[name];
                     if (sp && sp.profileId && sp.stats) scrapedStatsById[String(sp.profileId)] = sp.stats;
@@ -551,6 +552,7 @@ const server = http.createServer(async (req, res) => {
                             if (p && p.name) {
                                 scrapedPlayersStats[p.name.toLowerCase()] = p;
                             }
+                            if (p && p.profileId && typeof p.civ === 'string' && p.civ) scrapedCivById[String(p.profileId)] = p.civ;
                         };
                         const processMatch = (item) => {
                             if (item.players && Array.isArray(item.players)) {
@@ -659,7 +661,8 @@ const server = http.createServer(async (req, res) => {
                         }
 
                         const steamProfile = scrapedSteamById[String(p.id)] || cached.steamProfile || null;
-                        return { id: p.id, name: cached.alias, team: p.team, elo: finalElo, totalGames: finalTotalGames, totalWins: finalTotalWins, winRate: finalWinRate, steamProfile };
+                        const civ = scrapedCivById[String(p.id)] || null;
+                        return { id: p.id, name: cached.alias, team: p.team, elo: finalElo, totalGames: finalTotalGames, totalWins: finalTotalWins, winRate: finalWinRate, steamProfile, civ };
                     }) : [];
                     
                     let finalMapName = m.mapname || "Unknown Map";
@@ -823,7 +826,7 @@ const server = http.createServer(async (req, res) => {
                         lobby.map = mapDisplayName(lobby.map);
                         const ladder = ladderFor(lobby.settings?.Mode, lobby.map, lobby.slotsTotal);
                         const parsedPlayers = (lobby.players || []).map(p => {
-                            const player = { id: p.profileId || 0, name: p.name, team: 0, elo: null, totalGames: 0, totalWins: 0, winRate: "0.0%", steamProfile: p.steamProfile || null };
+                            const player = { id: p.profileId || 0, name: p.name, team: 0, elo: null, totalGames: 0, totalWins: 0, winRate: "0.0%", steamProfile: p.steamProfile || null, civ: typeof p.civ === 'string' && p.civ ? p.civ : null };
                             const stats = (p.profileId && scrapedStatsById[String(p.profileId)]) || p.stats;
                             applyStat(player, stats && Object.keys(stats).length ? stats : null, ladder);
                             return player;
