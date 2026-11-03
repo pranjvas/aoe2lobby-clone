@@ -23,7 +23,6 @@ const FILE_ALIASES = { '/favicon.ico': '/favicon-32.png' };
 const RELIC_API = 'https://aoe-api.worldsedgelink.com/community'; // aoe-api.reliclink.com is a CNAME of this host
 // Every visitor polls /api/lobbies; build it at most once per LOBBIES_CACHE_MS and share the result
 const LOBBIES_CACHE_MS = 4000;
-const LOBBIES_MAX_STALE_MS = 60000; // older than this, a request waits for the rebuild instead of getting the old body
 let lobbiesCache = { at: 0, body: null };
 let lobbiesLoading = null, lobbiesFailUntil = 0, lobbiesFailures = 0;
 const profileCache = new Map(); // profile_id -> { alias, rating, totalGames, totalWins, winRate, stats, steamProfile, fetchedAt, lastSeen }
@@ -260,6 +259,7 @@ function parseSlotInfoIds(slotinfoBase64) {
 // using the Spectate view (each /api/spectate request may trigger a refresh; nothing polls on its own).
 const SPECTATE_REFRESH_MS = 60000;
 const SPECTATE_STALE_MS = 10 * 60 * 1000; // a snapshot older than this is reported as stale, with no games
+const SPECTATE_WAIT_MS = 2 * 60 * 1000; // older than this, a request waits for the refresh (app.js flags > 3 min as unavailable)
 const SPECTATE_ELO_TYPES = ['0', '3', '4', '13', '14'];
 let spectateCache = { at: 0, snapAt: 0, body: null };
 let spectateLoading = null, spectateFailedAt = 0;
@@ -689,11 +689,10 @@ async function buildLobbiesBody() {
         }
     }
 
-    // Remove matches that drop off the Relic API feed (unless a later page failed, so they may still be listed)
-    if (complete) {
-        for (const id of activeMatches.keys()) {
-            if (!currentMatchIds.has(id)) activeMatches.delete(id);
-        }
+    // Remove matches that drop off the Relic API feed. When a later page failed they may still be listed, so keep
+    // them, but only for 2 minutes, so a repeatedly failing page can't keep closed lobbies joinable for good
+    for (const [id, m] of activeMatches) {
+        if (!currentMatchIds.has(id) && (complete || now - m.lastSeen > 2 * 60 * 1000)) activeMatches.delete(id);
     }
     // Forget profiles that no lobby has shown for a day
     for (const [id, p] of profileCache) {
@@ -721,7 +720,7 @@ async function buildLobbiesBody() {
             const civ = lp?.civ || sp?.civ || null;
             return {
                 id: p.id, name, team: p.team, elo: cached ? cached.rating : null,
-                totalGames: cached?.totalGames || 0, totalWins: cached?.totalWins || 0, winRate: cached?.winRate || "0.0",
+                totalGames: cached?.totalGames || 0, totalWins: cached?.totalWins || 0, winRate: cached?.winRate ? String(cached.winRate).replace(/%?$/, '%') : "0.0%",
                 steamProfile, civ, statsPending: isProfileId(p.id) && !cached
             };
         });
@@ -898,7 +897,7 @@ async function handleRequest(req, res) {
                     .finally(() => { spectateLoading = null; });
             }
             // Wait for the refresh when there is nothing usable yet: no snapshot, or one too old to show
-            if (spectateLoading && (!spectateCache.body || Date.now() - spectateCache.snapAt > SPECTATE_STALE_MS)) await spectateLoading;
+            if (spectateLoading && (!spectateCache.body || Date.now() - spectateCache.snapAt > SPECTATE_WAIT_MS)) await spectateLoading;
             let body = spectateCache.body;
             if (!body) body = JSON.stringify({ updatedAt: null, stale: true, games: [] });
             else if (Date.now() - spectateCache.snapAt > SPECTATE_STALE_MS) {
@@ -914,12 +913,13 @@ async function handleRequest(req, res) {
     }
 
     if (req.url.startsWith('/api/lobbies')) {
-        // Serve the cached body; past LOBBIES_CACHE_MS refresh it in the background, and wait only when there is
-        // no body yet or it is older than LOBBIES_MAX_STALE_MS
+        // Serve the cached body; past LOBBIES_CACHE_MS refresh it. Wait for the build when there is no body or it is
+        // more than two cache periods old (a lone poller would otherwise always get the previous build); with
+        // steady traffic the body is fresh enough that requests don't wait. A failed build keeps the old body.
         const age = Date.now() - lobbiesCache.at;
         if (!lobbiesCache.body || age >= LOBBIES_CACHE_MS) {
             const pending = refreshLobbies();
-            if (pending && (!lobbiesCache.body || age > LOBBIES_MAX_STALE_MS)) await pending;
+            if (pending && (!lobbiesCache.body || age > 2 * LOBBIES_CACHE_MS)) await pending;
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(lobbiesCache.body || '{"matches":[]}');

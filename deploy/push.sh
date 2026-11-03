@@ -48,6 +48,9 @@ done
 # Exit 3 = a server-side check failed (bad release, pm2 not under systemd, health check): do not retry.
 INSTALL='
   set -e
+  # One install at a time: a retry after a dropped connection waits for the first attempt if it is still running
+  exec 9>/run/aoe2lobby-deploy.lock
+  flock -w 300 9 || { echo "An earlier deploy is still running on the server; check it, then rerun" >&2; exit 3; }
   rm -rf /root/aoe2lobby
   mkdir -p /root/aoe2lobby
   tar -xzf /root/aoe2lobby-release.tar.gz -C /root/aoe2lobby
