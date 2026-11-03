@@ -35,7 +35,10 @@ const FALLBACK_SCHEMA = {
         6: "koreacentral", 7: "centralindia", 8: "eastus", 9: "chilecentral", 10: "southcentralus"
     },
     starting_age: { 0: "Standard", 1: "Dark Age", 2: "Feudal Age", 3: "Castle Age", 4: "Imperial Age", 5: "Post-Imperial Age" },
-    resources: { 0: "Standard", 1: "Low", 2: "Medium", 3: "High", 4: "Ultra High", 5: "Infinite", 6: "Random" }
+    resources: { 0: "Standard", 1: "Low", 2: "Medium", 3: "High", 4: "Ultra High", 5: "Infinite", 6: "Random" },
+    // Civs newer than the live schema's table arrive as their raw game id negated, and the live table never labels them.
+    // The same names as NEW_CIVS in server.js (the Spectate views); keep the two in sync.
+    civilization: { "-57": "Puru", "-61": "Saxons", "-62": "Varangians", "-63": "Danes" }
 };
 let liveSchema = null;
 

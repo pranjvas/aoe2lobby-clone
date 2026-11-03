@@ -275,13 +275,14 @@ let spectateCache = { at: 0, snapAt: 0, body: null, games: new Map() };
 let spectateLoading = null, spectateFailedAt = 0;
 
 // The schema labels civs up to its own table; newer civs arrive as their raw id negated (like negative mapids).
-// Checked against aoe2companion. Never read them as abs(id): the schema's 61-63 are Return of Rome civs.
-const NEW_CIVS = Object.assign(Object.create(null), { '-61': 'Saxons', '-62': 'Varangians', '-63': 'Danes' });
+// Checked against aoe2companion. Never read them as abs(id): the schema's 57 and 61-63 are Return of Rome civs.
+// scraper.js labels lobby players with the same table (its FALLBACK_SCHEMA.civilization); keep the two in sync.
+const NEW_CIVS = Object.assign(Object.create(null), { '-57': 'Puru', '-61': 'Saxons', '-62': 'Varangians', '-63': 'Danes' });
 // The schema's 15 is singular, and three Return of Rome civs (58, 62, 66) carry internal names, not display names
 const CIV_LABEL_FIXES = Object.assign(Object.create(null), { Aztec: 'Aztecs', OldPersians: 'Persians', OldRomans: 'Romans', LacViet: 'Lac Viet' });
 const loggedUnknownCivs = new Set();
 
-// A civ label from either feed (spectate schema, or the lobby labels scraper.js wrote), as the site shows it
+// A civ label from either feed (spectate schema, or the lobby labels scraper.js wrote, NEW_CIVS included), as the site shows it
 function civLabel(label) {
     return (label && CIV_LABEL_FIXES[label]) || label;
 }

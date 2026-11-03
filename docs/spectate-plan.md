@@ -122,11 +122,15 @@ Every request to an external service goes through `server.js`, because the CSP i
 - **Duplicate listings:** a player can be listed in two games at once (after leaving an older one), so a listed
   game is not guaranteed to be anyone's current game.
 - **Unlabelled civs:** `-61`, `-62` and `-63` are the only civ values the schema doesn't label (about 3% of
-  slots, ranked games included). They look like raw ids of civs newer than the schema's table, negated, in the
-  same way negative `mapid`s are `-Number(map_name)`.
+  slots, ranked games included), plus a rare `-57`. They look like raw ids of civs newer than the schema's table,
+  negated, in the same way negative `mapid`s are `-Number(map_name)` (raw match-history `civilization_id` 61 and
+  62 are Saxons and Varangians).
 
-- **Civ table** (12 of 12 consistent against aoe2companion, across ranked, custom and vs-AI games): `-61` Saxons,
-  `-62` Varangians, `-63` Danes. Never read them as `abs(id)`, because the schema's 61-63 are Return of Rome civs.
+- **Civ table** (checked against aoe2companion across ranked, custom, Quick Play and vs-AI games): `-61` Saxons,
+  `-62` Varangians, `-63` Danes (25 of 25 consistent over two snapshots), and `-57` Puru (seen once, an AI slot in
+  518428009, with no conflicting evidence). `-56` has not been seen yet, so it stays unlabelled. Never read them as
+  `abs(id)`, because the schema's 57 and 61-63 are Return of Rome civs. scraper.js labels lobby players with the
+  same table, so the lobby list names these civs too.
   The schema's `15` "Aztec" is shown as "Aztecs", and its Return of Rome internal names `58` "OldPersians", `62`
   "OldRomans" and `66` "LacViet" as "Persians", "Romans" and "Lac Viet" (in the lobby list too).
   - Any other unlabelled id shows as `Unknown civ` and is logged once, so the table can be updated by hand.
