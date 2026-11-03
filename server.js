@@ -51,11 +51,19 @@ function profileIdOf(v) {
     const n = (typeof v === 'string' && /^\d+$/.test(v)) ? Number(v) : v;
     return isProfileId(n) ? n : 0;
 }
+// Feed text going into HTML (the match page's title and meta tags)
+function esc(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+// A match id from a URL: digits only and at most 15 of them (so always a safe integer); anything else is not an id
+function isMatchId(s) {
+    return typeof s === 'string' && /^\d{1,15}$/.test(s) && Number.isSafeInteger(Number(s));
+}
 
 const MAX_UPSTREAM_BODY = 8 * 1024 * 1024;
-function httpsGet(url) {
+function httpsGet(url, headers) {
     return new Promise((resolve, reject) => {
-        const req = https.get(url, { timeout: 5000 }, (res) => {
+        const req = https.get(url, { timeout: 5000, headers }, (res) => {
             if (res.statusCode !== 200) { res.resume(); clearTimeout(deadline); return reject(new Error('HTTP ' + res.statusCode)); }
             const chunks = [];
             let size = 0;
@@ -256,13 +264,68 @@ function parseSlotInfoIds(slotinfoBase64) {
 
 // --- Spectate: games in progress, from aoe2lobby.com's spectate feed ---------------------------------
 // The feed is ~3 MB, so it is fetched at most once per SPECTATE_REFRESH_MS and only while someone is
-// using the Spectate view (each /api/spectate request may trigger a refresh; nothing polls on its own).
+// using the Spectate view or a match page (each /api/spectate request may trigger a refresh; nothing polls
+// on its own).
 const SPECTATE_REFRESH_MS = 60000;
 const SPECTATE_STALE_MS = 10 * 60 * 1000; // a snapshot older than this is reported as stale, with no games
 const SPECTATE_WAIT_MS = 2 * 60 * 1000; // older than this, a request waits for the refresh (app.js flags > 3 min as unavailable)
 const SPECTATE_ELO_TYPES = ['0', '3', '4', '13', '14'];
-let spectateCache = { at: 0, snapAt: 0, body: null };
+// games: match id -> built game (the detail shape, with country) of the current snapshot
+let spectateCache = { at: 0, snapAt: 0, body: null, games: new Map() };
 let spectateLoading = null, spectateFailedAt = 0;
+
+// The schema labels civs up to its own table; newer civs arrive as their raw id negated (like negative mapids).
+// Checked against aoe2companion. Never read them as abs(id): the schema's 61-63 are Return of Rome civs.
+const NEW_CIVS = Object.assign(Object.create(null), { '-61': 'Saxons', '-62': 'Varangians', '-63': 'Danes' });
+const CIV_LABEL_FIXES = Object.assign(Object.create(null), { Aztec: 'Aztecs' }); // the schema's 15 is singular
+const loggedUnknownCivs = new Set();
+
+// A civ label from either feed (spectate schema, or the lobby labels scraper.js wrote), as the site shows it
+function civLabel(label) {
+    return (label && CIV_LABEL_FIXES[label]) || label;
+}
+
+function civName(civ, schema) {
+    const key = (typeof civ === 'number' || typeof civ === 'string') ? String(civ) : '';
+    const label = str(own(own(schema, 'civilization'), key)) || NEW_CIVS[key];
+    if (label) return civLabel(label);
+    // Logged once per id, so NEW_CIVS can be updated by hand
+    if (!loggedUnknownCivs.has(key) && loggedUnknownCivs.size < 100) {
+        loggedUnknownCivs.add(key);
+        console.log(`Spectate: civ id ${JSON.stringify(key.slice(0, 20))} has no label, shown as "Unknown civ" (add it to NEW_CIVS)`);
+    }
+    return 'Unknown civ';
+}
+
+// Slots by the schema's status labels (0 Open, 1 Closed, 2 AI, 3 Player). A closed slot carries a dummy civ and an
+// open one never occurs in a running game, so both are skipped. Names never decide: some humans are called "D-Computers".
+function slotKind(slot) {
+    const status = num(slot.status);
+    if (status === 3) return profileIdOf(slot.profileid) ? 'human' : null;
+    if (status === 2) return 'ai';
+    if (status === 0 || status === 1) return null;
+    // No (known) status: a profile id means a human, else a team and colour mean an AI, else the slot is closed
+    if (profileIdOf(slot.profileid)) return 'human';
+    return (num(slot.team) !== null && num(slot.color) !== null) ? 'ai' : null;
+}
+
+// Feed team 1 is "no team" (custom games, free-for-all) and 2-5 are Teams 1-4; matchmaking uses 2 and 3
+function displayTeam(team) {
+    const t = num(team);
+    return (Number.isInteger(t) && t >= 2 && t <= 5) ? t - 1 : null;
+}
+
+// Feed colours 0-7 are player colours 1-8 (Blue, Red, Green, Yellow, Teal, Pink, Grey, Orange)
+function displayColor(color) {
+    const c = num(color);
+    return (Number.isInteger(c) && c >= 0 && c <= 7) ? c + 1 : null;
+}
+
+// ISO-2 codes arrive in mixed case; a few are null or missing
+function countryCode(country) {
+    const c = typeof country === 'string' ? country.toLowerCase() : '';
+    return /^[a-z]{2}$/.test(c) ? c : null;
+}
 
 function fetchSpectateSnapshot() {
     return new Promise((resolve, reject) => {
@@ -379,33 +442,44 @@ function buildSpectateGames({ schema, matches, elo }) {
         if (!m || typeof m !== 'object' || m.observable === false) continue;
         const gameId = Number(m.matchid);
         if (!Number.isSafeInteger(gameId) || gameId <= 0) continue;
+        // Hidden-civ games still carry the real picks, so they are dropped here or the page would reveal them
+        const civsHidden = m.hide_civilizations === true;
         const players = [];
         for (const slot of Object.values(m.slots || {})) {
             if (!slot || typeof slot !== 'object') continue;
-            if (!slot.profileid && !slot.name) continue;
+            const kind = slotKind(slot);
+            if (!kind) continue;
+            const team = displayTeam(slot.team), color = displayColor(slot.color);
+            const civ = civsHidden ? null : civName(slot.civilization, schema);
+            if (kind === 'ai') {
+                players.push({ id: 0, name: 'AI', kind, team, color, civ, rating: null, ratings: {} });
+                continue;
+            }
             const id = profileIdOf(slot.profileid);
             const ratings = {};
             for (const type of SPECTATE_ELO_TYPES) {
-                const st = id && own(elo[type], String(id));
+                const st = own(elo[type], String(id));
                 if (st && Number.isFinite(st.rating)) ratings[type] = st.rating;
             }
-            players.push({
-                id, name: str(slot.name) || 'AI', team: num(slot.team), color: num(slot.color),
-                civ: label('civilization', slot.civilization), country: str(slot.country),
-                steamProfile: str(slot.steam_profile), ratings
-            });
+            const player = { id, name: str(slot.name) || `Player ${id}`, kind, team, color, civ, country: countryCode(slot.country) };
+            const steamProfile = str(slot.steam_profile);
+            if (steamProfile) player.steamProfile = steamProfile;
+            player.rating = null;
+            player.ratings = ratings;
+            players.push(player);
         }
         if (!players.length) continue;
         const mapId = (typeof m.map_name === 'number' || typeof m.map_name === 'string') ? String(m.map_name) : '';
         if (/^\d+$/.test(mapId) && !own(mapNames, mapId) && !unknownMaps[mapId]) {
-            const withId = players.find(p => p.id);
-            if (withId) unknownMaps[mapId] = { matchId: gameId, profileId: withId.id };
+            const human = players.find(p => p.kind === 'human');
+            if (human) unknownMaps[mapId] = { matchId: gameId, profileId: human.id };
         }
         const mode = label('mode', m.mode);
         const isRanked = m.description === 'AUTOMATCH';
+        // 1v1 or team counts AI players too (slots_taken and slots_total are unreliable)
         const ladder = ladderFor(mode, m.map_name, players.length === 2 ? 2 : 8);
         for (const p of players) {
-            p.rating = p.ratings[ladder] ?? null; // the lobby's own ladder, like Auto on the lobby list
+            if (p.kind === 'human') p.rating = p.ratings[ladder] ?? null; // the lobby's own ladder, like Auto on the lobby list
         }
         games.push({
             id: gameId,
@@ -422,6 +496,9 @@ function buildSpectateGames({ schema, matches, elo }) {
             observerDelay: num(m.observer_delay, 0),
             observers: num(m.observers, 0),
             ladder,
+            civsHidden,
+            record: m.record !== false,
+            endedAt: null,
             players
         });
     }
@@ -429,24 +506,311 @@ function buildSpectateGames({ schema, matches, elo }) {
     return { games, unknownMaps };
 }
 
-// updatedAt is when the snapshot was taken, not when the body was (re)built
+// updatedAt is when the snapshot was taken, not when the body was (re)built. The list drops country (it doesn't
+// show it); the detail API serves the games kept in `games`, which have it.
 function spectateBody(snapshot, snapAt) {
     const { games, unknownMaps } = buildSpectateGames(snapshot);
-    return { body: JSON.stringify({ updatedAt: Math.floor(snapAt / 1000), stale: false, games }), unknownMaps };
+    const listGames = games.map(g => ({ ...g, players: g.players.map(({ country, ...p }) => p) }));
+    return {
+        body: JSON.stringify({ updatedAt: Math.floor(snapAt / 1000), stale: false, games: listGames }),
+        games: new Map(games.map(g => [g.id, g])),
+        unknownMaps
+    };
 }
 
 async function refreshSpectate() {
     const snapAt = Date.now();
     const snapshot = await fetchSpectateSnapshot();
-    const { body, unknownMaps } = spectateBody(snapshot, snapAt);
-    const entry = { at: Date.now(), snapAt, body };
+    const { body, games, unknownMaps } = spectateBody(snapshot, snapAt);
+    noteEndedGames(spectateCache.games, games, snapAt);
+    const entry = { at: Date.now(), snapAt, body, games };
     spectateCache = entry;
     // Look up unknown map names in the background, then rebuild this snapshot with them (unless a newer one replaced it)
     if (Object.keys(unknownMaps).length) {
         resolveMapNames(unknownMaps).then(added => {
-            if (added && spectateCache === entry) entry.body = spectateBody(snapshot, snapAt).body;
+            if (!added || spectateCache !== entry) return;
+            const rebuilt = spectateBody(snapshot, snapAt);
+            entry.body = rebuilt.body;
+            entry.games = rebuilt.games;
         }).catch(e => console.error('Map name lookup failed:', e.message));
     }
+}
+
+// One freshness rule for the list and the detail API: refresh the snapshot on demand at most once per
+// SPECTATE_REFRESH_MS, and wait for the refresh only when there is nothing usable yet (no snapshot, or one too old to show)
+async function freshSpectate() {
+    const now = Date.now();
+    if (now - spectateCache.at > SPECTATE_REFRESH_MS && !spectateLoading && now - spectateFailedAt > SPECTATE_REFRESH_MS) {
+        spectateLoading = refreshSpectate()
+            .catch(e => {
+                spectateFailedAt = Date.now();
+                console.error('Spectate refresh failed:', e.message);
+            })
+            .finally(() => { spectateLoading = null; });
+    }
+    if (spectateLoading && (!spectateCache.body || Date.now() - spectateCache.snapAt > SPECTATE_WAIT_MS)) await spectateLoading;
+    return spectateCache;
+}
+
+// --- Spectate: games that left the feed, and their results from World's Edge's match history --------------
+// A game missing from a new snapshot has ended; its page then shows the winner, rating changes and replay link.
+const ENDED_KEEP_MS = 2 * 60 * 60 * 1000;
+const ENDED_MAX = 5000;
+const RESULT_GIVE_UP_S = 15 * 60; // after the game left the feed
+const RESULT_FAST_S = 3 * 60; // retries are >= 20 s apart for this long after the game ended, then >= 60 s
+const RESULT_WAIT_MS = 3000; // the longest a detail request waits for a lookup in flight
+const endedGames = new Map(); // match id -> { game (with endedAt), result, lookup, lastTryAt, tries }, oldest first
+// World's Edge serves the lobby list too: lookups run one at a time, >= 1 s apart, at most 30 a minute
+let resultLookupBusy = false;
+const resultLookupStarts = []; // start times (ms) within the last minute
+
+// Called on each refresh. endedAt is the new snapshot's time; a game listed again is live again.
+function noteEndedGames(prevGames, games, snapAt) {
+    const endedAt = Math.floor(snapAt / 1000);
+    for (const [id, game] of prevGames) {
+        if (!games.has(id)) endedGames.set(id, { game: { ...game, endedAt }, result: null, lookup: null, lastTryAt: 0, tries: 0 });
+    }
+    for (const id of games.keys()) endedGames.delete(id);
+    pruneEndedGames();
+}
+
+// Map order is insertion order, which is endedAt order: drop expired entries, then the oldest past the cap
+function pruneEndedGames() {
+    const oldest = Math.floor((Date.now() - ENDED_KEEP_MS) / 1000);
+    for (const [id, e] of endedGames) {
+        if (e.game.endedAt < oldest || endedGames.size > ENDED_MAX) endedGames.delete(id);
+    }
+}
+
+// A game by id: live in the given snapshot, or ended within ENDED_KEEP_MS
+function spectateGameById(cache, id) {
+    const live = cache.games.get(id);
+    if (live) return { status: 'live', game: live, ended: null };
+    const ended = endedGames.get(id);
+    if (ended && ended.game.endedAt >= Math.floor((Date.now() - ENDED_KEEP_MS) / 1000)) return { status: 'ended', game: ended.game, ended };
+    return { status: 'unknown', game: null, ended: null };
+}
+
+function emptyResult(state) {
+    return { state, completedAt: null, duration: null, winningTeam: null, noWinner: null, ratingKind: null, players: null, replay: null };
+}
+
+// The result of `game` from one getRecentMatchHistory response, or null while the game isn't in it. The history is
+// unsorted and holds older games, so the entry must match both the id and the start time. Only ids, outcomes,
+// ratings, times and replay sizes are read: matchurls[].url is a signed blob URL and is never touched.
+function parseMatchResult(data, game) {
+    const history = own(data, 'matchHistoryStats');
+    if (!Array.isArray(history)) return null;
+    const entry = history.find(e => num(own(e, 'id')) === game.id && num(own(e, 'startgametime')) === game.startTime);
+    if (!entry) return null;
+    const members = Array.isArray(entry.matchhistorymember) ? entry.matchhistorymember : [];
+    const rowById = new Map();
+    for (const m of members) {
+        const id = profileIdOf(own(m, 'profile_id'));
+        if (id && !rowById.has(id)) rowById.set(id, m);
+    }
+    const rating = (v) => { const n = num(v); return (Number.isSafeInteger(n) && n > 0 && n < 10000) ? n : null; };
+    // Relic's teamid has no fixed offset from the feed's team, so players are joined by profile id and labelled
+    // with the feed's teams. AI players have no rows.
+    const teamOf = new Map();
+    const players = [];
+    for (const p of game.players) {
+        const row = p.kind === 'human' ? rowById.get(p.id) : undefined;
+        if (!row || teamOf.has(p.id)) continue;
+        teamOf.set(p.id, p.team);
+        players.push({ id: p.id, won: num(own(row, 'outcome')) === 1, oldRating: rating(own(row, 'oldrating')), newRating: rating(own(row, 'newrating')) });
+    }
+    // A winning team only when every winner has the same feed team and no loser shares it (custom lobbies can have
+    // several winning teams, everyone winning, or nobody)
+    const winnerTeams = players.filter(p => p.won).map(p => teamOf.get(p.id));
+    const loserTeams = players.filter(p => !p.won).map(p => teamOf.get(p.id));
+    const team = winnerTeams[0] ?? null;
+    const winningTeam = (team !== null && winnerTeams.every(t => t === team) && !loserTeams.includes(team)) ? team : null;
+    const completedAt = num(own(entry, 'completiontime'));
+    const done = Number.isSafeInteger(completedAt) && completedAt >= game.startTime && game.startTime > 0;
+    // The largest upload among the game's humans; size -1 or no row means that player has no replay (not a temporary state)
+    const humanIds = new Set(game.players.filter(p => p.kind === 'human').map(p => p.id));
+    let replay = { available: false, profileId: null }, best = 0;
+    if (game.record !== false && Array.isArray(entry.matchurls)) {
+        for (const u of entry.matchurls) {
+            const id = profileIdOf(own(u, 'profile_id')), size = num(own(u, 'size'));
+            if (humanIds.has(id) && Number.isSafeInteger(size) && size > best) {
+                best = size;
+                replay = { available: true, profileId: id };
+            }
+        }
+    }
+    return {
+        state: 'found',
+        completedAt: done ? completedAt : null,
+        duration: done ? completedAt - game.startTime : null,
+        winningTeam,
+        noWinner: !members.some(m => num(own(m, 'outcome')) === 1),
+        ratingKind: game.isRanked ? 'ranked' : 'unranked', // unranked custom lobbies change a separate unranked rating
+        players,
+        replay
+    };
+}
+
+// Starts a result lookup for an ended game when its own and the global limits allow; otherwise does nothing and the
+// result stays pending (the page asks again). Only detail requests call this.
+function startResultLookup(ended) {
+    if (ended.result || ended.lookup) return;
+    const now = Date.now();
+    const humans = ended.game.players.filter(p => p.kind === 'human');
+    const sinceEnd = now / 1000 - ended.game.endedAt;
+    if (!humans.length || sinceEnd > RESULT_GIVE_UP_S) {
+        ended.result = emptyResult('unavailable');
+        return;
+    }
+    if (now - ended.lastTryAt < (sinceEnd < RESULT_FAST_S ? 20000 : 60000)) return;
+    while (resultLookupStarts.length && now - resultLookupStarts[0] >= 60000) resultLookupStarts.shift();
+    if (resultLookupBusy || resultLookupStarts.length >= 30 || now - (resultLookupStarts.at(-1) ?? 0) < 1000) return;
+    resultLookupBusy = true;
+    resultLookupStarts.push(now);
+    ended.lastTryAt = now;
+    // Each retry asks for a different player's history, in case one player's list is slow to update
+    const profileId = humans[ended.tries++ % humans.length].id;
+    ended.lookup = httpsGet(`${RELIC_API}/leaderboard/getRecentMatchHistory?title=age2&profile_ids=[${profileId}]`,
+        { 'User-Agent': 'aoe2lobby.online (spectate results)' })
+        .then(text => {
+            let data;
+            try { data = JSON.parse(text); } catch (e) { throw new Error('invalid JSON'); } // the parser's message would quote the body
+            const result = parseMatchResult(data, ended.game);
+            if (result) ended.result = result;
+        })
+        .catch(e => console.error(`Spectate result lookup for ${ended.game.id} failed:`, e.message))
+        .finally(() => {
+            resultLookupBusy = false;
+            ended.lookup = null;
+        });
+}
+
+// Waits for a promise that never rejects, but at most ms (it keeps running after that)
+function settleWithin(promise, ms) {
+    let timer;
+    return Promise.race([promise, new Promise(resolve => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
+}
+
+async function serveSpectateList(res) {
+    let body;
+    try {
+        const cache = await freshSpectate();
+        body = cache.body;
+        if (!body) body = JSON.stringify({ updatedAt: null, stale: true, games: [] });
+        else if (Date.now() - cache.snapAt > SPECTATE_STALE_MS) {
+            body = JSON.stringify({ updatedAt: Math.floor(cache.snapAt / 1000), stale: true, games: [] });
+        }
+    } catch (e) {
+        body = JSON.stringify({ updatedAt: null, stale: true, games: [] });
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(body);
+}
+
+async function serveSpectateMatch(res, id) {
+    const cache = await freshSpectate();
+    const found = spectateGameById(cache, id);
+    let result = null;
+    if (found.ended) {
+        startResultLookup(found.ended);
+        if (found.ended.lookup) await settleWithin(found.ended.lookup, RESULT_WAIT_MS);
+        result = found.ended.result || emptyResult('pending');
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+        status: found.status,
+        updatedAt: cache.body ? Math.floor(cache.snapAt / 1000) : null,
+        stale: !cache.body || Date.now() - cache.snapAt > SPECTATE_STALE_MS,
+        game: found.game,
+        result
+    }));
+}
+
+// --- Spectate: /spectate/<matchId> serves index.html with the match's own title and preview tags ----------
+// The tags are found by their one-line format in index.html; a missing one is logged once and the page served anyway.
+const SITE_URL = 'https://aoe2lobby.online';
+const PAGE_SUFFIX = ' – Spectate | AoE2Lobby.online';
+const loggedMissingTags = new Set();
+
+// Feed text as one line of at most max characters, cut on a code point with an ellipsis
+function clipText(text, max) {
+    const chars = Array.from(String(text).replace(/[\x00-\x1F\x7F\s]+/g, ' ').trim());
+    return chars.length > max ? chars.slice(0, max - 1).join('').trimEnd() + '…' : chars.join('');
+}
+
+// Teams in display order; each player without a team is a side of their own (free-for-all, some custom games)
+function spectateSides(players) {
+    const teams = new Map(), solo = [];
+    for (const p of players) {
+        if (p.team === null) solo.push([p]);
+        else if (teams.has(p.team)) teams.get(p.team).push(p);
+        else teams.set(p.team, [p]);
+    }
+    return [...[...teams.keys()].sort((a, b) => a - b).map(t => teams.get(t)), ...solo];
+}
+
+// Plain text (escaped later) for the page's title and description; civs are left out, so hidden civs stay hidden
+function spectatePageText(id, game) {
+    if (!game) {
+        return {
+            title: `Match ${id}${PAGE_SUFFIX}`,
+            description: 'An Age of Empires II: DE game on AoE2Lobby.online. Games in progress show their teams, civs and ratings, with a one-click Watch in game link.'
+        };
+    }
+    const players = game.players, sides = spectateSides(players);
+    let head;
+    if (players.length === 2) head = `${players[0].name} vs ${players[1].name} on ${game.map}`;
+    else if (sides.length >= 2 && players.every(p => p.team !== null)) head = `${game.map} ${sides.map(s => s.length).join('v')}`;
+    else head = `${game.map} ${players.length} player${players.length === 1 ? '' : 's'}`;
+    const matchup = sides.map(s => s.map(p => p.rating != null ? `${p.name} (${p.rating})` : p.name).join(', ')).join(' vs ');
+    const details = [game.title, game.matchType, game.server && `${game.server} server`].filter(Boolean).join(', ');
+    const delay = game.observerDelay > 0 ? `Spectators watch about ${game.observerDelay} min behind the live game.` : 'Spectators watch the live game without delay.';
+    const description = game.endedAt
+        ? `Finished Age of Empires II game on ${game.map}: ${matchup}. ${details}.`
+        : `Live Age of Empires II game on ${game.map}: ${matchup}. ${details}. ${delay}`;
+    return { title: clipText(head, 70 - PAGE_SUFFIX.length) + PAGE_SUFFIX, description: clipText(description, 200) };
+}
+
+function logMissingTag(name) {
+    if (loggedMissingTags.has(name)) return;
+    loggedMissingTags.add(name);
+    console.error(`Match page: index.html has no ${name} tag, served without replacing it`);
+}
+
+// Uses whatever snapshot is cached: a page view never triggers a feed refresh (the page's own script calls the API)
+async function serveSpectatePage(res, id) {
+    let html;
+    try {
+        html = await fs.promises.readFile(path.join(__dirname, 'index.html'), 'utf8');
+    } catch (e) {
+        res.writeHead(e.code === 'ENOENT' ? 404 : 500);
+        res.end(e.code === 'ENOENT' ? 'File not found' : 'Server error: ' + e.code);
+        return;
+    }
+    const { title, description } = spectatePageText(id, spectateGameById(spectateCache, id).game);
+    const url = `${SITE_URL}/spectate/${id}`;
+    const tags = [
+        ['title', /<title>[^<]*<\/title>/i, `<title>${esc(title)}</title>`],
+        ['description', /<meta\s+name="description"\s+content="[^"]*"\s*\/?>/i, `<meta name="description" content="${esc(description)}">`],
+        ['canonical', /<link\s+rel="canonical"\s+href="[^"]*"\s*\/?>/i, `<link rel="canonical" href="${url}">`],
+        ['og:title', /<meta\s+property="og:title"\s+content="[^"]*"\s*\/?>/i, `<meta property="og:title" content="${esc(title)}">`],
+        ['og:description', /<meta\s+property="og:description"\s+content="[^"]*"\s*\/?>/i, `<meta property="og:description" content="${esc(description)}">`],
+        ['og:url', /<meta\s+property="og:url"\s+content="[^"]*"\s*\/?>/i, `<meta property="og:url" content="${url}">`]
+    ];
+    // A replacer function, so "$&" and the like in feed text stay literal
+    for (const [name, re, tag] of tags) {
+        if (re.test(html)) html = html.replace(re, () => tag);
+        else logMissingTag(name);
+    }
+    // Match pages only live for a game's length, so they stay out of search results (the header covers a missing tag)
+    const robots = '<meta name="robots" content="noindex">';
+    const robotsRe = /<meta\s+name="robots"\s+content="[^"]*"\s*\/?>/i;
+    if (robotsRe.test(html)) html = html.replace(robotsRe, () => robots);
+    else if (html.includes('</head>')) html = html.replace('</head>', () => `    ${robots}\n</head>`);
+    else logMissingTag('robots');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Robots-Tag': 'noindex' });
+    res.end(html);
 }
 
 // --- Lobbies: Relic's advertisement list, joined with aoe2lobby.com's data (scraper.js) by match id -------
@@ -486,8 +850,9 @@ function readScrapedJson(file) {
 }
 
 // One player of a scraped lobby (scraper.js format), with every field type-checked
+// (civ is a label scraper.js took from the lobby feed's schema: named the way the spectate view names it)
 function scrapedLobbyPlayer(p) {
-    return { name: str(p.name), profileId: profileIdOf(p.profileId), civ: str(p.civ), steamProfile: str(p.steamProfile), stats: cleanStats(p.stats) };
+    return { name: str(p.name), profileId: profileIdOf(p.profileId), civ: civLabel(str(p.civ)), steamProfile: str(p.steamProfile), stats: cleanStats(p.stats) };
 }
 
 // scraped_lobbies_v2.json is keyed by aoe2lobby.com's match id, the same id Relic uses. Parsed once per build;
@@ -885,30 +1250,31 @@ async function handleRequest(req, res) {
         return;
     }
 
-    if (req.url.startsWith('/api/spectate')) {
-        try {
-            const now = Date.now();
-            if (now - spectateCache.at > SPECTATE_REFRESH_MS && !spectateLoading && now - spectateFailedAt > SPECTATE_REFRESH_MS) {
-                spectateLoading = refreshSpectate()
-                    .catch(e => {
-                        spectateFailedAt = Date.now();
-                        console.error('Spectate refresh failed:', e.message);
-                    })
-                    .finally(() => { spectateLoading = null; });
-            }
-            // Wait for the refresh when there is nothing usable yet: no snapshot, or one too old to show
-            if (spectateLoading && (!spectateCache.body || Date.now() - spectateCache.snapAt > SPECTATE_WAIT_MS)) await spectateLoading;
-            let body = spectateCache.body;
-            if (!body) body = JSON.stringify({ updatedAt: null, stale: true, games: [] });
-            else if (Date.now() - spectateCache.snapAt > SPECTATE_STALE_MS) {
-                body = JSON.stringify({ updatedAt: Math.floor(spectateCache.snapAt / 1000), stale: true, games: [] });
-            }
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(body);
-        } catch (e) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ updatedAt: null, stale: true, games: [] }));
+    // Spectate routes match the whole path (the query string is dropped): "/api/spectate", "/api/spectate/<id>"
+    // and "/spectate/<id>" with an optional trailing slash. Anything else under them is a 404, never a static file.
+    const pathname = req.url.split('?')[0];
+    if (pathname === '/api/spectate') {
+        await serveSpectateList(res);
+        return;
+    }
+    if (pathname.startsWith('/api/spectate/')) {
+        const id = pathname.slice('/api/spectate/'.length);
+        if (!isMatchId(id)) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Not a match id' }));
+            return;
         }
+        await serveSpectateMatch(res, Number(id));
+        return;
+    }
+    if (pathname.startsWith('/spectate/')) {
+        const id = pathname.slice('/spectate/'.length).replace(/\/$/, '');
+        if (!isMatchId(id)) {
+            res.writeHead(404);
+            res.end('File not found');
+            return;
+        }
+        await serveSpectatePage(res, Number(id));
         return;
     }
 
@@ -927,7 +1293,6 @@ async function handleRequest(req, res) {
     }
 
     // Serve static files (the query string is dropped first, so "/?fbclid=..." is the home page)
-    const pathname = req.url.split('?')[0];
     const isVersioned = /[?&]v=/.test(req.url);
     let filePath = pathname === '/' ? '/index.html' : pathname;
     filePath = own(FILE_ALIASES, filePath) || filePath;
