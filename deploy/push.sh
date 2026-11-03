@@ -14,7 +14,7 @@ SSH_OPTS=(-i "$KEY" -o ServerAliveInterval=15 -o ServerAliveCountMax=8 -o Connec
 # deploy/setup.sh copies the same list on a fresh server: keep the two in sync.
 FILES=(
   package.json package-lock.json ecosystem.config.js server.js scraper.js
-  index.html app.js styles.css fonts
+  index.html app.js styles.css overlay.html overlay.js overlay.css civ-info.json fonts
   favicon.png favicon-32.png apple-touch-icon.png icon-192.png icon-512.png og-image.png
   site.webmanifest robots.txt sitemap.xml 7e7c007e5148f7d5a2953120e8410d70.txt
   deploy
@@ -56,7 +56,7 @@ INSTALL='
   tar -xzf /root/aoe2lobby-release.tar.gz -C /root/aoe2lobby
   cd /root/aoe2lobby
   { test -f server.js && test -f package.json; } || { echo "Release is incomplete" >&2; exit 3; }
-  { node --check server.js && node --check scraper.js && node --check app.js; } || exit 3
+  { node --check server.js && node --check scraper.js && node --check app.js && node --check overlay.js; } || exit 3
   # caddy validate opens the access log as root: create it as caddy first, or Caddy could not write it
   [ -e /var/log/caddy/access.log ] || install -o caddy -g caddy -m 600 /dev/null /var/log/caddy/access.log
   caddy validate --adapter caddyfile --config /root/aoe2lobby/deploy/Caddyfile || exit 3

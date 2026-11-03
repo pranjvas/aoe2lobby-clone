@@ -98,6 +98,10 @@ let pollTimer;
 let isInitialLoad = true;
 
 function init() {
+    // Every page: civ details for the civ chips, and alerts for followed players
+    loadFollows();
+    loadCivInfo();
+    scheduleFollowPoll(0);
     // A match page (/spectate/<id>) shows that one game in place of the lists, and never polls the lobby list
     if (matchPageId && matchView) {
         initMatchPage();
@@ -154,6 +158,16 @@ document.addEventListener('click', (e) => {
         case 'show-more-spectate': showMoreSpectate(); break;
         case 'copy-match-link': copyMatchLink(el); break;
         case 'open-view': rememberView(el.dataset.view); break; // a link to '/': the home page then opens this view
+        case 'civ-info': toggleCivPopover(el); break;
+        case 'toggle-follow': toggleFollow(el); break;
+        case 'unfollow': unfollow(el); break;
+        case 'desktop-alerts': toggleDesktopAlerts(el); break;
+        case 'show-followed-games': showFollowedGames(); break;
+        case 'open-followed-games': openFollowedGames(); break; // a link to '/', like open-view
+        case 'dismiss-toast': dismissToast(el); break;
+        case 'caster-score': casterScore(el); break;
+        case 'caster-reset': casterReset(); break;
+        case 'caster-copy': copyCasterUrl(el); break;
     }
 });
 
@@ -284,7 +298,7 @@ function parseRelicLobby(match) {
             <div class="player-item" style="display: flex; align-items: center; justify-content: space-between;">
                 <span class="player-name" style="display: flex; align-items: center; gap: 6px;">
                     T${esc(p.team)} - ${esc(p.name)}
-                    ${p.civ ? `<span class="civ-chip" title="Civilization">${esc(p.civ)}</span>` : ''}
+                    ${civChipHtml(p)}
                     <button type="button" data-action="copy-handle" data-handle="${esc(p.name)}" style="background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 0; display: flex; align-items: center;" title="Copy Handle">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                     </button>
@@ -571,6 +585,7 @@ function applyFiltersAndRender() {
         itemCount.textContent = aggregatedPlayers.length;
         renderPlayers(aggregatedPlayers);
     }
+    reanchorCivPopover();
 }
 
 function aggregatePlayers() {
@@ -872,8 +887,11 @@ function renderLobbies(filteredLobbies) {
 
         if (existingNodes.has(id) && existingNodes.get(id).dataset.details !== lobbyDetailsKey(lobby)) {
             const node = existingNodes.get(id);
+            // A rebuilt card keeps its player list's scroll (and so a civ popover opened on a player lower down)
+            const listTop = node.querySelector('.player-list')?.scrollTop || 0;
             node.innerHTML = lobbyCardHtml(lobby);
             node.dataset.details = lobbyDetailsKey(lobby);
+            if (listTop) { const list = node.querySelector('.player-list'); if (list) list.scrollTop = listTop; }
         } else if (existingNodes.has(id)) {
             const node = existingNodes.get(id);
             const countText = node.querySelector('.players-count-text');
@@ -988,6 +1006,8 @@ function showView(view) {
     }
     viewTitleText.textContent = VIEWS[view].title;
     countLabel.textContent = VIEWS[view].count;
+    closeCivPopover(false);
+    renderFollowPanel();
     if (view === 'spectate') fetchSpectate();
     applyFiltersAndRender();
 }
@@ -1025,6 +1045,7 @@ function normalizeSpectatePlayer(p, civsHidden) {
         color: intIn(p.color, 1, 8),
         // A lobby that hides civs must not reveal them here either, whatever the data says
         civ: (!civsHidden && typeof p.civ === 'string' && p.civ) ? p.civ : null,
+        civRor: p.civRor === true,
         country: (!ai && typeof p.country === 'string' && /^[a-z]{2}$/i.test(p.country)) ? p.country.toLowerCase() : null,
         rating: ai ? null : finiteOrNull(p.rating),
         ratings: (!ai && p.ratings && typeof p.ratings === 'object') ? p.ratings : {}
@@ -1128,6 +1149,7 @@ function filterSpectate() {
         if (state.spectateKind === 'ranked' && !g.isRanked) return false;
         if (state.spectateKind === 'quickplay' && !g.isQuickPlay) return false;
         if (state.spectateKind === 'custom' && (g.isRanked || g.isQuickPlay)) return false;
+        if (state.spectateKind === 'following' && !g.players.some(p => p.kind === 'human' && follows.has(p.id))) return false;
         if (state.spectateServer !== 'all' && g.server !== state.spectateServer) return false;
         return true;
     });
@@ -1163,7 +1185,8 @@ function spectateCardHtml(g) {
                         <span class="player-name" style="display: flex; align-items: center; gap: 6px;">
                             ${colorSwatchHtml(p.color)}
                             ${esc(p.name)}
-                            ${p.civ ? `<span class="civ-chip" title="Civilization">${esc(p.civ)}</span>` : ''}
+                            ${followButtonHtml(p)}
+                            ${civChipHtml(p)}
                             ${p.kind === 'human' ? playerLinksHtml(p) : ''}
                         </span>
                         <span class="player-elo">${r != null ? esc(r) : '&mdash;'}</span>
@@ -1322,7 +1345,8 @@ function initMatchPage() {
             <div data-part="note" class="match-notes" role="status"></div>
         </div>
         <div data-part="result" aria-live="polite"></div>
-        <div data-part="teams" class="match-teams"></div>`;
+        <div data-part="teams" class="match-teams"></div>
+        <div data-caster></div>`;
     matchView.hidden = false;
     renderMatch();
     fetchMatch();
@@ -1427,17 +1451,24 @@ function renderMatch() {
         const el = matchView.querySelector(`[data-part="${name}"]`);
         if (!el) continue;
         // A rebuilt part gives focus back to the same control (or the part's first one, when it is gone, as the Watch
-        // link is once the game ends), so keyboard and screen-reader users keep their place
+        // link is once the game ends), so keyboard and screen-reader users keep their place. A player's follow star or
+        // civ chip is found again by its player id or civ.
         const focused = el.contains?.(document.activeElement) ? document.activeElement : null;
         el.innerHTML = html;
         if (focused) {
             const action = focused.getAttribute('data-action');
-            const next = (action && el.querySelector(`[data-action="${action}"]`)) || el.querySelector('a[href], button');
+            const same = focused.dataset.id ? `[data-action="${action}"][data-id="${focused.dataset.id}"]`
+                : focused.dataset.civ !== undefined ? civChipSelector(focused) : null;
+            const next = (same && el.querySelector(same)) || (action && el.querySelector(`[data-action="${action}"]`))
+                || el.querySelector('a[href], button');
             if (next) next.focus();
         }
         if (name !== 'note' && name !== 'result') el.hidden = !html; // live regions stay, so later changes are announced
         matchParts[name] = html;
     }
+    reanchorCivPopover();
+    if (d && d.game) buildCasterTools(d.game);
+    if (caster) casterChanged();
     if (d) document.title = d.game
         ? `${matchWaiting(d) ? '' : d.status === 'live' ? 'Live: ' : 'Ended: '}${d.game.map} – ${d.game.title} | AoE2Lobby.online`
         : matchWaiting(d) ? `Game ${matchPageId} | AoE2Lobby.online` : 'Game not found | AoE2Lobby.online';
@@ -1618,13 +1649,12 @@ function matchTeamsHtml(g) {
 
 function matchPlayerHtml(p, g, ratingTitle) {
     const human = p.kind === 'human';
-    const civ = g.civsHidden ? '<span class="civ-chip civ-hidden" title="This lobby hides civilizations">Hidden</span>'
-        : p.civ ? `<span class="civ-chip" title="Civilization">${esc(p.civ)}</span>` : '';
+    const civ = g.civsHidden ? '<span class="civ-chip civ-hidden" title="This lobby hides civilizations">Hidden</span>' : civChipHtml(p);
     return `
         <li class="match-player">
             ${colorSwatchHtml(p.color)}
             <span class="match-player-main">
-                <span class="match-player-name">${esc(p.name)}</span>
+                <span class="match-player-name">${esc(p.name)}${followButtonHtml(p)}</span>
                 <span class="match-player-meta">${civ}${human && p.country ? countryBadgeHtml(p.country) : ''}${human ? playerLinksHtml(p) : ''}</span>
             </span>
             <span class="player-elo"${human ? ` title="${esc(ratingTitle)}"` : ''}>${p.rating !== null ? esc(p.rating) : '&mdash;'}</span>
@@ -1676,6 +1706,852 @@ function copyMatchLink(btn) {
     };
     try {
         if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(copied, fallback);
+        else fallback();
+    } catch (e) {
+        fallback();
+    }
+}
+
+// ---------------------------------------------------------------- Civ details on hover (civ-info.json)
+// Built by tools/build-civ-info.js from SiegeEngineers/aoe2techtree (MIT). Loaded once; until it arrives, and for civs
+// it doesn't cover (the Chronicles civs, Return of Rome's), a civ is a plain chip. A civ chip with details is a button:
+// hovering shows them, and a click or tap (or Enter) keeps them open until Escape or a click elsewhere.
+let civInfo = null;
+let civPopover = null;
+let civPopoverFor = null; // the chip the popover was opened from
+let civPopoverCard = null; // id of the card (or match view) holding that chip, to find it again after a redraw
+let civPopoverPinned = false;
+let civHoverTimer = null;
+let civPressInside = false; // the current mouse press began inside the popover
+
+function loadCivInfo() {
+    // Not versioned: a rebuilt civ-info.json reaches visitors within a day (the server caches unversioned files a day)
+    fetch('/civ-info.json').then(r => r.ok ? r.json() : null).then(data => {
+        if (!data || !data.civs || typeof data.civs !== 'object') return;
+        civInfo = data.civs;
+        // Lobby cards pick the buttons up with the next poll; the others are drawn again now
+        if (matchPageId) renderMatch();
+        else if (state.currentView === 'spectate') applyFiltersAndRender();
+    }).catch(e => console.warn('Civ details unavailable:', e));
+}
+
+function civDetails(name) {
+    return (civInfo && typeof name === 'string' && Object.prototype.hasOwnProperty.call(civInfo, name)) ? civInfo[name] : null;
+}
+
+// p: a player with civ (and civRor for a Return of Rome civ that shares a DE civ's name). data-player tells apart two
+// players on the same civ, so a redraw finds the chip that was open (or focused) again
+function civChipHtml(p) {
+    if (!p.civ) return '';
+    if (p.civRor === true || !civDetails(p.civ)) return `<span class="civ-chip" title="Civilization">${esc(p.civ)}</span>`;
+    const player = p.kind === 'ai' ? `ai-${p.color ?? ''}` : String(intIn(Number(p.id), 1, Number.MAX_SAFE_INTEGER) ?? '');
+    return `<button type="button" class="civ-chip civ-chip-info" data-action="civ-info" data-civ="${esc(p.civ)}" data-player="${esc(player)}" aria-expanded="false" aria-controls="civPopover" title="${esc(p.civ)}: bonuses and unique units">${esc(p.civ)}</button>`;
+}
+
+function civChipSelector(chip) {
+    return `.civ-chip-info[data-civ="${CSS.escape(chip.dataset.civ || '')}"][data-player="${CSS.escape(chip.dataset.player || '')}"]`;
+}
+
+const RESOURCE_ORDER = ['food', 'wood', 'gold', 'stone'];
+
+function unitStatsHtml(s) {
+    if (!s || typeof s !== 'object') return '';
+    const n = v => (typeof v === 'number' && Number.isFinite(v)) ? v : null;
+    const cost = s.cost && typeof s.cost === 'object'
+        ? RESOURCE_ORDER.filter(r => n(s.cost[r])).map(r => `${n(s.cost[r])} ${r}`).join(', ') : '';
+    const parts = [
+        cost,
+        n(s.hp) !== null && `${n(s.hp)} HP`,
+        n(s.attack) !== null && `${n(s.attack)} attack`,
+        n(s.meleeArmor) !== null && n(s.pierceArmor) !== null && `${n(s.meleeArmor)}/${n(s.pierceArmor)} armour`,
+        n(s.range) > 0 && `range ${n(s.range)}`,
+        n(s.speed) !== null && `speed ${n(s.speed)}`
+    ].filter(Boolean);
+    return parts.length ? `<span class="civ-pop-stats">${esc(parts.join(' · '))}</span>` : '';
+}
+
+function civPopoverHtml(name, c) {
+    const list = (items, fn) => Array.isArray(items) && items.length ? `<ul>${items.map(fn).join('')}</ul>` : '';
+    const str = v => typeof v === 'string' ? v : '';
+    return `
+        <div class="civ-pop-head"><h3 class="civ-pop-name">${esc(name)}</h3><span class="civ-pop-type">${esc(str(c.type))}</span></div>
+        ${list(c.bonuses, b => `<li>${esc(str(b))}</li>`)}
+        ${Array.isArray(c.uniqueUnits) && c.uniqueUnits.length ? `<h4>Unique unit${c.uniqueUnits.length > 1 ? 's' : ''}</h4>
+            ${list(c.uniqueUnits, u => `<li><strong>${esc(str(u.name))}</strong>${u.kind ? ` <span class="civ-pop-kind">${esc(str(u.kind))}</span>` : ''}
+                ${unitStatsHtml(u.stats)}${u.statsOf ? `<span class="civ-pop-kind">Stats in ${esc(str(u.statsOf).replace(/^.*\(|\)$/g, '').toLowerCase())} mode</span>` : ''}</li>`)}` : ''}
+        ${Array.isArray(c.uniqueTechs) && c.uniqueTechs.length ? `<h4>Unique techs</h4>
+            ${list(c.uniqueTechs, t => `<li><strong>${esc(str(t.name))}</strong>${t.effect ? `: ${esc(str(t.effect))}` : ''}</li>`)}` : ''}
+        ${c.teamBonus ? `<h4>Team bonus</h4><p>${esc(str(c.teamBonus))}</p>` : ''}
+        <p class="civ-pop-source">Unit stats are base stats, before upgrades. Data: aoe2techtree</p>`;
+}
+
+// Opened by hover it is a preview; opened by a click, tap or Enter it is pinned and takes focus, so a keyboard can
+// scroll a long one, and Escape (or Tab) goes back to the chip
+function openCivPopover(chip, pinned) {
+    clearTimeout(civHoverTimer);
+    const name = chip.dataset.civ;
+    const c = civDetails(name);
+    if (!c) return;
+    if (!civPopover) {
+        civPopover = document.createElement('div');
+        civPopover.id = 'civPopover';
+        civPopover.className = 'civ-popover';
+        civPopover.setAttribute('role', 'region');
+        civPopover.tabIndex = -1;
+        civPopover.addEventListener('mouseenter', () => clearTimeout(civHoverTimer));
+        civPopover.addEventListener('mouseleave', () => { if (!civPopoverPinned) scheduleCivClose(); });
+        // Pressing inside a hover preview (to select text, say) pins it, so it doesn't vanish on mouse-out; and a
+        // press that began inside never counts as a click outside, even when the drag ends past its edge
+        civPopover.addEventListener('pointerdown', () => { clearTimeout(civHoverTimer); civPopoverPinned = true; civPressInside = true; });
+        // Tab leaves the popover from its chip: on to the control after it, or (Shift+Tab) back onto the chip
+        civPopover.addEventListener('keydown', (e) => {
+            if (e.key !== 'Tab') return;
+            if (e.shiftKey) e.preventDefault();
+            closeCivPopover(true);
+        });
+        document.body.appendChild(civPopover);
+    }
+    if (civPopoverFor && civPopoverFor !== chip) civPopoverFor.setAttribute('aria-expanded', 'false');
+    // Another chip's details (or a reopened popover) start at the top; only the same open popover keeps its place
+    const reopened = civPopover.hidden || civPopoverFor !== chip;
+    civPopover.setAttribute('aria-label', `${name} details`);
+    civPopover.innerHTML = civPopoverHtml(name, c);
+    civPopover.hidden = false;
+    if (reopened) civPopover.scrollTop = 0;
+    civPopoverFor = chip;
+    civPopoverCard = chip.closest('[id]')?.id || null;
+    civPopoverPinned = pinned;
+    chip.setAttribute('aria-expanded', 'true');
+    positionCivPopover(chip);
+    if (pinned) civPopover.focus({ preventScroll: true });
+}
+
+// Below the chip, or above it when there is more room there; always inside the viewport, in page coordinates so it
+// stays with the chip while the page scrolls
+function positionCivPopover(chip) {
+    const r = chip.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth, vh = window.innerHeight;
+    // Measuring without the height cap resets the popover's own scroll: keep the reader's place across redraws
+    const scrolled = civPopover.scrollTop;
+    civPopover.style.maxHeight = '';
+    const w = civPopover.offsetWidth, h = civPopover.offsetHeight;
+    const below = vh - r.bottom - 8, above = r.top - 8;
+    const room = Math.max(below, above);
+    if (h > room) civPopover.style.maxHeight = `${Math.max(120, room - 6)}px`;
+    const shown = Math.min(h, Math.max(120, room - 6));
+    const top = (h <= below || below >= above) ? r.bottom + 6 : r.top - 6 - shown;
+    const left = Math.min(Math.max(8, r.left), Math.max(8, vw - w - 8));
+    civPopover.style.left = `${left + window.scrollX}px`;
+    civPopover.style.top = `${top + window.scrollY}px`;
+    civPopover.scrollTop = scrolled;
+}
+
+// A chip scrolled out of its scrolling box (a lobby card's player list) or not laid out at all can't anchor a popover
+function chipShown(chip) {
+    if (!chip.getClientRects().length) return false;
+    const r = chip.getBoundingClientRect();
+    for (let el = chip.parentElement; el && el !== document.body; el = el.parentElement) {
+        const s = getComputedStyle(el);
+        if (!/(auto|scroll|hidden|clip)/.test(s.overflowX + s.overflowY)) continue;
+        const box = el.getBoundingClientRect();
+        if (r.bottom <= box.top || r.top >= box.bottom || r.right <= box.left || r.left >= box.right) return false;
+    }
+    return true;
+}
+
+function closeCivPopover(returnFocus) {
+    clearTimeout(civHoverTimer);
+    if (!civPopover || civPopover.hidden) return;
+    const hadFocus = civPopover.contains(document.activeElement);
+    civPopover.hidden = true;
+    civPopoverPinned = false;
+    if (civPopoverFor) {
+        civPopoverFor.setAttribute('aria-expanded', 'false');
+        // A popover that had focus never leaves it on the hidden popover. The chip is next to it, so the page
+        // doesn't need to scroll (a pointer may have scrolled the chip away meanwhile)
+        if ((returnFocus || hadFocus) && civPopoverFor.isConnected) civPopoverFor.focus({ preventScroll: true });
+    }
+    civPopoverFor = null;
+}
+
+function scheduleCivClose() {
+    clearTimeout(civHoverTimer);
+    civHoverTimer = setTimeout(() => { if (!civPopoverPinned) closeCivPopover(false); }, 250);
+}
+
+// The lists and the match page draw their cards again on every refresh, and cards move as games come and go: an
+// open popover follows its chip (found again by card, civ and player), and closes when the chip is gone or hidden
+function reanchorCivPopover() {
+    if (!civPopover || civPopover.hidden || !civPopoverFor) return;
+    if (!civPopoverFor.isConnected) {
+        const card = civPopoverCard && document.getElementById(civPopoverCard);
+        const chip = card && card.querySelector(civChipSelector(civPopoverFor));
+        if (!chip) { closeCivPopover(false); return; }
+        civPopoverFor = chip;
+        chip.setAttribute('aria-expanded', 'true');
+    }
+    if (!chipShown(civPopoverFor)) { closeCivPopover(false); return; }
+    positionCivPopover(civPopoverFor);
+}
+
+function toggleCivPopover(chip) {
+    if (civPopoverFor === chip && civPopover && !civPopover.hidden && civPopoverPinned) closeCivPopover(true);
+    else openCivPopover(chip, true);
+}
+
+// Hover previews with a mouse. A tap fires mouseover too, and its click then pins the popover: the pending preview
+// never opens over a pinned one
+document.addEventListener('mouseover', (e) => {
+    const chip = e.target.closest && e.target.closest('.civ-chip-info');
+    if (!chip) return;
+    clearTimeout(civHoverTimer);
+    if (civPopoverPinned || (civPopoverFor === chip && civPopover && !civPopover.hidden)) return;
+    civHoverTimer = setTimeout(() => { if (!civPopoverPinned && chip.isConnected) openCivPopover(chip, false); }, 150);
+});
+document.addEventListener('mouseout', (e) => {
+    const chip = e.target.closest && e.target.closest('.civ-chip-info');
+    if (chip && !chip.contains(e.relatedTarget) && !civPopoverPinned) scheduleCivClose();
+});
+// Escape closes it; focus goes back to the chip only from the popover, the chip itself, or nowhere (focus must never
+// be pulled out of a field being typed in, pinned popover or not)
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !civPopover || civPopover.hidden) return;
+    const at = document.activeElement;
+    closeCivPopover(at === civPopoverFor || civPopover.contains(at) || ((!at || at === document.body) && civPopoverPinned));
+});
+// A click outside the popover and the civ chips closes it. A drag that began inside (selecting text) and ended
+// outside fires its click on <body>: that one doesn't count.
+document.addEventListener('pointerdown', (e) => {
+    if (!civPopover || !civPopover.contains(e.target)) civPressInside = false;
+}, true);
+document.addEventListener('click', (e) => {
+    if (!civPopover || civPopover.hidden) return;
+    const pressedInside = civPressInside;
+    civPressInside = false;
+    if (pressedInside || civPopover.contains(e.target) || (e.target.closest && e.target.closest('.civ-chip-info'))) return;
+    closeCivPopover(false);
+});
+window.addEventListener('resize', () => reanchorCivPopover());
+// A scrolling box (a lobby card's player list) moves its chips under a popover placed in page coordinates: follow
+// them, once a frame. The page's own scroll needs nothing, as the popover scrolls with it.
+let civScrollFrame = 0;
+document.addEventListener('scroll', (e) => {
+    if (e.target === document || !civPopover || civPopover.hidden || civPopover.contains(e.target) || civScrollFrame) return;
+    civScrollFrame = requestAnimationFrame(() => { civScrollFrame = 0; reanchorCivPopover(); });
+}, { capture: true, passive: true });
+
+// ---------------------------------------------------------------- Followed players (kept in this browser only)
+// The star next to a player follows them. While the site is open in a tab, it checks the games in progress every
+// minute (/api/spectate/index: ids only, matched here, so the follow list never leaves the browser) and shows an alert
+// when a followed player is in a game this tab hasn't announced yet, plus a desktop notification if turned on.
+// The feed itself is a snapshot taken at most once a minute, so an alert comes 1-2 minutes after the game starts.
+const FOLLOW_KEY = 'aoe2Follows';
+const FOLLOW_MAX = 100;
+const ALERTED_KEY = 'aoe2Alerted'; // sessionStorage: games this tab has announced
+const FOLLOW_POLL_MS = 60000;
+let follows = new Map(); // profile id -> name when followed
+let desktopAlerts = false;
+let followGames = []; // [{ id, startTime, map, players: [profile ids] }] from the last index
+let followIndexLoaded = false;
+let followTimer = null;
+let followInFlight = false;
+let followCheckedAt = 0; // ms, the last index fetched
+// Players just followed (here or in another tab) -> until when (ms) the next check treats the games they're in as
+// announced, since the alert is for their next game (the index we hold may be older than the list the star was
+// pressed on). It expires, so a tab that checks much later (hidden, or the feed down) still announces a new game.
+const followQuiet = new Map();
+const FOLLOW_QUIET_MS = 3 * 60 * 1000;
+let notificationsUnsupported = false; // the browser has Notification but can't show one from a page (Chrome on Android)
+
+function loadFollows() {
+    follows = new Map();
+    desktopAlerts = false;
+    try {
+        const v = JSON.parse(localStorage.getItem(FOLLOW_KEY));
+        if (v && typeof v === 'object' && Array.isArray(v.players)) {
+            for (const f of v.players.slice(0, FOLLOW_MAX)) {
+                const id = f && intIn(f.id, 1, Number.MAX_SAFE_INTEGER);
+                if (id !== null) follows.set(id, typeof f.name === 'string' && f.name ? f.name.slice(0, 64) : `Player ${id}`);
+            }
+            desktopAlerts = v.desktop === true;
+        }
+    } catch (e) {}
+}
+
+function saveFollows() {
+    try { localStorage.setItem(FOLLOW_KEY, JSON.stringify({ players: [...follows].map(([id, name]) => ({ id, name })), desktop: desktopAlerts })); } catch (e) {}
+}
+
+function followButtonHtml(p) {
+    if (p.kind !== 'human' || !(p.id > 0)) return '';
+    const on = follows.has(p.id);
+    return `<button type="button" class="follow-btn${on ? ' following' : ''}" data-action="toggle-follow" data-id="${p.id}" data-name="${esc(p.name)}" aria-pressed="${on}" title="${on ? 'Following: you get an alert when they start a game. Click to unfollow' : 'Follow: get an alert when they start a game'}"><span aria-hidden="true">${on ? '&#x2605;' : '&#x2606;'}</span><span class="sr-only">Follow ${esc(p.name)}</span></button>`;
+}
+
+function toggleFollow(btn) {
+    const id = intIn(Number(btn.dataset.id), 1, Number.MAX_SAFE_INTEGER);
+    if (id === null) return;
+    if (follows.has(id)) follows.delete(id);
+    else if (follows.size >= FOLLOW_MAX) { showToast(`<p>You can follow up to ${FOLLOW_MAX} players. Unfollow someone first.</p>`); return; }
+    else {
+        follows.set(id, (btn.dataset.name || `Player ${id}`).slice(0, 64));
+        quietenFollowed([id]);
+    }
+    saveFollows();
+    followsChanged(btn);
+}
+
+// The games these newly followed players are in now aren't announced: those we know of at once (this match page's
+// game, the held index, the Spectate list), and the rest at the next check, which followsChanged starts straight away.
+// None of this counts as the tab's first check, so that one still sums up games already on.
+function quietenFollowed(ids) {
+    if (!ids.length) return;
+    const until = Date.now() + FOLLOW_QUIET_MS;
+    for (const id of ids) followQuiet.set(id, until);
+    const known = followGames.filter(g => g.players.some(p => ids.includes(p))).map(g => g.id);
+    if (matchPageId) known.push(Number(matchPageId));
+    else known.push(...spectateGames.filter(g => g.players.some(p => p.kind === 'human' && ids.includes(p.id))).map(g => g.id));
+    markAlerted(known);
+}
+
+// Draw the follow buttons and the panel again, keeping focus on the same button
+function followsChanged(focusFrom) {
+    const card = focusFrom && focusFrom.closest('[id]');
+    const cardId = card && card.id;
+    const selector = focusFrom ? `[data-action="${focusFrom.dataset.action}"][data-id="${focusFrom.dataset.id}"]` : null;
+    if (matchPageId) renderMatch();
+    else {
+        renderFollowPanel();
+        if (state.currentView === 'spectate') applyFiltersAndRender();
+    }
+    if (selector && !(focusFrom.isConnected && document.activeElement === focusFrom)) {
+        const scope = (cardId && document.getElementById(cardId)) || document;
+        const next = scope.querySelector(selector) || document.querySelector(selector);
+        if (next) next.focus();
+    }
+    scheduleFollowPoll(follows.size ? 0 : null);
+}
+
+// The games this tab has announced, and when it last checked (only a check sets that). Kept in memory, so blocked
+// storage can't make a game be announced again on every check; session storage carries both over a reload, and over
+// a page of the same tab coming back from the back/forward cache (see the pageshow listener).
+// A check after a long gap (hidden tab, another site, a reload hours later) counts as a first check again: the games
+// it finds may have started long ago, so they are "in a game", summed up when there are several.
+const FOLLOW_RECHECK_MS = 5 * 60 * 1000;
+let alerted = null;
+
+function readAlerted(into) {
+    try {
+        const v = JSON.parse(sessionStorage.getItem(ALERTED_KEY));
+        if (v && typeof v === 'object' && Array.isArray(v.ids)) {
+            if (Number.isFinite(v.checkedAt) && v.checkedAt > into.checkedAt) into.checkedAt = v.checkedAt;
+            for (const id of v.ids) if (intIn(id, 1, Number.MAX_SAFE_INTEGER) !== null) into.set.add(id);
+        }
+    } catch (e) {}
+}
+
+function alertedState() {
+    if (!alerted) {
+        alerted = { set: new Set(), checkedAt: 0 };
+        readAlerted(alerted);
+    }
+    return alerted;
+}
+
+function markAlerted(ids, checked = false) {
+    const a = alertedState();
+    for (const id of ids) a.set.add(id);
+    if (checked) a.checkedAt = Date.now();
+    // The newest 500 are plenty: a game only lasts an hour or so
+    if (a.set.size > 500) a.set = new Set([...a.set].slice(-500));
+    try { sessionStorage.setItem(ALERTED_KEY, JSON.stringify({ checkedAt: a.checkedAt, ids: [...a.set] })); } catch (e) {}
+}
+
+function scheduleFollowPoll(delay) {
+    clearTimeout(followTimer);
+    followTimer = null;
+    if (delay === null || !follows.size) return;
+    followTimer = setTimeout(pollFollows, delay);
+}
+
+async function pollFollows() {
+    if (followInFlight || !follows.size) return;
+    // A hidden tab only checks when it can show a desktop notification
+    if (document.hidden && !(desktopAlerts && notificationsGranted())) { scheduleFollowPoll(FOLLOW_POLL_MS); return; }
+    followInFlight = true;
+    followCheckedAt = Date.now();
+    try {
+        const data = await fetch('/api/spectate/index', { cache: 'no-store' }).then(r => r.json());
+        // A stale index (the feed is down) has no games: keep the last ones and wait for live data
+        if (data && data.stale !== true && Array.isArray(data.games)) {
+            followGames = data.games.flatMap(g => {
+                const id = g && intIn(g.id, 1, Number.MAX_SAFE_INTEGER);
+                if (id === null || !Array.isArray(g.players)) return [];
+                return [{ id, startTime: intIn(g.startTime, 0, Number.MAX_SAFE_INTEGER) ?? 0, map: typeof g.map === 'string' && g.map ? g.map : 'Unknown Map',
+                    players: g.players.filter(p => intIn(p, 1, Number.MAX_SAFE_INTEGER) !== null) }];
+            });
+            followIndexLoaded = true;
+            const now = Date.now();
+            const quiet = new Set([...followQuiet].filter(([, until]) => until > now).map(([id]) => id));
+            followQuiet.clear();
+            if (quiet.size) markAlerted(followGames.filter(g => g.players.some(p => quiet.has(p))).map(g => g.id));
+            announceFollowedGames();
+            renderFollowPanel();
+        }
+    } catch (e) {
+        console.warn('Followed players check failed:', e);
+    }
+    followInFlight = false;
+    scheduleFollowPoll(FOLLOW_POLL_MS);
+}
+
+function followedIn(game) {
+    return game.players.filter(id => follows.has(id));
+}
+
+const ALERT_MAX = 3; // alerts at once; more new games in one check get a summary line
+
+// "See their games": Spectate with only followed players' games, whatever other spectate filters were saved. On a
+// match page a link home that saves that choice first; on the home page a button that switches the view.
+function seeFollowedGamesHtml() {
+    if (matchPageId) return '<p class="toast-actions"><a href="/" data-action="open-followed-games">See their games</a></p>';
+    return state.currentView !== 'spectate' || state.spectateKind !== 'following'
+        ? '<p class="toast-actions"><button type="button" class="toast-link" data-action="show-followed-games">See their games</button></p>' : '';
+}
+
+function followedGamesFilters() {
+    Object.assign(state, { spectateKind: 'following', spectateType: 'all', spectateServer: 'all', spectateSearch: '' });
+}
+
+function showFollowedGames() {
+    followedGamesFilters();
+    for (const [id, key] of [['spectateKind', 'spectateKind'], ['spectateType', 'spectateType'], ['spectateServer', 'spectateServer'], ['spectateSearch', 'spectateSearch']]) {
+        const el = document.getElementById(id);
+        if (el) el.value = state[key];
+    }
+    spectateLimit = SPECTATE_PAGE;
+    showView('spectate');
+}
+
+// From a match page: the home page then opens Spectate with those filters
+function openFollowedGames() {
+    followedGamesFilters();
+    rememberView('spectate');
+}
+
+function announceFollowedGames() {
+    const a = alertedState();
+    const { set } = a;
+    const recent = a.checkedAt > 0 && Date.now() - a.checkedAt <= FOLLOW_RECHECK_MS;
+    // The game this match page shows is never announced: its page is open
+    if (matchPageId) markAlerted([Number(matchPageId)]);
+    // Newest first, so a check that finds many new games announces the latest ones
+    const fresh = followGames.filter(g => !set.has(g.id) && String(g.id) !== matchPageId && followedIn(g).length)
+        .sort((a, b) => b.startTime - a.startTime);
+    markAlerted(fresh.map(g => g.id), true); // also records when this tab checked
+    if (!fresh.length) return;
+    // A first check (or one after a long gap) finds games that were already on: one summary for several players
+    // instead of an alert each (one player listed in two games, as the feed does after they leave a team game, gets
+    // the alerts instead)
+    const names = [...new Set(fresh.flatMap(followedIn))].map(id => follows.get(id));
+    if (!recent && names.length > 1) {
+        showToast(`<p><strong>${names.length} followed players</strong> are in games now: ${esc(names.slice(0, 5).join(', '))}${names.length > 5 ? '&hellip;' : ''}</p>
+            ${seeFollowedGamesHtml()}`);
+        return;
+    }
+    // The summary goes in first, so the newest game's alert ends up last (nearest the corner) and is the last to be
+    // pushed out by later alerts
+    const notify = desktopAlerts && notificationsGranted() && document.hidden;
+    if (fresh.length > ALERT_MAX) {
+        const more = fresh.length - ALERT_MAX;
+        const text = `Followed players ${recent ? 'started' : 'are in'} ${more} more game${more === 1 ? '' : 's'}`;
+        showToast(`<p>${esc(text)}.</p>${seeFollowedGamesHtml()}`);
+        if (notify) showNotification(text, 'Open AoE2Lobby.online to see them', 'aoe2-games-more', () => { if (matchPageId) { openFollowedGames(); location.href = '/'; } else showFollowedGames(); });
+    }
+    for (const g of fresh.slice(0, ALERT_MAX).reverse()) {
+        const players = followedIn(g).map(id => follows.get(id));
+        const who = players.length > 2 ? `${players.slice(0, 2).join(', ')} and ${players.length - 2} more` : players.join(' and ');
+        const verb = recent ? 'started a game' : (players.length > 1 ? 'are in a game' : 'is in a game');
+        showToast(`<p><strong>${esc(who)}</strong> ${verb} on ${esc(g.map)}</p>
+            <p class="toast-actions"><a href="/spectate/${g.id}">Open game</a><a href="aoe2de://1/${g.id}" title="Opens Age of Empires II: DE as a spectator">Watch in game</a></p>`);
+        if (notify) showNotification(`${who} ${verb}`, `${g.map}: open the game on AoE2Lobby.online`, `aoe2-game-${g.id}`, () => { location.href = `/spectate/${g.id}`; });
+    }
+}
+
+function notificationsGranted() {
+    return typeof Notification !== 'undefined' && Notification.permission === 'granted' && !notificationsUnsupported;
+}
+
+// null when the browser refuses to show a notification from a page (Chrome on Android needs a service worker).
+// onOpen runs when it is clicked, in this tab, which comes to the front
+function showNotification(title, body, tag, onOpen) {
+    try {
+        const n = new Notification(title, { body, tag, icon: '/icon-192.png' });
+        if (onOpen) n.onclick = () => { window.focus(); n.close(); onOpen(); };
+        return n;
+    } catch (e) {
+        notificationsUnsupported = true;
+        return null;
+    }
+}
+
+// Follows what the button shows (it may be out of date: permission changed in another tab, or in the browser's
+// site settings): showing on, it turns them off; otherwise it asks for permission if needed and sends a test
+async function toggleDesktopAlerts(btn) {
+    if (typeof Notification === 'undefined') return;
+    const shownOn = btn ? btn.getAttribute('aria-pressed') === 'true' : (desktopAlerts && notificationsGranted());
+    if (shownOn) desktopAlerts = false;
+    else {
+        let permission = Notification.permission;
+        try { if (permission === 'default') permission = await Notification.requestPermission(); } catch (e) {}
+        // One notification right away shows that they work (and finds the browsers where they can't)
+        const test = permission === 'granted' ? showNotification('Desktop notifications are on', 'You get one here when a followed player starts a game, while AoE2Lobby.online is open in a tab.', 'aoe2-notifications-on') : null;
+        if (test) setTimeout(() => test.close(), 5000);
+        desktopAlerts = !!test;
+    }
+    saveFollows();
+    // The permission prompt doesn't block the page: focus comes back here only if it is still on this control (a
+    // poll may have redrawn it meanwhile) or was lost, never from wherever the visitor moved on to
+    const at = document.activeElement;
+    const stay = at === btn || !at || at === document.body || (at.dataset && at.dataset.focusKey === 'desktop');
+    renderFollowPanel();
+    if (stay) followPanel?.querySelector('[data-focus-key="desktop"]')?.focus({ preventScroll: true });
+}
+
+// The button, or a note in its place (focusable, so focus that was on the button lands on it and it gets read)
+function desktopAlertsHtml() {
+    if (typeof Notification === 'undefined') return '';
+    if (notificationsUnsupported) return '<p class="follow-note" data-focus-key="desktop" tabindex="-1">This browser can\'t show desktop notifications from a web page: alerts appear on the page.</p>';
+    if (Notification.permission === 'denied') return '<p class="follow-note" data-focus-key="desktop" tabindex="-1">Desktop notifications are blocked for this site in your browser settings.</p>';
+    const on = desktopAlerts && notificationsGranted();
+    return `<button type="button" class="btn-view follow-desktop" data-action="desktop-alerts" data-focus-key="desktop" aria-pressed="${on}">Desktop notifications${on ? ': on' : ''}</button>`;
+}
+
+const followPanel = document.getElementById('followPanel');
+
+// The Spectate view's panel: who is followed, and who of them is in a game now
+function renderFollowPanel() {
+    if (!followPanel || matchPageId) return;
+    followPanel.hidden = state.currentView !== 'spectate';
+    if (followPanel.hidden) return;
+    let html;
+    if (!follows.size) {
+        html = `<p class="follow-note"><span aria-hidden="true">&#x2606;</span> Follow players with the star next to their name: while this site is open in a tab, you get an alert when they start a game.</p>`;
+    } else {
+        // Each followed player's newest game in the last index
+        const gameOf = new Map();
+        for (const g of followGames) for (const id of followedIn(g)) if (!gameOf.has(id) || g.startTime > gameOf.get(id).startTime) gameOf.set(id, g);
+        const rows = [...follows].sort((a, b) => (gameOf.has(b[0]) - gameOf.has(a[0])) || a[1].localeCompare(b[1])).map(([id, name]) => {
+            const g = gameOf.get(id);
+            return `<li class="follow-item${g ? ' follow-live' : ''}" data-row="${id}">
+                <span class="follow-name">${esc(name)}</span>
+                ${g ? `<a class="follow-game" href="/spectate/${g.id}" data-focus-key="game-${id}" title="Open the game"><span class="pulse-indicator" aria-hidden="true"></span>${esc(g.map)}</a>`
+                    : `<span class="follow-idle">${followIndexLoaded ? 'Not in a game' : '&hellip;'}</span>`}
+                <button type="button" class="follow-remove" data-action="unfollow" data-id="${id}" data-focus-key="unfollow-${id}" aria-label="Unfollow ${esc(name)}" title="Unfollow">&times;</button>
+            </li>`;
+        }).join('');
+        html = `
+            <div class="follow-head">
+                <h2 class="follow-title">Followed players <span class="follow-count">${gameOf.size ? `${gameOf.size} of ${follows.size} in a game` : follows.size}</span></h2>
+                ${desktopAlertsHtml()}
+            </div>
+            <ul class="follow-list">${rows}</ul>`;
+    }
+    if (followPanel.dataset.html === html) return; // unchanged: leave focus and hover alone
+    // Focus stays on the same control; when that is gone (its game ended, the player was unfollowed), on that row's
+    // other control, the next row's, or the panel itself
+    const focused = followPanel.contains(document.activeElement) ? document.activeElement : null;
+    const key = focused && focused.dataset.focusKey;
+    const row = focused && focused.closest('[data-row]');
+    const near = row ? [row, row.nextElementSibling, row.previousElementSibling].filter(Boolean).map(r => r.dataset.row) : [];
+    followPanel.innerHTML = html;
+    followPanel.dataset.html = html;
+    if (!focused) return;
+    const target = (key && followPanel.querySelector(`[data-focus-key="${key}"]`))
+        || near.map(r => followPanel.querySelector(`[data-row="${r}"] [data-focus-key]`)).find(Boolean)
+        || followPanel.querySelector('[data-focus-key]');
+    // Without scrolling: a poll can redraw the panel while the visitor reads the list far below it
+    if (target) target.focus({ preventScroll: true });
+    else { followPanel.tabIndex = -1; followPanel.focus({ preventScroll: true }); }
+}
+
+function unfollow(btn) {
+    const id = intIn(Number(btn.dataset.id), 1, Number.MAX_SAFE_INTEGER);
+    if (id === null) return;
+    follows.delete(id);
+    saveFollows();
+    // The panel's redraw moves focus to the next row (or the one before, or the panel)
+    followsChanged(null);
+}
+
+// Another tab changed the follows: pick them up here too. Players it just followed are quiet here as well, or this
+// tab would announce the game they're in now.
+window.addEventListener('storage', (e) => {
+    if (e.key !== FOLLOW_KEY) return;
+    const before = new Set(follows.keys());
+    loadFollows();
+    quietenFollowed([...follows.keys()].filter(id => !before.has(id)));
+    followsChanged(null);
+});
+
+// A page back from the back/forward cache missed what other pages of this tab did meanwhile: the games they
+// announced, follows changed, caster settings saved. Pick those up (keeping what this page knew), then check.
+window.addEventListener('pageshow', (e) => {
+    if (!e.persisted) return;
+    readAlerted(alertedState());
+    const before = new Set(follows.keys());
+    loadFollows();
+    quietenFollowed([...follows.keys()].filter(id => !before.has(id)));
+    const box = matchPageId && matchView.querySelector('[data-caster]');
+    if (box) {
+        // Built again from the saved settings by the redraw below
+        caster = null;
+        casterKeptChoice = null;
+        delete box.dataset.built;
+        box.innerHTML = '';
+    }
+    followsChanged(null);
+});
+
+document.addEventListener('visibilitychange', () => {
+    // Back on the tab: check now if a check is overdue (a hidden tab skips them unless it can notify)
+    if (!document.hidden && follows.size && !followInFlight && Date.now() - followCheckedAt >= FOLLOW_POLL_MS) scheduleFollowPoll(0);
+});
+
+// ---------------------------------------------------------------- Toasts (alerts)
+let toastRegion = null;
+
+function showToast(html) {
+    if (!toastRegion) {
+        toastRegion = document.createElement('div');
+        toastRegion.className = 'toasts';
+        toastRegion.setAttribute('role', 'status');
+        toastRegion.setAttribute('aria-live', 'polite');
+        document.body.appendChild(toastRegion);
+    }
+    const t = document.createElement('div');
+    t.className = 'toast';
+    t.innerHTML = `${html}<button type="button" class="toast-close" data-action="dismiss-toast" aria-label="Dismiss alert">&times;</button>`;
+    toastRegion.appendChild(t);
+    // At most four at a time: the oldest goes
+    while (toastRegion.children.length > 4) toastRegion.firstElementChild.remove();
+}
+
+function dismissToast(btn) {
+    const t = btn.closest('.toast');
+    const next = t && (t.nextElementSibling || t.previousElementSibling);
+    if (t) t.remove();
+    next?.querySelector('[data-action="dismiss-toast"]')?.focus();
+}
+
+// ---------------------------------------------------------------- Caster tools (match page)
+// Builds the overlay link (overlay.html) for an OBS browser source. The settings stay in this browser
+// (aoe2Caster), so after each game the caster only changes the score and copies the link again.
+const CASTER_KEY = 'aoe2Caster';
+const CASTER_BO = [1, 3, 5, 7, 9, 11, 13, 15];
+let caster = null;
+let casterKeptChoice = null; // the saved mode and player, while this page shows its own game instead
+let casterCopyTimer = null;
+
+function loadCaster() {
+    const c = { bo: 3, score: [0, 0], names: ['', ''], title: '', swap: false, mode: 'match', followId: null };
+    try {
+        const v = JSON.parse(localStorage.getItem(CASTER_KEY));
+        if (v && typeof v === 'object') {
+            if (CASTER_BO.includes(v.bo)) c.bo = v.bo;
+            if (Array.isArray(v.score)) c.score = [0, 1].map(i => intIn(v.score[i], 0, 8) ?? 0);
+            if (Array.isArray(v.names)) c.names = [0, 1].map(i => typeof v.names[i] === 'string' ? v.names[i].slice(0, 40) : '');
+            if (typeof v.title === 'string') c.title = v.title.slice(0, 60);
+            c.swap = v.swap === true;
+            c.mode = v.mode === 'player' ? 'player' : 'match';
+            c.followId = intIn(v.followId, 1, Number.MAX_SAFE_INTEGER);
+        }
+    } catch (e) {}
+    return c;
+}
+
+function saveCaster() {
+    const saved = casterKeptChoice ? { ...caster, ...casterKeptChoice } : caster;
+    try { localStorage.setItem(CASTER_KEY, JSON.stringify(saved)); } catch (e) {}
+}
+
+const casterNeed = () => Math.ceil(caster.bo / 2);
+
+// The overlay's sides in its order (see overlay.js): a followed player's side on the left, then the swap
+function casterSides(g) {
+    let sides = groupTeams(g.players).map(t => t.players);
+    if (caster.mode === 'player' && sides.length === 2 && sides[1].some(p => p.id === caster.followId)) sides = [sides[1], sides[0]];
+    if (caster.swap && sides.length === 2) sides = [sides[1], sides[0]];
+    return sides;
+}
+
+function casterAutoName(side) {
+    if (!side) return '';
+    if (side.length === 1) return side[0].name;
+    return side[0].team !== null ? `Team ${side[0].team}` : side.map(p => p.name).join(' + ');
+}
+
+function casterUrl(preview) {
+    const followed = caster.mode === 'player' && caster.followId;
+    const q = new URLSearchParams();
+    if (caster.bo > 1) { q.set('bo', caster.bo); q.set('s', `${caster.score[0]}-${caster.score[1]}`); }
+    if (caster.names[0]) q.set('l', caster.names[0]);
+    if (caster.names[1]) q.set('r', caster.names[1]);
+    if (caster.title) q.set('t', caster.title);
+    if (caster.swap) q.set('swap', '1');
+    if (preview) q.set('preview', '1');
+    const qs = q.toString();
+    return `${location.origin}/overlay/${followed ? `player/${caster.followId}` : matchPageId}${qs ? '?' + qs : ''}`;
+}
+
+// Built once, the first time the game is known; after that only casterChanged() touches it, so typing isn't lost
+function buildCasterTools(g) {
+    const box = matchView.querySelector('[data-caster]');
+    if (!box || box.dataset.built) return;
+    box.dataset.built = '1';
+    caster = caster || loadCaster();
+    const humans = g.players.filter(p => p.kind === 'human' && p.id > 0);
+    // A saved player who isn't in this game: this page offers its own players, showing this game. The saved choice
+    // stays saved (other edits here keep it) until the caster picks what the overlay shows on this page.
+    if (!humans.some(p => p.id === caster.followId)) {
+        casterKeptChoice = { mode: caster.mode, followId: caster.followId };
+        caster.followId = humans.length ? humans[0].id : null;
+        caster.mode = 'match';
+    }
+    const side = i => i ? 'Right' : 'Left';
+    box.innerHTML = `
+        <details class="caster-tools glass-panel">
+            <summary>Caster tools: scoreboard overlay for OBS</summary>
+            <div class="caster-body">
+                <fieldset class="caster-mode">
+                    <legend>The overlay shows</legend>
+                    <label class="caster-check"><input type="radio" name="casterMode" value="match"> This game</label>
+                    ${humans.length ? `<span class="caster-check caster-follow">
+                        <input type="radio" name="casterMode" value="player" id="casterModePlayer">
+                        <label for="casterModePlayer">The game this player is in (it moves to their next game by itself):</label>
+                        <select id="casterFollow" aria-label="Player the overlay follows">${humans.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+                    </span>` : ''}
+                </fieldset>
+                <div class="caster-row">
+                    <label class="caster-field">Title <input id="casterTitle" type="text" maxlength="60" placeholder="Grand Final"></label>
+                    <label class="caster-field">Best of <select id="casterBo">${CASTER_BO.map(n => `<option value="${n}">${n === 1 ? 'One game (no score)' : n}</option>`).join('')}</select></label>
+                </div>
+                <div class="caster-sides">
+                    ${[0, 1].map(i => `
+                    <div class="caster-side">
+                        <label class="caster-field">${side(i)} side name <input id="casterName${i}" type="text" maxlength="40"></label>
+                        <div class="caster-score" role="group" aria-labelledby="casterScoreLabel${i}">
+                            <span id="casterScoreLabel${i}" class="caster-score-label">${side(i)} side wins</span>
+                            <button type="button" class="caster-step" data-action="caster-score" data-side="${i}" data-step="-1" aria-label="${side(i)} side: one win fewer">&minus;</button>
+                            <output id="casterScore${i}" class="caster-score-value">0</output>
+                            <button type="button" class="caster-step" data-action="caster-score" data-side="${i}" data-step="1" aria-label="${side(i)} side: one win more">+</button>
+                        </div>
+                    </div>`).join('')}
+                </div>
+                <div class="caster-row">
+                    <label class="caster-check"><input id="casterSwap" type="checkbox"> Swap sides</label>
+                    <button type="button" class="btn-view" data-action="caster-reset">Reset score</button>
+                </div>
+                <p class="caster-multi match-note" hidden>This game has more than two sides: the overlay lists every player, without a score.</p>
+                <label class="caster-url-label" for="casterUrl">Overlay link</label>
+                <div class="caster-url">
+                    <input id="casterUrl" type="text" readonly>
+                    <button type="button" class="btn-join" data-action="caster-copy">Copy</button>
+                    <a id="casterPreview" class="btn-view" target="_blank" rel="noopener">Preview</a>
+                </div>
+                <p class="caster-status sr-only" role="status"></p>
+                <p class="match-note">In OBS, add a <strong>Browser</strong> source, paste the link as its URL and set it to 1920 &times; 1080: the page is transparent apart from the scoreboard at the top. The score never changes by itself: after a game, change it here, then copy the link again and paste it into the source's URL.</p>
+            </div>
+        </details>`;
+    const $ = (id) => box.querySelector('#' + id);
+    for (const r of box.querySelectorAll('input[name="casterMode"]')) {
+        r.checked = r.value === caster.mode;
+        r.addEventListener('change', () => { if (r.checked) { caster.mode = r.value; casterKeptChoice = null; casterEdited(); } });
+    }
+    const follow = $('casterFollow');
+    if (follow) {
+        follow.value = String(caster.followId);
+        follow.addEventListener('change', () => {
+            caster.followId = intIn(Number(follow.value), 1, Number.MAX_SAFE_INTEGER);
+            caster.mode = 'player';
+            casterKeptChoice = null;
+            for (const r of box.querySelectorAll('input[name="casterMode"]')) r.checked = r.value === 'player';
+            casterEdited();
+        });
+    }
+    $('casterTitle').value = caster.title;
+    $('casterTitle').addEventListener('input', (e) => { caster.title = e.target.value.slice(0, 60); casterEdited(); });
+    $('casterBo').value = String(caster.bo);
+    $('casterBo').addEventListener('change', (e) => { caster.bo = Number(e.target.value); casterEdited(); });
+    for (const i of [0, 1]) {
+        $('casterName' + i).value = caster.names[i];
+        $('casterName' + i).addEventListener('input', (e) => { caster.names[i] = e.target.value.slice(0, 40); casterEdited(); });
+    }
+    $('casterSwap').checked = caster.swap;
+    $('casterSwap').addEventListener('change', (e) => { caster.swap = e.target.checked; casterEdited(); });
+    casterChanged();
+}
+
+// Everything in the panel that follows the settings
+function casterChanged() {
+    const box = matchView.querySelector('[data-caster]');
+    if (!box || !box.dataset.built || !caster) return;
+    const need = casterNeed();
+    caster.score = caster.score.map(s => Math.min(s, need));
+    const g = matchData && matchData.game;
+    const sides = g ? casterSides(g) : [];
+    for (const i of [0, 1]) {
+        box.querySelector('#casterName' + i).placeholder = casterAutoName(sides[i]) || (i ? 'Right side' : 'Left side');
+        box.querySelector('#casterScore' + i).textContent = caster.score[i];
+        for (const b of box.querySelectorAll(`[data-action="caster-score"][data-side="${i}"]`)) {
+            b.disabled = caster.bo === 1 || (b.dataset.step === '1' ? caster.score[i] >= need : caster.score[i] <= 0);
+        }
+    }
+    box.querySelector('.caster-multi').hidden = !g || sides.length === 2;
+    box.querySelector('#casterUrl').value = casterUrl(false);
+    box.querySelector('#casterPreview').href = casterUrl(true);
+}
+
+// Only the caster's own edits are saved: opening a match page (or its polls) never changes the saved settings
+function casterEdited() {
+    casterChanged();
+    saveCaster();
+}
+
+function casterScore(btn) {
+    const i = btn.dataset.side === '1' ? 1 : 0;
+    caster.score[i] = Math.max(0, Math.min(casterNeed(), caster.score[i] + (btn.dataset.step === '1' ? 1 : -1)));
+    casterEdited();
+    const status = matchView.querySelector('.caster-status');
+    if (status) status.textContent = `Score ${caster.score[0]} to ${caster.score[1]}`;
+    // A button that just became disabled loses focus: hand it to the other one of the pair
+    if (btn.disabled) matchView.querySelector(`[data-action="caster-score"][data-side="${i}"][data-step="${btn.dataset.step === '1' ? -1 : 1}"]`)?.focus();
+}
+
+function casterReset() {
+    caster.score = [0, 0];
+    casterEdited();
+    const status = matchView.querySelector('.caster-status');
+    if (status) status.textContent = 'Score reset to 0 to 0';
+}
+
+function copyCasterUrl(btn) {
+    const input = matchView.querySelector('#casterUrl');
+    const status = matchView.querySelector('.caster-status');
+    if (!input) return;
+    const done = () => {
+        btn.textContent = 'Copied';
+        if (status) status.textContent = 'Overlay link copied';
+        clearTimeout(casterCopyTimer);
+        casterCopyTimer = setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+    };
+    const fallback = () => {
+        input.focus();
+        input.select();
+        if (status) status.textContent = 'The link is selected: press Ctrl+C to copy it';
+    };
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(input.value).then(done, fallback);
         else fallback();
     } catch (e) {
         fallback();

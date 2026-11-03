@@ -13,7 +13,7 @@ if (typeof WebSocket === 'undefined') { console.error('Node >=22.12 required (no
 const API_PORT = process.env.API_PORT || 3002;
 const HOST = process.env.HOST || '127.0.0.1';
 const PUBLIC_FILES = new Set([
-    '/index.html', '/app.js', '/styles.css', '/favicon.png',
+    '/index.html', '/app.js', '/styles.css', '/overlay.js', '/overlay.css', '/civ-info.json', '/favicon.png',
     '/favicon-32.png', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/og-image.png', '/site.webmanifest',
     '/robots.txt', '/sitemap.xml',
     '/fonts/cinzel-variable.woff2', '/fonts/outfit-variable.woff2', '/fonts/cinzel-ext.woff2', '/fonts/outfit-ext.woff2', '/fonts/OFL.txt', // self-hosted fonts
@@ -271,15 +271,17 @@ const SPECTATE_STALE_MS = 10 * 60 * 1000; // a snapshot older than this is repor
 const SPECTATE_WAIT_MS = 2 * 60 * 1000; // older than this, a request waits for the refresh (app.js flags > 3 min as unavailable)
 const SPECTATE_ELO_TYPES = ['0', '3', '4', '13', '14'];
 // games: match id -> built game (the detail shape, with country) of the current snapshot
-let spectateCache = { at: 0, snapAt: 0, body: null, games: new Map() };
+let spectateCache = { at: 0, snapAt: 0, body: null, index: null, games: new Map() };
 let spectateLoading = null, spectateFailedAt = 0;
 
 // The schema labels civs up to its own table; newer civs arrive as their raw id negated (like negative mapids).
 // Checked against aoe2companion. Never read them as abs(id): the schema's 57 and 61-63 are Return of Rome civs.
 // scraper.js labels lobby players with the same table (its FALLBACK_SCHEMA.civilization); keep the two in sync.
-const NEW_CIVS = Object.assign(Object.create(null), { '-57': 'Puru', '-61': 'Saxons', '-62': 'Varangians', '-63': 'Danes' });
+const NEW_CIVS = Object.assign(Object.create(null), { '-56': 'Thracians', '-57': 'Puru', '-61': 'Saxons', '-62': 'Varangians', '-63': 'Danes' });
 // The schema's 15 is singular, and three Return of Rome civs (58, 62, 66) carry internal names, not display names
 const CIV_LABEL_FIXES = Object.assign(Object.create(null), { Aztec: 'Aztecs', OldPersians: 'Persians', OldRomans: 'Romans', LacViet: 'Lac Viet' });
+// Those two then share a name with a DE civ, whose details (civ-info.json) don't apply: players get civRor: true
+const ROR_SHARED_LABELS = new Set(['OldPersians', 'OldRomans']);
 const loggedUnknownCivs = new Set();
 
 // A civ label from either feed (spectate schema, or the lobby labels scraper.js wrote, NEW_CIVS included), as the site shows it
@@ -287,9 +289,14 @@ function civLabel(label) {
     return (label && CIV_LABEL_FIXES[label]) || label;
 }
 
+function rawCivLabel(civ, schema) {
+    const key = (typeof civ === 'number' || typeof civ === 'string') ? String(civ) : '';
+    return str(own(own(schema, 'civilization'), key)) || NEW_CIVS[key] || null;
+}
+
 function civName(civ, schema) {
     const key = (typeof civ === 'number' || typeof civ === 'string') ? String(civ) : '';
-    const label = str(own(own(schema, 'civilization'), key)) || NEW_CIVS[key];
+    const label = rawCivLabel(civ, schema);
     if (label) return civLabel(label);
     // Logged once per id, so NEW_CIVS can be updated by hand
     if (!loggedUnknownCivs.has(key) && loggedUnknownCivs.size < 100) {
@@ -461,8 +468,9 @@ function buildSpectateGames({ schema, matches, elo }) {
             if (!kind) continue;
             const team = displayTeam(slot.team), color = displayColor(slot.color);
             const civ = civsHidden ? null : civName(slot.civilization, schema);
+            const ror = civ !== null && ROR_SHARED_LABELS.has(rawCivLabel(slot.civilization, schema)) ? { civRor: true } : {};
             if (kind === 'ai') {
-                players.push({ id: 0, name: 'AI', kind, team, color, civ, rating: null, ratings: {} });
+                players.push({ id: 0, name: 'AI', kind, team, color, civ, ...ror, rating: null, ratings: {} });
                 continue;
             }
             const id = profileIdOf(slot.profileid);
@@ -471,7 +479,7 @@ function buildSpectateGames({ schema, matches, elo }) {
                 const st = own(elo[type], String(id));
                 if (st && Number.isFinite(st.rating)) ratings[type] = st.rating;
             }
-            const player = { id, name: str(slot.name) || `Player ${id}`, kind, team, color, civ, country: countryCode(slot.country) };
+            const player = { id, name: str(slot.name) || `Player ${id}`, kind, team, color, civ, ...ror, country: countryCode(slot.country) };
             const steamProfile = str(slot.steam_profile);
             if (steamProfile) player.steamProfile = steamProfile;
             player.rating = null;
@@ -525,12 +533,16 @@ function buildSpectateGames({ schema, matches, elo }) {
 }
 
 // updatedAt is when the snapshot was taken, not when the body was (re)built. The list drops country (it doesn't
-// show it); the detail API serves the games kept in `games`, which have it.
+// show it); the detail API serves the games kept in `games`, which have it. The index is the list cut down to what
+// followed-player alerts need (about a tenth of its size), so a browser can match its follows without sending them.
 function spectateBody(snapshot, snapAt) {
     const { games, unknownMaps } = buildSpectateGames(snapshot);
     const listGames = games.map(g => ({ ...g, players: g.players.map(({ country, ...p }) => p) }));
+    const updatedAt = Math.floor(snapAt / 1000);
+    const indexGames = games.map(g => ({ id: g.id, startTime: g.startTime, map: g.map, players: g.players.filter(p => p.kind === 'human').map(p => p.id) }));
     return {
-        body: JSON.stringify({ updatedAt: Math.floor(snapAt / 1000), stale: false, games: listGames }),
+        body: JSON.stringify({ updatedAt, stale: false, games: listGames }),
+        index: JSON.stringify({ updatedAt, stale: false, games: indexGames }),
         games: new Map(games.map(g => [g.id, g])),
         unknownMaps
     };
@@ -544,7 +556,7 @@ function spectateFresh(cache) {
 async function refreshSpectate() {
     const snapAt = Date.now();
     const snapshot = await fetchSpectateSnapshot();
-    const { body, games, unknownMaps } = spectateBody(snapshot, snapAt);
+    const { body, index, games, unknownMaps } = spectateBody(snapshot, snapAt);
     // Hundreds of games are always in progress and they don't halve within minutes, so a snapshot with no games, or with
     // under half the games of a recent one, is a feed glitch: it counts as a failed refresh, or every running game it
     // misses would be marked as ended
@@ -553,7 +565,7 @@ async function refreshSpectate() {
         throw new Error(`implausible snapshot: ${games.size} games, after ${prev.games.size}`);
     }
     noteEndedGames(prev.games, games, snapAt);
-    const entry = { at: Date.now(), snapAt, body, games };
+    const entry = { at: Date.now(), snapAt, body, index, games };
     spectateCache = entry;
     // Look up unknown map names in the background, then rebuild this snapshot with them (unless a newer one replaced it)
     if (Object.keys(unknownMaps).length) {
@@ -561,6 +573,7 @@ async function refreshSpectate() {
             if (!added || spectateCache !== entry) return;
             const rebuilt = spectateBody(snapshot, snapAt);
             entry.body = rebuilt.body;
+            entry.index = rebuilt.index;
             entry.games = rebuilt.games;
         }).catch(e => console.error('Map name lookup failed:', e.message));
     }
@@ -620,6 +633,22 @@ function spectateGameById(cache, id) {
     const ended = endedGames.get(id);
     if (ended && ended.game.endedAt >= Math.floor((Date.now() - ENDED_KEEP_MS) / 1000)) return { status: 'ended', game: ended.game, ended };
     return { status: 'unknown', game: null, ended: null };
+}
+
+// A player's game for the overlay that follows them: of the live games and the ended ones still kept, the one they
+// started last. The feed keeps listing a player in a team game they have left for as long as it runs, so a live game
+// older than one they have since finished isn't theirs any more. A snapshot too old to list can't tell what they're
+// playing now (their game may not have reached endedGames): unknown, like every game of it.
+function spectateGameByPlayer(cache, profileId) {
+    if (!spectateFresh(cache)) return { status: 'unknown', game: null, ended: null };
+    const has = g => g.players.some(p => p.kind === 'human' && p.id === profileId);
+    let best = null;
+    for (const g of cache.games.values()) if (has(g) && (!best || g.startTime > best.startTime)) best = g;
+    const keptSince = Math.floor((Date.now() - ENDED_KEEP_MS) / 1000);
+    for (const e of endedGames.values()) {
+        if (e.game.endedAt >= keptSince && has(e.game) && (!best || e.game.startTime > best.startTime)) best = e.game;
+    }
+    return best ? spectateGameById(cache, best.id) : { status: 'unknown', game: null, ended: null };
 }
 
 function emptyResult(state) {
@@ -739,11 +768,12 @@ function settleWithin(promise, ms) {
     return Promise.race([promise, new Promise(resolve => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
 }
 
-async function serveSpectateList(res) {
+// The list ("body") or the index: both are empty and stale while the snapshot is too old to show
+async function serveSpectateList(res, which = 'body') {
     let body;
     try {
         const cache = await freshSpectate();
-        body = cache.body;
+        body = cache[which];
         if (!body) body = JSON.stringify({ updatedAt: null, stale: true, games: [] });
         else if (!spectateFresh(cache)) {
             body = JSON.stringify({ updatedAt: Math.floor(cache.snapAt / 1000), stale: true, games: [] });
@@ -755,9 +785,10 @@ async function serveSpectateList(res) {
     res.end(body);
 }
 
-async function serveSpectateMatch(res, id) {
+// /api/spectate/<matchId>, or /api/spectate/player/<profileId> for that player's game (same answer)
+async function serveSpectateMatch(res, id, byPlayer = false) {
     const cache = await freshSpectate();
-    const found = spectateGameById(cache, id);
+    const found = byPlayer ? spectateGameByPlayer(cache, id) : spectateGameById(cache, id);
     let result = null;
     if (found.ended) {
         startResultLookup(found.ended);
@@ -860,6 +891,20 @@ async function serveSpectatePage(res, id) {
     res.end(html);
 }
 
+// /overlay/<matchId> and /overlay/player/<profileId>: the caster overlay (an OBS browser source), never indexed
+async function serveOverlayPage(res) {
+    let html;
+    try {
+        html = await fs.promises.readFile(path.join(__dirname, 'overlay.html'));
+    } catch (e) {
+        res.writeHead(e.code === 'ENOENT' ? 404 : 500);
+        res.end(e.code === 'ENOENT' ? 'File not found' : 'Server error: ' + e.code);
+        return;
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Robots-Tag': 'noindex' });
+    res.end(html);
+}
+
 // --- Lobbies: Relic's advertisement list, joined with aoe2lobby.com's data (scraper.js) by match id -------
 // Self-learning map hash dictionary (Relic option 52), for lobbies whose map neither source names
 const mapDictionary = Object.assign(Object.create(null), {
@@ -899,7 +944,8 @@ function readScrapedJson(file) {
 // One player of a scraped lobby (scraper.js format), with every field type-checked
 // (civ is a label scraper.js took from the lobby feed's schema: named the way the spectate view names it)
 function scrapedLobbyPlayer(p) {
-    return { name: str(p.name), profileId: profileIdOf(p.profileId), civ: civLabel(str(p.civ)), steamProfile: str(p.steamProfile), stats: cleanStats(p.stats) };
+    const civ = str(p.civ);
+    return { name: str(p.name), profileId: profileIdOf(p.profileId), civ: civLabel(civ), civRor: ROR_SHARED_LABELS.has(civ), steamProfile: str(p.steamProfile), stats: cleanStats(p.stats) };
 }
 
 // scraped_lobbies_v2.json is keyed by aoe2lobby.com's match id, the same id Relic uses. Parsed once per build;
@@ -983,7 +1029,7 @@ function hostFirst(players, hostId) {
 // A player known only from aoe2lobby.com (scraped-only lobby, or a Relic lobby without slot info)
 function playerFromScraped(p, scrapedPlayers, ladder) {
     const sp = p.profileId ? scrapedPlayers.get(p.profileId) : undefined;
-    const player = { id: p.profileId || 0, name: p.name || 'Unknown', team: 0, elo: null, totalGames: 0, totalWins: 0, winRate: "0.0%", steamProfile: p.steamProfile || sp?.steamProfile || null, civ: p.civ || null, statsPending: false };
+    const player = { id: p.profileId || 0, name: p.name || 'Unknown', team: 0, elo: null, totalGames: 0, totalWins: 0, winRate: "0.0%", steamProfile: p.steamProfile || sp?.steamProfile || null, civ: p.civ || null, civRor: !!(p.civ && p.civRor), statsPending: false };
     applyStat(player, sp?.stats || p.stats, ladder);
     return player;
 }
@@ -1129,11 +1175,12 @@ async function buildLobbiesBody() {
             const alias = cached && cached.alias !== 'Unknown' ? cached.alias : null;
             const name = alias || lp?.name || sp?.name || (cached ? cached.alias : 'Player_' + p.id);
             const steamProfile = sp?.steamProfile || lp?.steamProfile || cached?.steamProfile || null;
-            const civ = lp?.civ || sp?.civ || null;
+            const civFrom = lp?.civ ? lp : sp?.civ ? sp : null;
+            const civ = civFrom ? civFrom.civ : null;
             return {
                 id: p.id, name, team: p.team, elo: cached ? cached.rating : null,
                 totalGames: cached?.totalGames || 0, totalWins: cached?.totalWins || 0, winRate: cached?.winRate ? String(cached.winRate).replace(/%?$/, '%') : "0.0%",
-                steamProfile, civ, statsPending: isProfileId(p.id) && !cached
+                steamProfile, civ, civRor: !!(civFrom && civFrom.civRor), statsPending: isProfileId(p.id) && !cached
             };
         });
         hostFirst(parsedPlayers, hostId);
@@ -1297,11 +1344,37 @@ async function handleRequest(req, res) {
         return;
     }
 
-    // Spectate routes match the whole path (the query string is dropped): "/api/spectate", "/api/spectate/<id>"
-    // and "/spectate/<id>" with an optional trailing slash. Anything else under them is a 404, never a static file.
+    // Spectate routes match the whole path (the query string is dropped): "/api/spectate", "/api/spectate/index",
+    // "/api/spectate/<id>", "/api/spectate/player/<profileId>", and the pages "/spectate/<id>", "/overlay/<id>" and
+    // "/overlay/player/<profileId>" with an optional trailing slash. Anything else under them is a 404, never a static file.
     const pathname = req.url.split('?')[0];
     if (pathname === '/api/spectate') {
         await serveSpectateList(res);
+        return;
+    }
+    if (pathname === '/api/spectate/index') {
+        await serveSpectateList(res, 'index');
+        return;
+    }
+    if (pathname.startsWith('/api/spectate/player/')) {
+        const id = pathname.slice('/api/spectate/player/'.length);
+        if (!/^\d{1,12}$/.test(id) || !isProfileId(Number(id))) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Not a profile id' }));
+            return;
+        }
+        await serveSpectateMatch(res, Number(id), true);
+        return;
+    }
+    if (pathname.startsWith('/overlay/')) {
+        const rest = pathname.slice('/overlay/'.length).replace(/\/$/, '');
+        const player = /^player\/(\d{1,12})$/.exec(rest);
+        if (!(player ? isProfileId(Number(player[1])) : isMatchId(rest))) {
+            res.writeHead(404);
+            res.end('File not found');
+            return;
+        }
+        await serveOverlayPage(res);
         return;
     }
     if (pathname.startsWith('/api/spectate/')) {

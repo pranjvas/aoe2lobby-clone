@@ -40,13 +40,16 @@ Every request to an external service goes through `server.js`, because the CSP i
 4. Per-match `<title>`, description and Open Graph tags, served by `server.js`, so shared links preview well.
    Match pages are `noindex` because they only live for a game's length.
 
-### V1b: next
+### V1b: civ details, caster overlay, followed players (this branch)
 
-- Civ tech-tree and unit stats on hover, from SiegeEngineers/aoe2techtree `data.json` (MIT, self-hosted).
-- Caster tools: a scoreboard (best of N, score dots, name overrides) and an OBS overlay route
-  `/overlay/<matchId>` with a transparent background.
-- Followed players: an alert when a followed profile starts a game, with a one-click spectate link. The feed is
-  snapshot-only, so expect 60-120 s latency.
+- Civ details on hover: bonuses, unique units with their stats, unique techs and team bonus, from
+  SiegeEngineers/aoe2techtree's data (MIT), built into a self-hosted `civ-info.json`.
+- Caster tools: a scoreboard (title, best of N, score dots, side names, swap) and an OBS overlay at
+  `/overlay/<matchId>` or `/overlay/player/<profileId>`, with a transparent background.
+- Followed players: an alert when a followed profile starts a game, with links to its page and to watch it. The feed
+  is snapshot-only, so expect 60-120 s latency.
+
+See [V1b design](#v1b-design).
 
 ### V2: post-game analysis from the public replay
 
@@ -128,7 +131,8 @@ Every request to an external service goes through `server.js`, because the CSP i
 
 - **Civ table** (checked against aoe2companion across ranked, custom, Quick Play and vs-AI games): `-61` Saxons,
   `-62` Varangians, `-63` Danes (25 of 25 consistent over two snapshots), and `-57` Puru (seen once, an AI slot in
-  518428009, with no conflicting evidence). `-56` has not been seen yet, so it stays unlabelled. Never read them as
+  518428009, with no conflicting evidence), and `-56` Thracians (two AI slots, in 518465237 and 518464315, matched by
+  player colour; every other slot of both games matched too). Never read them as
   `abs(id)`, because the schema's 57 and 61-63 are Return of Rome civs. scraper.js labels lobby players with the
   same table, so the lobby list names these civs too.
   The schema's `15` "Aztec" is shown as "Aztecs", and its Return of Rome internal names `58` "OldPersians", `62`
@@ -194,6 +198,9 @@ Player fields are the same in the list and the detail:
   Raw feed team 1 becomes `null` and 2-5 become 1-4.
 - **`color`:** the display colour, 1-8, or `null`.
 - **`civ`:** the civ name, `"Unknown civ"`, or `null` when `civsHidden`.
+- **`civRor`:** `true` only for a Return of Rome civ labelled like a DE civ (the schema's `OldPersians` and
+  `OldRomans` show as Persians and Romans), so the page doesn't show that DE civ's details. Absent otherwise. The
+  lobby list's players carry it too, as `true` or `false`.
 - **`id` and `name`:** an AI has `id: 0` and `name: "AI"`. A nameless human is `Player <id>`.
 - **`rating` and `ratings`:** for humans only. An AI has `rating: null` and `ratings: {}`. `rating` is the game's
   own `ladder`, and `null` when `ladder` is (Quick Play).
@@ -323,4 +330,92 @@ default) and checks:
 - a live game's detail API;
 - an unknown and an invalid id;
 - that `/spectate/<id>` returns HTML with an escaped per-match title, canonical and `noindex`;
-- that `/spectate/<id>/../server.js`-style paths never serve source.
+- that `/spectate/<id>/../server.js`-style paths never serve source;
+- the V1b index and player APIs, the overlay routes and `civ-info.json` (see below).
+
+## V1b design
+
+### API
+
+- **`GET /api/spectate/index`:** the list cut down to what followed-player alerts need, about a tenth of its size:
+  `{updatedAt, stale, games: [{id, startTime, map, players: [human profile ids]}]}`. Like the list, it has no games
+  while the snapshot is stale. The browser matches its follows against it, so the follow list never reaches the
+  server.
+- **`GET /api/spectate/player/<profileId>`:** the same answer as `/api/spectate/<matchId>`, for the game that player
+  started last, of the live games and the ended ones still kept (2 hours). The feed keeps listing a player in a team
+  game they have left for as long as it runs (dozens of players are in two live games at once), so a live game older
+  than one they have since finished isn't theirs any more. No such game, or a stale snapshot (which can't tell what
+  they're playing), is `unknown`. Profile ids are 1-12 digits; anything else is a 404 JSON `{error}`.
+- **`/overlay/<matchId>` and `/overlay/player/<profileId>`:** serve `overlay.html` (`noindex`, `no-cache`); anything
+  else under `/overlay/` is a 404. `overlay.js`, `overlay.css` and `civ-info.json` are public files.
+
+### Civ details
+
+- `tools/build-civ-info.js` (no dependencies) reads aoe2techtree's `data/data.json` and English `strings.json` at a
+  pinned commit, and writes `civ-info.json`, about 43 KB: per civ, its type, bonuses, unique units (with base
+  cost, HP, attack, armour, range, speed and training time), unique techs and team bonus. It is keyed by the data's
+  civ key, which is the name the feeds use ("Incas", where the help text says "Inca"). It also carries
+  aoe2techtree's MIT licence text. Rerun it and bump the commit after a game update; `app.js` fetches the file
+  unversioned, so visitors get the new one within a day (the server's cache time for unversioned files).
+  - A unit's name is string `LanguageNameId + 9000`, sometimes split over lines; a few newer units use
+    `LanguageNameId` itself. A unit with modes (Ratha) stands in with the mode that fits its class.
+  - The help text wraps some bonuses over two lines: a line without a "•" continues the bullet before it.
+- `app.js` loads it once. A civ it covers becomes a button chip on lobby cards, Spectate cards and match pages:
+  hovering previews the details; a click, tap or Enter pins them and moves focus into the popover (so a keyboard can
+  scroll a long one); Escape, Tab or a click elsewhere closes them. The popover stays inside the viewport and follows
+  its chip, found again by civ and player, through redraws and as cards move. Civs without data (the Chronicles
+  civs, and `civRor` civs) stay plain chips.
+
+### Followed players
+
+- A star next to each human player (Spectate cards, match pages) follows them. Follows live in local storage
+  (`aoe2Follows`: up to 100 `{id, name}`, plus the desktop notification choice) and sync across tabs.
+- While the site is open, a tab with follows fetches the index every 60 s (a hidden tab only when it may show a
+  desktop notification) and alerts for each game with a followed player that it hasn't announced yet. Announced
+  games, and when the tab last checked, are kept in memory and copied to session storage (`aoe2Alerted`,
+  `{checkedAt, ids}`) for reloads and for a page back from the back/forward cache (which also picks up follows and
+  caster settings changed meanwhile), so blocked storage doesn't repeat alerts within a page. A tab's first check,
+  or one more than 5 minutes after its last, announces the games it finds as games players are in, as one summary
+  when several players are in them; later checks announce games as started. A player just followed, in this tab or
+  another, isn't announced for the game they're already in (the games known then are marked at once, and the rest at
+  the next check if it comes within 3 minutes, so a much later check still announces their new game). A match page
+  never announces its own game. A check that finds more than three new games announces the three newest, plus a
+  line for the rest.
+- Alerts are toasts (a polite live region, at most four) with **Open game** and **Watch in game**, and optionally
+  desktop notifications (`Notification`, after the visitor allows it) while the tab is in the background. Turning
+  them on shows one straight away; a browser that can't show them from a page (Chrome on Android) is told so, and
+  they stay off.
+- The Spectate view shows a panel of followed players, who of them is in a game (linked), and unfollow buttons.
+  The Games filter has "Followed players only". A summary alert's "See their games" opens it, with the other
+  spectate filters (type, server, search) cleared so no followed game is hidden.
+
+### Caster tools and overlay
+
+- A collapsed **Caster tools** panel on the match page sets what the overlay shows (this game, or the game a chosen
+  player is in), a title, best of 1-15, each side's wins (capped at the wins needed), side names and a swap. It
+  writes the overlay link, with Copy and Preview (`?preview=1`, a dark backdrop). Settings stay in local storage
+  (`aoe2Caster`), so between games the caster only changes the score and copies the link again. They are saved
+  only when the caster edits them: opening another game's page doesn't change them. A followed player who isn't in
+  that game is shown as "this game" there, and stays the saved choice through other edits until the caster picks
+  what the overlay shows on that page. The score never changes by itself.
+- The overlay reads `bo`, `s` (`left-right`), `l`, `r`, `t` and `swap=1` from its query string and polls the match or
+  player API (30 s, or 20 s while a result is pending). A match overlay stops once its result is in; a player overlay
+  keeps the last game on screen until their next one starts. Following a player keeps their side on the left from
+  game to game. A game with more than two sides lists every player without a score (and names a winner by their
+  own names, never the side names). The winning side is the result's team; without one, the one side holding
+  winners, or the AI's side when the AI won ("The AI won" when that isn't one side). While the feed is down, a game
+  that may still be on says "No live data"; an ended one keeps its result.
+- Known limits of following a player: an ended game is kept for 2 hours (and not across a server restart), after
+  which a game they left that is still running counts as theirs again; and while the feed is down, the overlay
+  can't tell what they're playing, so it keeps what it shows (an ended game's result is not looked up then).
+- Everything from the feed or the URL is put in with `textContent`. The page has no analytics and no site chrome.
+
+### Checks
+
+`qa/spectate-match-check.js` also checks:
+
+- the index's shape, that it matches the list, and its size;
+- a player's game, an unknown player and malformed profile ids;
+- the overlay routes, their headers, and 404s for everything else;
+- that `civ-info.json` is served and well formed, while the build script and docs are not served. It prints the
+  civs in play that have no details.

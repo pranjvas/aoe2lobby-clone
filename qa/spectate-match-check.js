@@ -1,4 +1,5 @@
-// QA: the Spectate list and match APIs, and the /spectate/<id> match pages, of a running server (it starts nothing).
+// QA: the Spectate list, index and match APIs, the /spectate/<id> match pages and the /overlay pages, of a running
+// server (it starts nothing).
 // Usage: node qa/spectate-match-check.js            (Node 22+; BASE=http://127.0.0.1:3002 by default)
 //        BASE=https://aoe2lobby.online node qa/spectate-match-check.js
 // Prints a PASS or FAIL line per check and exits non-zero when any check fails.
@@ -78,6 +79,7 @@ function gameProblems(g, { detail, ended }) {
         expect(nullOr(p.team, t => isInt(t) && t >= 1 && t <= 4), at + 'team (null or 1-4)');
         expect(nullOr(p.color, c => isInt(c) && c >= 1 && c <= 8), at + 'color (null or 1-8)');
         expect(g.civsHidden ? p.civ === null : isText(p.civ), at + (g.civsHidden ? 'civ (hidden, so null)' : 'civ'));
+        expect(!('civRor' in p) || (p.civRor === true && isText(p.civ)), at + 'civRor (absent, or true with a civ)');
         expect(p.ratings !== null && typeof p.ratings === 'object' && !Array.isArray(p.ratings), at + 'ratings');
         if (p.kind === 'ai') {
             expect(p.id === 0 && p.name === 'AI', at + 'AI id 0, name AI');
@@ -220,6 +222,73 @@ async function checkPage(id, game) {
     await checkPage(UNKNOWN_ID, null);
     const slash = await rawGet(`/spectate/${id}/`);
     check(`/spectate/${id}/ (trailing slash): 200 with noindex`, slash.status === 200 && /<meta\s+name="robots"\s+content="noindex"/.test(slash.body), slash.status);
+
+    // ---- the index (what followed-player alerts read): the list cut down to ids, start times, maps and human profile ids
+    const index = await getJson(`/api/spectate/index?t=${Date.now()}`);
+    const idx = index.json || {};
+    check('index: 200 JSON with updatedAt, stale and games', index.status === 200 && /json/.test(index.type) && nullOr(idx.updatedAt, isInt) && typeof idx.stale === 'boolean' && Array.isArray(idx.games), index.status);
+    const idxGames = Array.isArray(idx.games) ? idx.games : [];
+    const badIdx = idxGames.filter(g => !(g && isInt(g.id) && g.id > 0 && Number.isFinite(g.startTime) && isText(g.map) && Array.isArray(g.players)
+        && g.players.every(p => isInt(p) && p > 0) && Object.keys(g).length === 4));
+    check(`index: ${idxGames.length} games are {id, startTime, map, players: [profile ids]}`, badIdx.length === 0, badIdx.slice(0, 3));
+    if (idx.updatedAt === data.updatedAt) {
+        check('index: the same games as the list, with its humans', JSON.stringify(idxGames.map(g => [g.id, g.players]))
+            === JSON.stringify(games.map(g => [g.id, g.players.filter(p => p.kind === 'human').map(p => p.id)])));
+    }
+    check('index: under a fifth of the list\'s size', !games.length || index.text.length * 5 < list.text.length, `${index.text.length} vs ${list.text.length} bytes`);
+
+    // ---- a player's game (the overlay that follows a player): their newest live game, the match detail's shape
+    const human = games.flatMap(g => g.players.filter(p => p.kind === 'human'))[0];
+    if (human) {
+        const res = await getJson(`/api/spectate/player/${human.id}`);
+        const d = res.json || {};
+        check(`player ${human.id}: 200 JSON, a game they're in`, res.status === 200 && ['live', 'ended'].includes(d.status) && d.game && d.game.players.some(p => p.id === human.id), `${res.status} ${d.status}`);
+        check(`player ${human.id}: game matches the contract`, gameProblems(d.game, { detail: true, ended: d.status === 'ended' }).length === 0, gameProblems(d.game, { detail: true, ended: d.status === 'ended' }));
+        const newest = games.filter(g => g.players.some(p => p.id === human.id)).sort((a, b) => b.startTime - a.startTime)[0];
+        if (d.status === 'live' && d.updatedAt === data.updatedAt) check(`player ${human.id}: their newest game`, d.game.id === newest.id, `${d.game.id} vs ${newest.id}`);
+    }
+    const nobody = await getJson('/api/spectate/player/999999999999');
+    check('player unknown: status unknown, game and result null', nobody.status === 200 && nobody.json && nobody.json.status === 'unknown' && nobody.json.game === null && nobody.json.result === null, nobody.text.slice(0, 200));
+    for (const bad of ['/api/spectate/player/', '/api/spectate/player/0', '/api/spectate/player/abc', '/api/spectate/player/1234567890123', '/api/spectate/player/12/']) {
+        const res = await rawGet(bad);
+        let error;
+        try { error = JSON.parse(res.body).error; } catch (e) { }
+        check(`${bad}: 404 JSON {error}`, res.status === 404 && typeof error === 'string', `${res.status} ${res.body.slice(0, 80)}`);
+    }
+
+    // ---- overlay pages: noindex HTML for a match or a player; anything else under /overlay/ is a 404
+    for (const page of [`/overlay/${id}`, `/overlay/${id}/`, `/overlay/player/${human ? human.id : 1}`, `/overlay/${id}?bo=5&s=2-1&l=%3Cb%3E`]) {
+        const res = await rawGet(page);
+        check(`${page}: 200 HTML, noindex, no-cache, the overlay script`, res.status === 200 && /text\/html/.test(res.headers['content-type'] || '')
+            && /noindex/.test(res.headers['x-robots-tag'] || '') && /no-cache/.test(res.headers['cache-control'] || '') && res.body.includes('src="/overlay.js'), res.status);
+    }
+    for (const bad of ['/overlay/', '/overlay/abc', '/overlay/1234567890123456', '/overlay/player/', '/overlay/player/0', '/overlay/player/abc', '/overlay/player/1/x', '/overlay.html']) {
+        const res = await rawGet(bad);
+        check(`${bad}: 404`, res.status === 404 && !SOURCE.test(res.body), res.status);
+    }
+    for (const [asset, type] of [['/overlay.js', /javascript/], ['/overlay.css', /css/], ['/civ-info.json', /json/]]) {
+        const res = await rawGet(asset);
+        check(`${asset}: 200 ${type.source}`, res.status === 200 && type.test(res.headers['content-type'] || ''), res.status);
+    }
+    // app.js fetches it unversioned, so a rebuilt file must reach visitors within a day, never be cached for a year
+    const civCache = (await rawGet('/civ-info.json')).headers['cache-control'] || '';
+    check('/civ-info.json: cached at most a day, not immutable', !/immutable/.test(civCache) && /max-age=(\d+)/.test(civCache) && Number(/max-age=(\d+)/.exec(civCache)[1]) <= 86400, civCache);
+    for (const bad of ['/tools/build-civ-info.js', '/docs/spectate-plan.md']) {
+        const res = await rawGet(bad);
+        check(`${bad}: not served`, res.status === 404, res.status);
+    }
+
+    // ---- civ details: every civ well formed; civs in play that have none are listed (Chronicles civs have no data)
+    const civRes = await getJson('/civ-info.json');
+    const civs = (civRes.json && civRes.json.civs) || {};
+    check('civ-info: source names aoe2techtree and its MIT licence, whose full text it carries', /aoe2techtree/.test(civRes.json && civRes.json.source) && /MIT/.test(civRes.json && civRes.json.source)
+        && /Permission is hereby granted/.test(civRes.json && civRes.json.licence) && /Copyright \(c\) 2018 HSZemi/.test(civRes.json && civRes.json.licence));
+    const badCivs = Object.entries(civs).filter(([, c]) => !(isText(c.type) && Array.isArray(c.bonuses) && c.bonuses.length && Array.isArray(c.uniqueUnits)
+        && c.uniqueUnits.every(u => isText(u.name) && u.stats && Number.isFinite(u.stats.hp)) && Array.isArray(c.uniqueTechs) && typeof c.teamBonus === 'string')).map(([k]) => k);
+    check(`civ-info: ${Object.keys(civs).length} civs, each with type, bonuses, unique units (with stats), techs, team bonus`, Object.keys(civs).length >= 50 && badCivs.length === 0, badCivs);
+    const inPlay = [...new Set(games.flatMap(g => g.players.filter(p => p.civ && !p.civRor).map(p => p.civ)))];
+    const noDetails = inPlay.filter(c => !Object.prototype.hasOwnProperty.call(civs, c));
+    console.log(`     civs in play without details: ${noDetails.length ? noDetails.join(', ') : 'none'}`);
 
     console.log(failures ? `${failures} check(s) failed` : 'all checks passed');
     process.exit(failures ? 1 : 0);

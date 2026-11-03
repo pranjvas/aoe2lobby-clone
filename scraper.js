@@ -38,7 +38,7 @@ const FALLBACK_SCHEMA = {
     resources: { 0: "Standard", 1: "Low", 2: "Medium", 3: "High", 4: "Ultra High", 5: "Infinite", 6: "Random" },
     // Civs newer than the live schema's table arrive as their raw game id negated, and the live table never labels them.
     // The same names as NEW_CIVS in server.js (the Spectate views); keep the two in sync.
-    civilization: { "-57": "Puru", "-61": "Saxons", "-62": "Varangians", "-63": "Danes" }
+    civilization: { "-56": "Thracians", "-57": "Puru", "-61": "Saxons", "-62": "Varangians", "-63": "Danes" }
 };
 let liveSchema = null;
 

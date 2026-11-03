@@ -54,7 +54,7 @@
     </script>
 
     <!-- Styles (fonts are self-hosted from /fonts, see styles.css) -->
-    <link rel="stylesheet" href="/styles.css?v=24">
+    <link rel="stylesheet" href="/styles.css?v=27">
 </head>
 <body>
     <!-- Background Elements -->
@@ -256,6 +256,7 @@
                             <option value="ranked">Ranked only</option>
                             <option value="quickplay">Quick Play only</option>
                             <option value="custom">Custom lobbies only</option>
+                            <option value="following">Followed players only</option>
                         </select>
                     </div>
                     <div class="filter-group">
@@ -286,6 +287,9 @@
                 </div>
             </section>
 
+            <!-- Followed players (Spectate view only), filled by app.js from this browser's follows -->
+            <section class="follow-panel glass-panel" id="followPanel" aria-label="Followed players" hidden></section>
+
             <section class="lobby-grid" id="spectateGrid" style="display: none;">
                 <!-- Games in progress are injected here by app.js -->
             </section>
@@ -309,7 +313,15 @@
                 </details>
                 <details>
                     <summary>Can I watch games that already started?</summary>
-                    <p>Yes. Open <strong>Spectate</strong> to see games in progress, ranked and custom, with each team's players, ratings and civilizations. Press <strong>Spectate</strong> on a game to watch it in Age of Empires II: DE. Games have a short spectator delay, usually 2 minutes, and the button shows a countdown until it ends. A lobby leaves the lobby list as soon as its game starts and appears under Spectate instead. Press <strong>Details</strong> (or the map name) for the game's own page, with a link you can share; once the game ends it shows the winner, the rating changes and a replay download.</p>
+                    <p>Yes. Open <strong>Spectate</strong> to see games in progress, ranked and custom, with each team's players, ratings and civilizations. Press <strong>Spectate</strong> on a game to watch it in Age of Empires II: DE. Games have a short spectator delay, usually 2 minutes, and the button shows a countdown until it ends. A lobby leaves the lobby list as soon as its game starts and appears under Spectate instead. Press <strong>Details</strong> (or the map name) for the game's own page, with a link you can share; once the game ends it shows the winner, the rating changes and a replay download. Hover over or tap a civilization to see its bonuses, unique units and unique techs.</p>
+                </details>
+                <details>
+                    <summary>Can I get an alert when a player starts a game?</summary>
+                    <p>Yes. Press the star (&#x2606;) next to a player's name on <strong>Spectate</strong> or on a game's page to follow them. While AoE2Lobby.online is open in a tab, you get an alert when they start a game, with links to the game's page and to watch it in game. The live game data is refreshed about once a minute, so alerts come a minute or two after the game starts. <strong>Spectate</strong> lists the players you follow and which of them are in a game; turn on desktop notifications there to be alerted while the tab is in the background (on a computer; most phone browsers can't show them from a web page).</p>
+                </details>
+                <details>
+                    <summary>Is there a scoreboard overlay for casters?</summary>
+                    <p>Yes. On a game's page, open <strong>Caster tools</strong> to set a title, the series length (best of), the score and the side names, then copy the overlay link into an OBS <strong>Browser</strong> source at 1920 &times; 1080. It shows the players, civilizations, ratings and score over your stream on a transparent background. It can follow one player from game to game, so the players and civilizations update by themselves. The score only changes when you change it: after each game, change it in <strong>Caster tools</strong>, copy the link again and paste it into the source's URL.</p>
                 </details>
                 <details>
                     <summary>Which ELO is shown for each player?</summary>
@@ -325,11 +337,11 @@
                 </details>
                 <details>
                     <summary>Where does the data come from?</summary>
-                    <p>The lobby list comes from the game's public lobby service. Lobby settings (such as starting age, resources, treaty and mods), AI slots, player ratings, Steam links and the Spectate list come from <a href="https://aoe2lobby.com/" target="_blank" rel="noopener">aoe2lobby.com</a>, and map names from <a href="https://www.aoe2companion.com/" target="_blank" rel="noopener">aoe2companion.com</a>. Results of finished games come from the game's public match history, and replay downloads are the official aoe.ms links. AoE2Lobby.online is a fan-made site and isn't affiliated with Microsoft, Xbox Game Studios, World's Edge or Forgotten Empires.</p>
+                    <p>The lobby list comes from the game's public lobby service. Lobby settings (such as starting age, resources, treaty and mods), AI slots, player ratings, Steam links and the Spectate list come from <a href="https://aoe2lobby.com/" target="_blank" rel="noopener">aoe2lobby.com</a>, and map names from <a href="https://www.aoe2companion.com/" target="_blank" rel="noopener">aoe2companion.com</a>. Results of finished games come from the game's public match history, and replay downloads are the official aoe.ms links. Civilization bonuses and unit stats come from the open-source <a href="https://github.com/SiegeEngineers/aoe2techtree" target="_blank" rel="noopener">aoe2techtree</a> project (MIT licence). AoE2Lobby.online is a fan-made site and isn't affiliated with Microsoft, Xbox Game Studios, World's Edge or Forgotten Empires.</p>
                 </details>
                 <details>
                     <summary>Privacy and contact</summary>
-                    <p>AoE2Lobby.online has no accounts and sets no cookies. The only thing it stores in your browser is your filter and view choices, under the <code>aoe2State</code> key in local storage, so they are still set on your next visit; clearing this site's data removes them. Visits are counted with Cloudflare Web Analytics, which is cookieless.</p>
+                    <p>AoE2Lobby.online has no accounts and sets no cookies. What it stores in your browser stays there: your filter and view choices (<code>aoe2State</code>), the players you follow (<code>aoe2Follows</code>) and your caster tools settings (<code>aoe2Caster</code>) in local storage, so they are still set on your next visit, and the games a tab has already alerted you about (<code>aoe2Alerted</code>, in session storage, gone when the tab closes). Clearing this site's data removes them all. Your follows are never sent to the server: the page fetches the list of games in progress and looks for the players you follow itself. Desktop notifications appear only after you allow them in your browser. Visits are counted with Cloudflare Web Analytics, which is cookieless.</p>
                     <p>Player names, ratings and Steam links come from the sources above: the game's public lobby service and aoe2lobby.com. Results and rating changes of finished games come from the game's public match history (aoe2companion.com is only used to look up map names). The server keeps player profiles in memory for up to a day after a player was last seen in a lobby, plus a file with the current lobby list that is overwritten every few seconds. Games in progress, and games that ended in the last 2 hours, are also kept in memory, with their players' names, countries, Steam links, ratings and results, and each one's match page shows them for that time. Its access logs keep visitors' IP addresses masked (the last part removed) for 30 days.</p>
                     <p>Contact details, including how to ask for something to be removed, will be added here.</p>
                 </details>
@@ -338,7 +350,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/app.js?v=25"></script>
+    <script src="/app.js?v=30"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>
