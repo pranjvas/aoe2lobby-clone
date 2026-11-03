@@ -21,7 +21,16 @@ const defaultState = {
     playerSearch: '',
     eloType: '0' // Unranked, the same default rating aoe2lobby.com shows
 };
-const storedState = JSON.parse(localStorage.getItem('aoe2State')) || {};
+// Saved filters; blocked storage or a corrupt value must never stop the page from loading
+let storedState = {};
+try {
+    const v = JSON.parse(localStorage.getItem('aoe2State'));
+    if (v && typeof v === 'object' && !Array.isArray(v)) storedState = v;
+} catch (e) {}
+// Drop saved values of the wrong type (they would break filtering), keeping the defaults instead
+for (const key of Object.keys(defaultState)) {
+    if (key in storedState && typeof storedState[key] !== typeof defaultState[key]) delete storedState[key];
+}
 // 'auto' used to be the default; move those visitors to the new default once
 if (storedState.eloType === 'auto' && !storedState.eloDefaultV2) storedState.eloType = '0';
 const state = { ...defaultState, ...storedState, eloDefaultV2: true };
@@ -123,14 +132,28 @@ function init() {
 function esc(value) {
     return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
-// For a value placed inside a single-quoted JS string in an HTML attribute
-function jsArg(value) {
-    return esc(String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+
+// Only a numeric id is a real match id (aoe2de:// links); anything else is never put in a link
+function isMatchId(id) {
+    return /^\d+$/.test(String(id ?? ''));
 }
+
+// Buttons inside cards carry data-action instead of inline onclick handlers (so the page can run under a CSP)
+document.addEventListener('click', (e) => {
+    const el = e.target.closest && e.target.closest('[data-action]');
+    if (!el) return;
+    switch (el.dataset.action) {
+        case 'copy-handle': copyPlayerHandle(e, el, el.dataset.handle || ''); break;
+        case 'steam-friend': if (addSteamFriend(e, el.dataset.steamId) === false) e.preventDefault(); break;
+        case 'clear-filters': clearLobbyFilters(); break;
+        case 'show-more-spectate': showMoreSpectate(); break;
+    }
+});
 
 // Add a Steam friend: the steam:// link makes the Steam app send the request. Without the app, nothing takes
 // focus, so after a moment open the player's Steam profile (its Add Friend button signs in first if needed).
-window.addSteamFriend = function(e, steamId) {
+function addSteamFriend(e, steamId) {
+    if (!/^\d{17}$/.test(String(steamId))) return false;
     e.preventDefault();
     e.stopPropagation();
     let appOpened = false;
@@ -144,7 +167,7 @@ window.addSteamFriend = function(e, steamId) {
         if (!appOpened) window.open(`https://steamcommunity.com/profiles/${steamId}`, '_blank', 'noopener');
     }, 1500);
     return false;
-};
+}
 
 const XBOX_ICON = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7.202 15.967a8 8 0 0 1-3.552-1.26c-.898-.585-1.101-.826-1.101-1.306 0-.965 1.062-2.656 2.879-4.583C6.459 7.723 7.897 6.44 8.052 6.475c.302.068 2.718 2.423 3.622 3.531 1.43 1.753 2.088 3.189 1.754 3.829-.254.486-1.83 1.437-2.987 1.802-.954.301-2.207.429-3.239.33m-5.866-3.57C.589 11.253.212 10.127.03 8.497c-.06-.539-.038-.846.137-1.95.218-1.377 1.002-2.97 1.945-3.95.401-.417.437-.427.926-.263.595.2 1.23.638 2.213 1.528l.574.519-.313.385C4.056 6.553 2.52 9.086 1.94 10.653c-.315.852-.442 1.707-.306 2.063.091.24.007.15-.3-.319Zm13.101.195c.074-.36-.019-1.02-.238-1.687-.473-1.443-2.055-4.128-3.508-5.953l-.457-.575.494-.454c.646-.593 1.095-.948 1.58-1.25.381-.237.927-.448 1.161-.448.145 0 .654.528 1.065 1.104a8.4 8.4 0 0 1 1.343 3.102c.153.728.166 2.286.024 3.012a9.5 9.5 0 0 1-.6 1.893c-.179.393-.624 1.156-.82 1.404-.1.128-.1.127-.043-.148ZM7.335 1.952c-.67-.34-1.704-.705-2.276-.803a4 4 0 0 0-.759-.043c-.471.024-.45 0 .306-.358A7.8 7.8 0 0 1 6.47.128c.8-.169 2.306-.17 3.094-.005.85.18 1.853.552 2.418.9l.168.103-.385-.02c-.766-.038-1.88.27-3.078.853-.361.176-.676.316-.699.312a12 12 0 0 1-.654-.319Z"/></svg>';
 const STEAM_ICON = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M.329 10.333A8.01 8.01 0 0 0 7.99 16C12.414 16 16 12.418 16 8s-3.586-8-8.009-8A8.006 8.006 0 0 0 0 7.468l.003.006 4.304 1.769A2.2 2.2 0 0 1 5.62 8.88l1.96-2.844-.001-.04a3.046 3.046 0 0 1 3.042-3.043 3.046 3.046 0 0 1 3.042 3.043 3.047 3.047 0 0 1-3.111 3.044l-2.804 2a2.223 2.223 0 0 1-3.075 2.11 2.22 2.22 0 0 1-1.312-1.568L.33 10.333Z"/><path d="M4.868 12.683a1.715 1.715 0 0 0 1.318-3.165 1.7 1.7 0 0 0-1.263-.02l1.023.424a1.261 1.261 0 1 1-.97 2.33l-.99-.41a1.7 1.7 0 0 0 .882.84Zm3.726-6.687a2.03 2.03 0 0 0 2.027 2.029 2.03 2.03 0 0 0 2.027-2.029 2.03 2.03 0 0 0-2.027-2.027 2.03 2.03 0 0 0-2.027 2.027m2.03-1.527a1.524 1.524 0 1 1-.002 3.048 1.524 1.524 0 0 1 .002-3.048"/></svg>';
@@ -156,20 +179,21 @@ function playerLinksHtml(p) {
     let html = `<a class="player-link" href="https://www.aoe2insights.com/user/relic/${id}" target="_blank" rel="noopener" title="AoE2Insights profile">AoE2Insights</a>`;
     html += `<a class="player-link" href="https://www.ageofempires.com/stats/?profileId=${id}&game=age2" target="_blank" rel="noopener" title="Official Age of Empires stats (Microsoft)">${XBOX_ICON}</a>`;
     if (typeof p.steamProfile === 'string' && /^https:\/\/steamcommunity\.com\/(profiles|id)\/[\w-]+\/?$/.test(p.steamProfile)) {
-        html += `<a class="player-link" href="${p.steamProfile}" target="_blank" rel="noopener" title="Steam profile">${STEAM_ICON}</a>`;
+        html += `<a class="player-link" href="${esc(p.steamProfile)}" target="_blank" rel="noopener" title="Steam profile">${STEAM_ICON}</a>`;
         const steamId = /\/profiles\/(\d{17})\/?$/.exec(p.steamProfile);
         if (steamId) {
-            html += `<a class="player-link" href="steam://friends/add/${steamId[1]}" onclick="return addSteamFriend(event, '${steamId[1]}')" title="Add friend on Steam">+ Friend</a>`;
+            html += `<a class="player-link" href="steam://friends/add/${steamId[1]}" data-action="steam-friend" data-steam-id="${steamId[1]}" title="Add friend on Steam">+ Friend</a>`;
         }
     }
     return `<span class="player-links">${html}</span>`;
 }
 
 function parseRelicLobby(match) {
-    let title = match.title || "Age of Empires II Game";
+    let title = (typeof match.title === 'string' && match.title) ? match.title : "Age of Empires II Game";
     try { title = decodeURIComponent(escape(title)); } catch(e) {}
-    
-    let map = match.map || "Unknown Map";
+
+    // Only a string is a map name; anything else (e.g. {} from a bad feed entry) must not break the list
+    let map = (typeof match.map === 'string' && match.map) ? match.map : "Unknown Map";
     if (map.toLowerCase() === "my map" || map.toLowerCase() === "custom map" || map === "") {
         map = "Custom Scenario";
         const tLower = title.toLowerCase();
@@ -180,7 +204,9 @@ function parseRelicLobby(match) {
         else if (tLower.includes('dodge')) map = 'Dodgeball';
     }
 
-    const known = (v) => (v !== undefined && v !== null && v !== '' && v !== 'Unknown') ? v : null;
+    if (typeof match.id !== 'number' && typeof match.id !== 'string') throw new Error('lobby without an id');
+    // Plain text or numbers only: an object here (bad feed entry) would break the card
+    const known = (v) => ((typeof v === 'string' || typeof v === 'number') && v !== '' && v !== 'Unknown') ? v : null;
     let matchType = known(match.matchType);
 
     let type = "Random Map";
@@ -196,21 +222,25 @@ function parseRelicLobby(match) {
     if(map.toLowerCase().includes('arena')) mapIcon = '&#x1F3F0;';
     
     let mapSize = known(match.mapSize);
-    let modInfo = match.modInfo || "No Mods";
+    let modInfo = (typeof match.modInfo === 'string' && match.modInfo) ? match.modInfo : "No Mods";
     let population = known(match.population);
     let speed = known(match.speed);
-    let startingAge = match.startingAge && match.startingAge !== 'Unknown' ? match.startingAge : null;
-    let resources = match.resources && match.resources !== 'Unknown' ? match.resources : null;
+    let startingAge = known(match.startingAge);
+    let resources = known(match.resources);
     let treaty = parseInt(match.treaty) || 0;
 
-    let currentPlayers = match.players ? match.players.length : 1;
-    let maxPlayers = match.maxPlayers || 8; // joinable slots; closed and AI slots aren't counted
-    let aiSlots = match.aiSlots || 0;
-    
+    // Work on copies: the raw feed is parsed again when the Elo Type changes. players[0] is the host (the server puts it first).
+    const players = (Array.isArray(match.players) ? match.players : [])
+        .filter(p => p && typeof p === 'object')
+        .map(p => ({ ...p, name: typeof p.name === 'string' ? p.name : String(p.name ?? '') }));
+    let currentPlayers = Array.isArray(match.players) ? players.length : 1;
+    let maxPlayers = Number(match.maxPlayers) || 8; // joinable slots; closed and AI slots aren't counted
+    let aiSlots = Number(match.aiSlots) || 0;
+
     let playersHtml = '';
-    if (match.players && match.players.length > 0) {
-        // First mutate the players based on eloType
-        match.players.forEach(p => {
+    if (players.length > 0) {
+        // First set each player's shown stats based on eloType
+        players.forEach(p => {
             if (state.eloType !== 'auto' && p.allStats && p.allStats[state.eloType]) {
                 const stat = p.allStats[state.eloType];
                 p.displayElo = stat.rating;
@@ -225,29 +255,36 @@ function parseRelicLobby(match) {
                 p.displayGames = p.totalGames;
                 p.displayWR = p.winRate;
             }
+            // Shown, sorted and filtered on: plain text or numbers only
+            for (const key of ['displayElo', 'displayGames', 'displayWR']) {
+                if (typeof p[key] !== 'string' && typeof p[key] !== 'number') p[key] = null;
+            }
         });
 
-        match.players.sort((a,b) => a.team - b.team);
-        playersHtml = match.players.map(p => {
-            let statsHtml = `${p.displayGames} Games, ${p.displayWR ? (String(p.displayWR).endsWith('%') ? p.displayWR : p.displayWR + '%') : 'N/A'} WR`;
-            
-            // If we have literally 0 games and 0 winrate (meaning not yet fully scraped or new account)
-            if (p.displayGames === 0 && (!p.displayWR || p.displayWR === '0%' || p.displayWR === '0.0%')) {
-                statsHtml = `<div class="spinner-inline" title="Loading player stats..."></div>`;
+        // Sort a copy by team for display, so players[0] stays the host
+        playersHtml = [...players].sort((a,b) => a.team - b.team).map(p => {
+            const wr = p.displayWR ? (String(p.displayWR).endsWith('%') ? p.displayWR : p.displayWR + '%') : 'N/A';
+            let statsHtml = `${esc(p.displayGames)} Games, ${esc(wr)} WR`;
+
+            // No games on this ladder: either the server is still fetching the profile, or the player hasn't played it
+            if (!Number(p.displayGames) && (!p.displayWR || p.displayWR === '0%' || p.displayWR === '0.0%')) {
+                statsHtml = p.statsPending === true
+                    ? `<div class="spinner-inline" title="Loading player stats..."></div>`
+                    : 'No games on this ladder';
             }
 
             return `
             <div class="player-item" style="display: flex; align-items: center; justify-content: space-between;">
                 <span class="player-name" style="display: flex; align-items: center; gap: 6px;">
-                    T${p.team} - ${esc(p.name)}
+                    T${esc(p.team)} - ${esc(p.name)}
                     ${p.civ ? `<span class="civ-chip" title="Civilization">${esc(p.civ)}</span>` : ''}
-                    <button onclick="copyPlayerHandle(event, this, '${jsArg(p.name)}')" style="background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 0; display: flex; align-items: center;" title="Copy Handle">
+                    <button type="button" data-action="copy-handle" data-handle="${esc(p.name)}" style="background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 0; display: flex; align-items: center;" title="Copy Handle">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                     </button>
                     <span class="player-stats">${statsHtml}</span>
                     ${playerLinksHtml(p)}
                 </span>
-                <span class="player-elo">${p.displayElo != null ? p.displayElo : '&mdash;'}</span>
+                <span class="player-elo">${p.displayElo != null ? esc(p.displayElo) : '&mdash;'}</span>
             </div>
             `;
         }).join('');
@@ -258,8 +295,8 @@ function parseRelicLobby(match) {
     return {
         id: match.id,
         steamLobbyId: match.steamLobbyId,
-        host: match.players && match.players.length > 0 ? match.players[0].name : `Unknown`,
-        elo: match.players && match.players.length > 0 ? match.players[0].displayElo : null,
+        host: players.length > 0 ? players[0].name : `Unknown`,
+        elo: players.length > 0 ? players[0].displayElo : null,
         title: title,
         map: map,
         mapIcon: mapIcon,
@@ -272,16 +309,25 @@ function parseRelicLobby(match) {
         startingAge: startingAge,
         resources: resources,
         treaty: treaty,
-        server: match.server || null, 
+        server: (typeof match.server === 'string' && match.server) ? match.server : null,
+        isPasswordProtected: match.isPasswordProtected === true,
         currentPlayers: currentPlayers,
         maxPlayers: maxPlayers,
         aiSlots: aiSlots,
         ping: Math.floor(Math.random() * 50) + 20,
         playersHtml: playersHtml,
-        isPlaying: match.isPlaying,
+        isPlaying: !!match.isPlaying,
         lastSeen: match.lastSeen,
-        rawPlayers: match.players || []
+        rawPlayers: players
     };
+}
+
+// One bad lobby is skipped (and logged) instead of blanking the whole list
+function parseLobbies(matches) {
+    return matches.flatMap(m => {
+        try { return [parseRelicLobby(m)]; }
+        catch (e) { console.warn('Skipping a lobby that could not be shown:', m && m.id, e); return []; }
+    });
 }
 
 async function fetchRealLobbies() {
@@ -291,16 +337,20 @@ async function fetchRealLobbies() {
         
         let hasUnknownMap = false;
 
-        if (data && data.matches) {
+        if (data && Array.isArray(data.matches)) {
             state.rawMatches = data.matches;
-            lobbies = data.matches.map(parseRelicLobby);
-            
+            lobbies = parseLobbies(data.matches);
+
             // Dynamically populate Mod Filter
             const modFilter = document.getElementById('modFilter');
             if (modFilter) {
-                const currentModSelection = modFilter.value;
+                // Keep the saved choice even while no open lobby uses that mod, like the server filter does
+                const currentModSelection = String(state.mod ?? 'all');
                 const uniqueMods = [...new Set(lobbies.map(l => l.modInfo).filter(m => m && m !== 'No Mods'))].sort();
-                
+                if (!['all', 'No Mods', 'Mods Enabled'].includes(currentModSelection) && !uniqueMods.includes(currentModSelection)) {
+                    uniqueMods.push(currentModSelection);
+                }
+
                 modFilter.innerHTML = `
                     <option value="all">All Mods</option>
                     <option value="No Mods">No Mods</option>
@@ -312,20 +362,14 @@ async function fetchRealLobbies() {
                     opt.textContent = mod;
                     modFilter.appendChild(opt);
                 });
-                
-                if (uniqueMods.includes(currentModSelection) || ['all', 'No Mods', 'Mods Enabled'].includes(currentModSelection)) {
-                    modFilter.value = currentModSelection;
-                } else {
-                    modFilter.value = 'all';
-                    state.mod = 'all';
-                }
+                modFilter.value = currentModSelection;
             }
 
             if (serverFilter) {
                 const servers = [...new Set(lobbies.map(l => l.server).filter(Boolean))].sort();
                 if (state.server !== 'all' && !servers.includes(state.server)) servers.push(state.server);
                 serverFilter.innerHTML = '<option value="all">All Servers</option>' +
-                    servers.map(sv => `<option value="${sv}">${sv}</option>`).join('');
+                    servers.map(sv => `<option value="${esc(sv)}">${esc(sv)}</option>`).join('');
                 serverFilter.value = state.server;
             }
 
@@ -397,10 +441,7 @@ function setupEventListeners() {
             const spectateElo = document.getElementById('spectateEloType');
             if (spectateElo) spectateElo.value = state.eloType;
             // We need to re-parse all lobbies so the UI updates
-            lobbies = lobbies.map(l => {
-                const rawMatch = state.rawMatches.find(rm => rm.id === l.id);
-                return rawMatch ? parseRelicLobby(rawMatch) : l;
-            });
+            if (state.rawMatches) lobbies = parseLobbies(state.rawMatches);
             applyFiltersAndRender();
         });
     }
@@ -470,10 +511,11 @@ function setupEventListeners() {
 
 function filterLobbies() {
     return lobbies.filter(lobby => {
-        const matchesSearch = 
-            lobby.host.toLowerCase().includes(state.search) || 
-            lobby.title.toLowerCase().includes(state.search) || 
-            lobby.map.toLowerCase().includes(state.search);
+        const matchesSearch =
+            lobby.host.toLowerCase().includes(state.search) ||
+            lobby.title.toLowerCase().includes(state.search) ||
+            lobby.map.toLowerCase().includes(state.search) ||
+            lobby.rawPlayers.some(p => p.name.toLowerCase().includes(state.search));
         const matchesType = state.gameType === 'all' || lobby.type === state.gameType;
         const matchesMap = state.map === 'all' || lobby.map.toLowerCase().includes(state.map.toLowerCase());
         const matchesStatus = state.status === 'all' || 
@@ -496,7 +538,7 @@ function filterLobbies() {
 
 function applyFiltersAndRender() {
     const { rawMatches, ...saved } = state; // the lobby list itself is not worth saving
-    localStorage.setItem('aoe2State', JSON.stringify(saved));
+    try { localStorage.setItem('aoe2State', JSON.stringify(saved)); } catch (e) {} // blocked or full storage: just don't remember
     // Outline every filter that is narrowing the list, so remembered filters are easy to spot
     for (const [key, id] of LOBBY_FILTERS) {
         const el = document.getElementById(id);
@@ -535,6 +577,7 @@ function aggregatePlayers() {
                         lobbyTitle: lobby.title,
                         lobbyMap: lobby.map,
                         isPlaying: lobby.isPlaying,
+                        isPasswordProtected: lobby.isPasswordProtected,
                         matchType: lobby.matchType,
                         mapSize: lobby.mapSize,
                         population: lobby.population,
@@ -571,8 +614,6 @@ function aggregatePlayers() {
 }
 
 function renderPlayers(players) {
-    let emptyState = document.getElementById('emptyStatePlayers');
-    
     if (isInitialLoad) {
         playerGrid.innerHTML = `
             <div class="loader-container">
@@ -583,20 +624,18 @@ function renderPlayers(players) {
         return;
     }
 
-    if(players.length === 0) {
-        if(!emptyState) {
-            emptyState = document.createElement('div');
-            emptyState.id = 'emptyStatePlayers';
-            emptyState.className = 'empty-state';
-            emptyState.innerHTML = `<h3>No Players Found</h3><p>There are no open lobbies with players currently.</p>`;
-            playerGrid.appendChild(emptyState);
-        }
-        emptyState.style.display = 'block';
-    } else {
-        if(emptyState) emptyState.style.display = 'none';
-    }
-
     playerGrid.innerHTML = ''; // Clear grid before re-rendering
+
+    if (players.length === 0) {
+        const emptyState = document.createElement('div');
+        emptyState.id = 'emptyStatePlayers';
+        emptyState.className = 'empty-state';
+        emptyState.innerHTML = state.playerSearch
+            ? `<h3>No players match your search</h3><p>No player or map matches <strong>${esc(state.playerSearch)}</strong>.</p>`
+            : `<h3>No Players Found</h3><p>There are no open lobbies with players currently.</p>`;
+        playerGrid.appendChild(emptyState);
+        return;
+    }
 
     players.forEach(p => {
         const div = document.createElement('div');
@@ -607,10 +646,10 @@ function renderPlayers(players) {
                 <div class="host-info">
                     <div class="host-name" style="display: flex; align-items: center; gap: 8px;">
                         ${esc(p.name)}
-                        <button onclick="copyPlayerHandle(event, this, '${jsArg(p.name)}')" style="background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 0; display: flex;" title="Copy Handle">
+                        <button type="button" data-action="copy-handle" data-handle="${esc(p.name)}" style="background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 0; display: flex;" title="Copy Handle">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                         </button>
-                        ${p.displayElo !== null ? `<span class="elo-badge">${p.displayElo}</span>` : '<span class="elo-badge" style="background: rgba(138, 155, 178, 0.2); color: var(--text-secondary); border-color: transparent;">Unranked</span>'}
+                        ${p.displayElo != null ? `<span class="elo-badge">${esc(p.displayElo)}</span>` : '<span class="elo-badge" style="background: rgba(138, 155, 178, 0.2); color: var(--text-secondary); border-color: transparent;">Unranked</span>'}
                     </div>
                     <div class="game-title" style="font-size: 0.8em; color: var(--text-secondary);">In lobby: ${esc(p.lobbyTitle)}${p.civ ? ` · Civ: ${esc(p.civ)}` : ''}</div>
                     ${playerLinksHtml(p)}
@@ -621,11 +660,11 @@ function renderPlayers(players) {
                 <div class="game-details">
                     <div class="detail-row">
                         <span class="detail-icon">&#x1F3C6;</span>
-                        Win Rate: ${p.displayWR ? (String(p.displayWR).endsWith('%') ? p.displayWR : p.displayWR + '%') : 'N/A'}
+                        Win Rate: ${esc(p.displayWR ? (String(p.displayWR).endsWith('%') ? p.displayWR : p.displayWR + '%') : 'N/A')}
                     </div>
                     <div class="detail-row">
                         <span class="detail-icon">&#x1F4CA;</span>
-                        Total Games: ${p.displayGames || '0'}
+                        Total Games: ${esc(p.displayGames || '0')}
                     </div>
                     <div class="detail-row">
                         <span class="detail-icon">&#x1F5FA;</span>
@@ -633,19 +672,22 @@ function renderPlayers(players) {
                     </div>
                     <div class="tags-row" style="margin-top: 10px;">
                         <span class="badge status-badge" style="background: ${p.isPlaying ? 'rgba(212, 175, 55, 0.2)' : 'rgba(46, 160, 67, 0.2)'}; color: ${p.isPlaying ? '#d4af37' : '#2ea043'}; border-color: ${p.isPlaying ? '#d4af37' : '#2ea043'}">${p.isPlaying ? '&#x1F512; Full lobby' : '&#x23F3; Waiting'}</span>
-                        ${p.server ? `<span class="badge server-badge" title="Server">&#x1F310; ${p.server}</span>` : ''}
+                        ${p.server ? `<span class="badge server-badge" title="Server">&#x1F310; ${esc(p.server)}</span>` : ''}
+                        ${passwordBadge(p)}
                         ${renderInfoBadges(p)}
                     </div>
                 </div>
             </div>
-            
+
             <div class="player-list">
                 ${p.playersHtml}
             </div>
-            
+
             ${p.isPlaying ? '' : `
             <div class="card-footer">
-                <a href="aoe2de://0/${p.lobbyId}" class="btn-join" style="margin-left: auto;">Join Lobby</a>
+                ${isMatchId(p.lobbyId)
+                    ? `<a href="aoe2de://0/${esc(p.lobbyId)}" class="btn-join" style="margin-left: auto;">Join Lobby</a>`
+                    : '<span class="btn-join disabled" style="margin-left: auto;">Cannot Join</span>'}
             </div>
             `}
         `;
@@ -662,18 +704,24 @@ function renderPlayers(players) {
 // Badges for values we actually know; unknown values are left out rather than guessed
 function renderInfoBadges(item) {
     let html = '';
-    if (item.matchType) html += `<span class="badge match-type-badge">${item.matchType}</span>`;
-    if (item.mapSize) html += `<span class="badge map-size-badge" title="Map Size">&#x1F5FA; ${item.mapSize}</span>`;
-    if (item.population) html += `<span class="badge pop-badge" title="Population">&#x1F465; ${item.population}</span>`;
-    if (item.speed) html += `<span class="badge speed-badge" title="Speed">&#x23E9; ${item.speed}</span>`;
+    if (item.matchType) html += `<span class="badge match-type-badge">${esc(item.matchType)}</span>`;
+    if (item.mapSize) html += `<span class="badge map-size-badge" title="Map Size">&#x1F5FA; ${esc(item.mapSize)}</span>`;
+    if (item.population) html += `<span class="badge pop-badge" title="Population">&#x1F465; ${esc(item.population)}</span>`;
+    if (item.speed) html += `<span class="badge speed-badge" title="Speed">&#x23E9; ${esc(item.speed)}</span>`;
     html += `<span class="badge mod-info-badge" title="Mod Info">&#x2699; ${esc(item.modInfo || 'No Mods')}</span>`;
     return html;
+}
+
+// Password lobbies can still be joined (the game asks for the password), so this is only a label
+function passwordBadge(item) {
+    return item.isPasswordProtected ? '<span class="badge password-badge" title="The game asks for a password when you join">&#x1F511; Password</span>' : '';
 }
 
 // Everything shown on a card except the live player list / count / status, which update in place
 function lobbyDetailsKey(lobby) {
     return JSON.stringify([lobby.host, lobby.elo, lobby.title, lobby.map, lobby.type, lobby.matchType, lobby.mapSize,
-        lobby.population, lobby.speed, lobby.modInfo, lobby.startingAge, lobby.resources, lobby.treaty, lobby.isPlaying, lobby.server]);
+        lobby.population, lobby.speed, lobby.modInfo, lobby.startingAge, lobby.resources, lobby.treaty, lobby.isPlaying, lobby.server,
+        lobby.isPasswordProtected]);
 }
 
 function renderSettingBadges(lobby) {
@@ -683,43 +731,46 @@ function renderSettingBadges(lobby) {
     }
     if (lobby.startingAge) {
         const custom = lobby.startingAge !== 'Standard' && lobby.startingAge !== 'Dark Age' ? ' custom-setting' : '';
-        html += `<span class="badge age-badge${custom}" title="Starting Age">&#x1F3F0; ${lobby.startingAge === 'Standard' ? 'Standard Age' : lobby.startingAge}</span>`;
+        html += `<span class="badge age-badge${custom}" title="Starting Age">&#x1F3F0; ${lobby.startingAge === 'Standard' ? 'Standard Age' : esc(lobby.startingAge)}</span>`;
     }
     if (lobby.resources) {
         const custom = lobby.resources !== 'Standard' && lobby.resources !== 'Low' ? ' custom-setting' : '';
-        html += `<span class="badge resources-badge${custom}" title="Starting Resources">&#x1FA99; ${lobby.resources === 'Standard' ? 'Standard Res' : lobby.resources + ' Res'}</span>`;
+        html += `<span class="badge resources-badge${custom}" title="Starting Resources">&#x1FA99; ${lobby.resources === 'Standard' ? 'Standard Res' : esc(lobby.resources) + ' Res'}</span>`;
     }
     return html;
 }
 
 function playerCountText(lobby) {
-    return `&#x1F464; ${lobby.currentPlayers}/${lobby.maxPlayers}` +
-        (lobby.aiSlots ? ` <span class="ai-count" title="Slots filled by AI">· ${lobby.aiSlots} AI</span>` : '');
+    return `&#x1F464; ${esc(lobby.currentPlayers)}/${esc(lobby.maxPlayers)}` +
+        (lobby.aiSlots ? ` <span class="ai-count" title="Slots filled by AI">· ${esc(lobby.aiSlots)} AI</span>` : '');
+}
+
+// "Full" / "Waiting" plus the server region, top right of a lobby card
+function lobbyStatusHtml(lobby) {
+    return (lobby.isPlaying
+        ? '<span style="color: #d4af37">&#x1F512; Full</span> '
+        : '<span style="color: #2ea043">&#x23F3; Waiting</span> ') + esc(lobby.server || '');
 }
 
 function lobbyCardHtml(lobby) {
     const fillPercentage = (lobby.currentPlayers / lobby.maxPlayers) * 100;
-    const joinLink = (!lobby.isPlaying) 
-        ? `aoe2de://0/${lobby.id}`
-        : '#';
+    // Only a numeric lobby id can be joined; a lobby known only from aoe2lobby.com has none
+    const joinable = !lobby.isPlaying && isMatchId(lobby.id);
+    const joinLink = joinable ? `aoe2de://0/${lobby.id}` : '#';
     const joinText = joinLink === '#' ? (lobby.isPlaying ? 'Lobby Full' : 'Cannot Join') : 'Join Game';
     const joinClass = joinLink === '#' ? 'btn-join disabled' : 'btn-join';
-    
-    const statusIndicator = lobby.isPlaying ? 
-        '<span style="color: #d4af37">&#x1F512; Full</span> ' + (lobby.server || '') : 
-        '<span style="color: #2ea043">&#x23F3; Waiting</span> ' + (lobby.server || '');
 
     return `
         <div class="card-header">
             <div class="host-info">
                 <div class="host-name">
                     ${esc(lobby.host)}
-                    ${lobby.elo ? `<span class="elo-badge">${lobby.elo}</span>` : ''}
+                    ${lobby.elo ? `<span class="elo-badge">${esc(lobby.elo)}</span>` : ''}
                 </div>
                 <div class="game-title" title="${esc(lobby.title)}">${esc(lobby.title)}</div>
             </div>
             <div class="server-badge">
-                ${statusIndicator}
+                ${lobbyStatusHtml(lobby)}
             </div>
         </div>
         
@@ -730,12 +781,13 @@ function lobbyCardHtml(lobby) {
             </div>
             <div class="game-details">
                 <div class="detail-row">
-                    <span class="detail-icon" style="opacity: 0.7;">⚔️</span> <span style="font-weight: 500;">${lobby.type}</span>
+                    <span class="detail-icon" style="opacity: 0.7;">⚔️</span> <span style="font-weight: 500;">${esc(lobby.type)}</span>
                 </div>
                 <div class="detail-row">
                     <span class="detail-icon" style="opacity: 0.7;">🗺️</span> <span style="font-weight: 500;">${esc(lobby.map)}</span>
                 </div>
                 <div class="tags-row">
+                    ${passwordBadge(lobby)}
                     ${renderInfoBadges(lobby)}
                     ${renderSettingBadges(lobby)}
                 </div>
@@ -753,7 +805,7 @@ function lobbyCardHtml(lobby) {
                     <div class="fill-progress" style="width: ${fillPercentage}%"></div>
                 </div>
             </div>
-            <a href="${joinLink}" class="${joinClass}">${joinText}</a>
+            <a href="${esc(joinLink)}" class="${joinClass}">${joinText}</a>
         </div>
     `;
 }
@@ -780,7 +832,7 @@ function renderLobbies(filteredLobbies) {
         }
         const active = activeLobbyFilters();
         const html = active.length
-            ? `<h3>No lobbies match your filters</h3><p>${lobbies.length} lobbies are open, but none match: ${active.map(a => `<strong>${a}</strong>`).join(' · ')}</p><button class="btn clear-filters-btn" onclick="clearLobbyFilters()">Clear all filters</button>`
+            ? `<h3>No lobbies match your filters</h3><p>${lobbies.length} lobbies are open, but none match: ${active.map(a => `<strong>${esc(a)}</strong>`).join(' · ')}</p><button type="button" class="btn clear-filters-btn" data-action="clear-filters">Clear all filters</button>`
             : `<h3>No open lobbies right now</h3><p>New lobbies appear here automatically.</p>`;
         if (emptyState.dataset.html !== html) { emptyState.innerHTML = html; emptyState.dataset.html = html; }
         emptyState.style.display = 'block';
@@ -826,9 +878,7 @@ function renderLobbies(filteredLobbies) {
                 pList.innerHTML = lobby.playersHtml;
             }
             if (sBadge) {
-                sBadge.innerHTML = lobby.isPlaying ? 
-                    '<span style="color: #d4af37">&#x1F512; Full</span> ' + (lobby.server || '') : 
-                    '<span style="color: #2ea043">&#x23F3; Waiting</span> ' + (lobby.server || '');
+                sBadge.innerHTML = lobbyStatusHtml(lobby);
             }
         } else {
             const div = document.createElement('div');
@@ -851,7 +901,7 @@ function renderLobbies(filteredLobbies) {
 
 document.addEventListener('DOMContentLoaded', init);
 
-window.copyPlayerHandle = function(e, btn, handle) {
+function copyPlayerHandle(e, btn, handle) {
     if (e) e.stopPropagation();
     navigator.clipboard.writeText(handle).then(() => {
         const originalIcon = btn.innerHTML;
@@ -860,7 +910,7 @@ window.copyPlayerHandle = function(e, btn, handle) {
             btn.innerHTML = originalIcon;
         }, 1000);
     });
-};
+}
 
 window.viewLobby = function(id) {
     document.getElementById('viewLobbiesBtn').click();
@@ -923,13 +973,37 @@ let spectateGames = [];
 let spectateLoaded = false;
 let spectateTimer = null;
 let spectateLimit = SPECTATE_PAGE;
+let spectateUpdatedAt = 0; // unix seconds of the server's snapshot
+let spectateStale = false; // the server says its snapshot is too old to show
+
+// Plain text and numbers for what is searched, sorted and shown; a game that can't be read is skipped
+function normalizeSpectateGame(g) {
+    if (!g || typeof g !== 'object' || !Array.isArray(g.players)) return null;
+    const text = (v, fallback) => (typeof v === 'string' && v) ? v : fallback;
+    return {
+        ...g,
+        map: text(g.map, 'Unknown Map'),
+        title: text(g.title, 'Age of Empires II Game'),
+        server: text(g.server, null),
+        startTime: Number(g.startTime) || 0,
+        observerDelay: Number(g.observerDelay) || 0,
+        observers: Number(g.observers) || 0,
+        players: g.players.filter(p => p && typeof p === 'object')
+            .map(p => ({ ...p, name: typeof p.name === 'string' ? p.name : String(p.name ?? '') }))
+    };
+}
 
 async function fetchSpectate() {
     clearTimeout(spectateTimer);
     if (state.currentView !== 'spectate') return;
     try {
         const data = await fetch('/api/spectate?t=' + Date.now()).then(r => r.json());
-        spectateGames = data.games || [];
+        spectateGames = (data && Array.isArray(data.games) ? data.games : []).flatMap(g => {
+            try { const game = normalizeSpectateGame(g); return game ? [game] : []; }
+            catch (e) { console.warn('Skipping a game that could not be shown:', e); return []; }
+        });
+        spectateUpdatedAt = (data && Number(data.updatedAt)) || 0;
+        spectateStale = !!(data && data.stale === true);
         spectateLoaded = true;
         const serverSelect = document.getElementById('spectateServer');
         const servers = [...new Set(spectateGames.map(g => g.server).filter(Boolean))].sort();
@@ -939,6 +1013,8 @@ async function fetchSpectate() {
         if (state.currentView === 'spectate') applyFiltersAndRender();
     } catch (e) {
         console.warn('Failed to fetch games in progress:', e);
+        // Keep the last games on screen; rendering again lets the "unavailable since" notice appear once they're old
+        if (spectateLoaded && state.currentView === 'spectate') applyFiltersAndRender();
     }
     // The server refreshes its copy at most once a minute; polling only while this view is open
     if (state.currentView === 'spectate') spectateTimer = setTimeout(fetchSpectate, 30000);
@@ -949,7 +1025,7 @@ function spectateRating(p) {
 }
 
 function spectateAverage(players) {
-    const r = players.map(spectateRating).filter(v => v != null);
+    const r = players.map(spectateRating).filter(v => typeof v === 'number' && Number.isFinite(v));
     return r.length ? Math.round(r.reduce((a, b) => a + b, 0) / r.length) : null;
 }
 
@@ -1003,14 +1079,16 @@ function spectateCardHtml(g) {
                             ${p.civ ? `<span class="civ-chip" title="Civilization">${esc(p.civ)}</span>` : ''}
                             ${playerLinksHtml(p)}
                         </span>
-                        <span class="player-elo">${r != null ? r : '&mdash;'}</span>
+                        <span class="player-elo">${r != null ? esc(r) : '&mdash;'}</span>
                     </div>`;
                 }).join('')}
             </div>`;
     }).join('');
     const avg = spectateAverage(g.players);
-    const readyAt = g.startTime + g.observerDelay * 60;
+    const start = Number(g.startTime) || 0, delay = Number(g.observerDelay) || 0;
+    const readyAt = start + delay * 60;
     const wait = countdownText(readyAt);
+    const gid = isMatchId(g.id) ? String(g.id) : '';
     return `
         <div class="card-header">
             <div class="host-info">
@@ -1020,7 +1098,7 @@ function spectateCardHtml(g) {
                 </div>
                 <div class="game-title" title="${esc(g.title)}">${esc(g.title)}</div>
             </div>
-            <div class="server-badge"><span title="Spectators">&#x1F441; ${g.observers}</span> ${esc(g.server || '')}</div>
+            <div class="server-badge"><span title="Spectators">&#x1F441; ${esc(g.observers)}</span> ${esc(g.server || '')}</div>
         </div>
         <div class="card-body">
             <div class="game-details">
@@ -1028,16 +1106,25 @@ function spectateCardHtml(g) {
                     ${g.isRanked ? '<span class="badge treaty-badge">Ranked</span>' : ''}
                     ${renderInfoBadges(g)}
                 </div>
-                <div class="detail-row spectate-started" data-start="${g.startTime}">${minutesAgo(g.startTime)}</div>
+                <div class="detail-row spectate-started" data-start="${start}">${minutesAgo(start)}</div>
             </div>
         </div>
         <div class="spectate-teams">${teamsHtml}</div>
         <div class="card-footer">
             <div class="players-count"><span class="players-count-text">&#x1F464; ${g.players.length} players</span></div>
-            <a href="aoe2de://1/${g.id}" class="btn-join spectate-btn${wait ? ' waiting' : ''}" title="Opens Age of Empires II: DE as a spectator">
+            <a href="aoe2de://1/${gid}" class="btn-join spectate-btn${wait ? ' waiting' : ''}" title="Opens Age of Empires II: DE as a spectator">
                 &#x1F441; Spectate<span class="spectate-countdown" data-ready-at="${readyAt}">${wait ? ' &#x23F3; ' + wait : ''}</span>
             </a>
         </div>`;
+}
+
+// "Live game data unavailable since HH:MM" when the server's snapshot is over 3 minutes old or marked stale
+function spectateUnavailableText() {
+    const at = spectateUpdatedAt;
+    if (!spectateStale && !(at > 0 && Date.now() / 1000 - at > 180)) return '';
+    if (!(at > 0)) return 'Live game data unavailable right now';
+    const d = new Date(at * 1000);
+    return `Live game data unavailable since ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 function renderSpectate(games) {
@@ -1045,21 +1132,29 @@ function renderSpectate(games) {
         spectateGrid.innerHTML = `<div class="loader-container"><div class="spinner"></div><p>Fetching games in progress...</p></div>`;
         return;
     }
+    const unavailable = spectateUnavailableText();
+    const notice = unavailable ? `<div class="spectate-notice" role="status">${esc(unavailable)}</div>` : '';
     if (!games.length) {
-        spectateGrid.innerHTML = `<div class="empty-state"><h3>No games match</h3><p>${spectateGames.length} games are in progress, but none match your spectate filters.</p></div>`;
+        spectateGrid.innerHTML = notice + (unavailable && !spectateGames.length
+            ? `<div class="empty-state"><h3>No live game data</h3><p>Games in progress show up here again as soon as the live data is back.</p></div>`
+            : `<div class="empty-state"><h3>No games match</h3><p>${spectateGames.length} games are in progress, but none match your spectate filters.</p></div>`);
         return;
     }
     const shown = games.slice(0, spectateLimit);
-    spectateGrid.innerHTML = shown.map(g => `<div class="lobby-card spectate-card" id="game-${g.id}">${spectateCardHtml(g)}</div>`).join('') +
+    spectateGrid.innerHTML = notice + shown.map(g => {
+        // One game that can't be shown is skipped rather than blanking the list
+        try { return `<div class="lobby-card spectate-card"${isMatchId(g.id) ? ` id="game-${g.id}"` : ''}>${spectateCardHtml(g)}</div>`; }
+        catch (e) { console.warn('Skipping a game that could not be shown:', g && g.id, e); return ''; }
+    }).join('') +
         (games.length > shown.length
-            ? `<div class="spectate-more"><button type="button" class="clear-filters-btn" onclick="showMoreSpectate()">Show more (${games.length - shown.length} more)</button></div>`
+            ? `<div class="spectate-more"><button type="button" class="clear-filters-btn" data-action="show-more-spectate">Show more (${games.length - shown.length} more)</button></div>`
             : '');
 }
 
-window.showMoreSpectate = function() {
+function showMoreSpectate() {
     spectateLimit += SPECTATE_PAGE;
     applyFiltersAndRender();
-};
+}
 
 // Tick the spectate countdowns and "started" times once a second
 setInterval(() => {
