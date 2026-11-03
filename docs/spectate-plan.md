@@ -303,6 +303,8 @@ When `status` is `ended`, `result` becomes the following:
   - the rating change, labelled "ranked", "Quick Play rating" or "unranked rating";
   - the game length;
   - **Download replay**, a plain link to `aoe.ms`.
+- **Start time:** "Started N min ago", ticking, while the game is live; once it has ended (or there is no live
+  data) a clock time, "Started at HH:MM", beside "Ended at HH:MM".
 - **Spectator delay:** worded as "Spectators watch about N min behind the live game". While elapsed time is under
   the delay, a countdown shows when the delayed stream starts.
 - **Copy link:** uses the Clipboard API, falling back to selecting the text.

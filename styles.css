@@ -339,6 +339,18 @@ select:focus, select:hover {
     font-size: 0.95rem;
 }
 
+/* Narrow screens: the title, view toggles, layout toggles and count wrap onto rows instead of overflowing the page
+   (the header's inline styles set no flex-wrap, so these apply without !important) */
+@media (max-width: 768px) {
+    .lobbies-header,
+    .lobbies-header > div {
+        flex-wrap: wrap;
+    }
+    .lobbies-header {
+        gap: 12px;
+    }
+}
+
 .lobbies-stats span {
     color: var(--gold-primary);
     font-weight: 600;

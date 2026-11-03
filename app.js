@@ -1483,7 +1483,10 @@ function matchHeadHtml(d) {
 
 function matchTimingHtml(d) {
     const g = d.game, items = [];
-    if (g.startTime > 0) items.push(`<span class="match-started" data-start="${g.startTime}">${minutesAgo(g.startTime)}</span>`);
+    // A running game's start ticks ("Started 12 min ago"); once it has ended, or may have, it is a clock time
+    if (g.startTime > 0) items.push(d.status === 'live' && !matchWaiting(d)
+        ? `<span class="match-started" data-start="${g.startTime}">${minutesAgo(g.startTime)}</span>`
+        : `<span>Started at ${clockTime(g.startTime)}</span>`);
     if (matchWaiting(d)) {
         // No delay or countdown: the game may have ended since
         const seen = d.status === 'live' ? d.updatedAt : d.lastLiveAt;
