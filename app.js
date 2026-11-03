@@ -98,6 +98,11 @@ let pollTimer;
 let isInitialLoad = true;
 
 function init() {
+    // A match page (/spectate/<id>) shows that one game in place of the lists, and never polls the lobby list
+    if (matchPageId && matchView) {
+        initMatchPage();
+        return;
+    }
     setupEventListeners();
     
     // Restore DOM inputs from state
@@ -147,6 +152,8 @@ document.addEventListener('click', (e) => {
         case 'steam-friend': if (addSteamFriend(e, el.dataset.steamId) === false) e.preventDefault(); break;
         case 'clear-filters': clearLobbyFilters(); break;
         case 'show-more-spectate': showMoreSpectate(); break;
+        case 'copy-match-link': copyMatchLink(el); break;
+        case 'open-view': rememberView(el.dataset.view); break; // a link to '/': the home page then opens this view
     }
 });
 
@@ -536,9 +543,13 @@ function filterLobbies() {
     });
 }
 
-function applyFiltersAndRender() {
+function saveState() {
     const { rawMatches, ...saved } = state; // the lobby list itself is not worth saving
     try { localStorage.setItem('aoe2State', JSON.stringify(saved)); } catch (e) {} // blocked or full storage: just don't remember
+}
+
+function applyFiltersAndRender() {
+    saveState();
     // Outline every filter that is narrowing the list, so remembered filters are easy to spot
     for (const [key, id] of LOBBY_FILTERS) {
         const el = document.getElementById(id);
@@ -949,14 +960,28 @@ const VIEWS = {
     spectate: { btn: 'viewSpectateBtn', grid: 'spectateGrid', filters: () => document.getElementById('spectateFilters'), title: 'Games', count: 'games in progress' }
 };
 
-function showView(view) {
-    state.currentView = view;
+function markViewButton(view) {
     for (const [name, v] of Object.entries(VIEWS)) {
         const on = name === view;
         const btn = document.getElementById(v.btn);
         btn.style.background = on ? 'rgba(88, 101, 242, 0.2)' : 'transparent';
         btn.style.border = on ? '1px solid var(--accent)' : '1px solid transparent';
         btn.style.color = on ? 'white' : 'var(--text-secondary)';
+    }
+}
+
+// Remember a view so the home page opens it (the Lobbies/Players/Spectate buttons and "All games" on a match page)
+function rememberView(view) {
+    if (!Object.keys(VIEWS).includes(view)) return;
+    state.currentView = view;
+    saveState();
+}
+
+function showView(view) {
+    state.currentView = view;
+    markViewButton(view);
+    for (const [name, v] of Object.entries(VIEWS)) {
+        const on = name === view;
         document.getElementById(v.grid).style.display = on ? (state.layout === 'list' ? 'flex' : 'grid') : 'none';
         const filters = v.filters();
         if (filters) filters.style.display = on ? 'flex' : 'none';
@@ -976,20 +1001,60 @@ let spectateLimit = SPECTATE_PAGE;
 let spectateUpdatedAt = 0; // unix seconds of the server's snapshot
 let spectateStale = false; // the server says its snapshot is too old to show
 
+// A whole number in [min, max] (display team 1-4, colour 1-8, counts), or null
+function intIn(v, min, max) {
+    return (Number.isSafeInteger(v) && v >= min && v <= max) ? v : null;
+}
+
+function finiteOrNull(v) {
+    return (typeof v === 'number' && Number.isFinite(v)) ? v : null;
+}
+
+// One slot: a human (with a profile id) or an AI. Team null means "no team"; civ null means hidden or unknown
+function normalizeSpectatePlayer(p, civsHidden) {
+    const ai = p.kind === 'ai';
+    const id = ai ? 0 : (intIn(p.id, 1, Number.MAX_SAFE_INTEGER) ?? 0);
+    let name = typeof p.name === 'string' ? p.name : String(p.name ?? '');
+    if (!name) name = ai ? 'AI' : (id ? `Player ${id}` : 'Player');
+    return {
+        ...p,
+        kind: ai ? 'ai' : 'human',
+        id,
+        name,
+        team: intIn(p.team, 1, 4),
+        color: intIn(p.color, 1, 8),
+        // A lobby that hides civs must not reveal them here either, whatever the data says
+        civ: (!civsHidden && typeof p.civ === 'string' && p.civ) ? p.civ : null,
+        country: (!ai && typeof p.country === 'string' && /^[a-z]{2}$/i.test(p.country)) ? p.country.toLowerCase() : null,
+        rating: ai ? null : finiteOrNull(p.rating),
+        ratings: (!ai && p.ratings && typeof p.ratings === 'object') ? p.ratings : {}
+    };
+}
+
 // Plain text and numbers for what is searched, sorted and shown; a game that can't be read is skipped
 function normalizeSpectateGame(g) {
     if (!g || typeof g !== 'object' || !Array.isArray(g.players)) return null;
     const text = (v, fallback) => (typeof v === 'string' && v) ? v : fallback;
+    const civsHidden = g.civsHidden === true;
     return {
         ...g,
         map: text(g.map, 'Unknown Map'),
         title: text(g.title, 'Age of Empires II Game'),
+        isRanked: g.isRanked === true,
+        matchType: text(g.matchType, null),
+        mapSize: text(g.mapSize, null),
+        speed: text(g.speed, null),
+        population: intIn(g.population, 1, 10000),
         server: text(g.server, null),
-        startTime: Number(g.startTime) || 0,
-        observerDelay: Number(g.observerDelay) || 0,
-        observers: Number(g.observers) || 0,
-        players: g.players.filter(p => p && typeof p === 'object')
-            .map(p => ({ ...p, name: typeof p.name === 'string' ? p.name : String(p.name ?? '') }))
+        modInfo: text(g.modInfo, 'No Mods'),
+        ladder: text(g.ladder, null),
+        startTime: intIn(g.startTime, 0, Number.MAX_SAFE_INTEGER) ?? 0,
+        observerDelay: intIn(g.observerDelay, 0, 600) ?? 0,
+        observers: intIn(g.observers, 0, Number.MAX_SAFE_INTEGER) ?? 0,
+        civsHidden,
+        record: typeof g.record === 'boolean' ? g.record : null,
+        endedAt: intIn(g.endedAt, 1, Number.MAX_SAFE_INTEGER),
+        players: g.players.filter(p => p && typeof p === 'object').map(p => normalizeSpectatePlayer(p, civsHidden))
     };
 }
 
@@ -1021,12 +1086,36 @@ async function fetchSpectate() {
 }
 
 function spectateRating(p) {
-    return state.eloType === 'auto' ? p.rating : (p.ratings ? p.ratings[state.eloType] ?? null : null);
+    return finiteOrNull(state.eloType === 'auto' ? p.rating : (p.ratings ? p.ratings[state.eloType] : null));
+}
+
+// Average of the humans' ratings (AI players have none)
+function ratingAverage(players, ratingOf) {
+    const r = players.filter(p => p.kind === 'human').map(ratingOf).filter(v => v !== null);
+    return r.length ? Math.round(r.reduce((a, b) => a + b, 0) / r.length) : null;
 }
 
 function spectateAverage(players) {
-    const r = players.map(spectateRating).filter(v => typeof v === 'number' && Number.isFinite(v));
-    return r.length ? Math.round(r.reduce((a, b) => a + b, 0) / r.length) : null;
+    return ratingAverage(players, spectateRating);
+}
+
+// Teams in order (display team 1-4); each player without a team gets a group of their own (free-for-all, custom games)
+function groupTeams(players) {
+    const teams = new Map();
+    const solo = [];
+    for (const p of players) {
+        if (p.team === null) { solo.push({ team: null, players: [p] }); continue; }
+        if (!teams.has(p.team)) teams.set(p.team, []);
+        teams.get(p.team).push(p);
+    }
+    return [...teams.entries()].sort((a, b) => a[0] - b[0]).map(([team, list]) => ({ team, players: list })).concat(solo);
+}
+
+// Player colour 1-8 (styled in styles.css); a player without one keeps the row aligned with an empty swatch
+function colorSwatchHtml(color) {
+    return color !== null
+        ? `<span class="player-color player-color-${color}" role="img" aria-label="Player colour ${color}" title="Player colour ${color}"></span>`
+        : '<span class="player-color player-color-none" aria-hidden="true"></span>';
 }
 
 function filterSpectate() {
@@ -1060,24 +1149,20 @@ function countdownText(readyAt) {
 }
 
 function spectateCardHtml(g) {
-    const teams = new Map();
-    for (const p of g.players) {
-        if (!teams.has(p.team)) teams.set(p.team, []);
-        teams.get(p.team).push(p);
-    }
-    const teamsHtml = [...teams.entries()].sort((a, b) => a[0] - b[0]).map(([, players], i) => {
-        const avg = spectateAverage(players);
+    const teamsHtml = groupTeams(g.players).map(({ team, players }) => {
+        const avg = team !== null ? spectateAverage(players) : null;
         return `
             <div class="spectate-team">
-                <div class="spectate-team-head">Team ${i + 1}${avg != null ? ` <span class="player-elo">${avg}</span>` : ''}</div>
+                <div class="spectate-team-head">${team !== null ? `Team ${team}` : 'No team'}${avg != null ? ` <span class="player-elo">${avg}</span>` : ''}</div>
                 ${players.map(p => {
                     const r = spectateRating(p);
                     return `
                     <div class="player-item">
                         <span class="player-name" style="display: flex; align-items: center; gap: 6px;">
+                            ${colorSwatchHtml(p.color)}
                             ${esc(p.name)}
                             ${p.civ ? `<span class="civ-chip" title="Civilization">${esc(p.civ)}</span>` : ''}
-                            ${playerLinksHtml(p)}
+                            ${p.kind === 'human' ? playerLinksHtml(p) : ''}
                         </span>
                         <span class="player-elo">${r != null ? esc(r) : '&mdash;'}</span>
                     </div>`;
@@ -1085,15 +1170,17 @@ function spectateCardHtml(g) {
             </div>`;
     }).join('');
     const avg = spectateAverage(g.players);
-    const start = Number(g.startTime) || 0, delay = Number(g.observerDelay) || 0;
+    const start = g.startTime, delay = g.observerDelay;
     const readyAt = start + delay * 60;
     const wait = countdownText(readyAt);
     const gid = isMatchId(g.id) ? String(g.id) : '';
+    const ai = g.players.filter(p => p.kind === 'ai').length;
+    const humans = g.players.length - ai;
     return `
         <div class="card-header">
             <div class="host-info">
                 <div class="host-name">
-                    ${esc(g.map)}
+                    ${gid ? `<a class="match-link" href="/spectate/${gid}" title="Game details">${esc(g.map)}</a>` : esc(g.map)}
                     ${avg != null ? `<span class="elo-badge">${avg}</span>` : ''}
                 </div>
                 <div class="game-title" title="${esc(g.title)}">${esc(g.title)}</div>
@@ -1105,26 +1192,38 @@ function spectateCardHtml(g) {
                 <div class="tags-row">
                     ${g.isRanked ? '<span class="badge treaty-badge">Ranked</span>' : ''}
                     ${renderInfoBadges(g)}
+                    ${g.civsHidden ? '<span class="badge civs-hidden-badge" title="This lobby hides civilizations">Civs hidden</span>' : ''}
                 </div>
                 <div class="detail-row spectate-started" data-start="${start}">${minutesAgo(start)}</div>
             </div>
         </div>
         <div class="spectate-teams">${teamsHtml}</div>
         <div class="card-footer">
-            <div class="players-count"><span class="players-count-text">&#x1F464; ${g.players.length} players</span></div>
-            ${gid ? `<a href="aoe2de://1/${gid}" class="btn-join spectate-btn${wait ? ' waiting' : ''}" title="Opens Age of Empires II: DE as a spectator">
-                &#x1F441; Spectate<span class="spectate-countdown" data-ready-at="${readyAt}">${wait ? ' &#x23F3; ' + wait : ''}</span>
-            </a>` : `<span class="btn-join spectate-btn disabled">Cannot Spectate</span>`}
+            <div class="players-count"><span class="players-count-text">&#x1F464; ${humans} player${humans === 1 ? '' : 's'}${ai ? ` <span class="ai-count" title="Slots played by the AI">· ${ai} AI</span>` : ''}</span></div>
+            <div class="spectate-actions">
+                ${gid ? `<a href="/spectate/${gid}" class="btn-view" title="This game's own page, with a link you can share">Details</a>` : ''}
+                ${gid ? `<a href="aoe2de://1/${gid}" class="btn-join spectate-btn${wait ? ' waiting' : ''}" title="Opens Age of Empires II: DE as a spectator">
+                    &#x1F441; Spectate<span class="spectate-countdown" data-ready-at="${readyAt}">${wait ? ' &#x23F3; ' + wait : ''}</span>
+                </a>` : `<span class="btn-join spectate-btn disabled">Cannot Spectate</span>`}
+            </div>
         </div>`;
 }
 
+// HH:MM in the visitor's time zone, from unix seconds
+function clockTime(seconds) {
+    const d = new Date(seconds * 1000);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 // "Live game data unavailable since HH:MM" when the server's snapshot is over 3 minutes old or marked stale
-function spectateUnavailableText() {
-    const at = spectateUpdatedAt;
-    if (!spectateStale && !(at > 0 && Date.now() / 1000 - at > 180)) return '';
+function unavailableText(at, stale) {
+    if (!stale && !(at > 0 && Date.now() / 1000 - at > 180)) return '';
     if (!(at > 0)) return 'Live game data unavailable right now';
-    const d = new Date(at * 1000);
-    return `Live game data unavailable since ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    return `Live game data unavailable since ${clockTime(at)}`;
+}
+
+function spectateUnavailableText() {
+    return unavailableText(spectateUpdatedAt, spectateStale);
 }
 
 function renderSpectate(games) {
@@ -1158,6 +1257,7 @@ function showMoreSpectate() {
 
 // Tick the spectate countdowns and "started" times once a second
 setInterval(() => {
+    if (matchPageId) { tickMatch(); return; }
     if (state.currentView !== 'spectate') return;
     for (const el of spectateGrid.querySelectorAll('.spectate-countdown[data-ready-at]')) {
         const wait = countdownText(Number(el.dataset.readyAt));
@@ -1168,3 +1268,371 @@ setInterval(() => {
         el.textContent = minutesAgo(Number(el.dataset.start));
     }
 }, 1000);
+
+// ---------------------------------------------------------------- Match page: /spectate/<matchId>
+// One game in progress (or just ended), linked from every Spectate card. It asks /api/spectate/<id> every 30 s while
+// the game is live and every 20 s while its result is pending, and stops once there is nothing more to wait for.
+const matchPageId = (/^\/spectate\/(\d{1,15})\/?$/.exec(location.pathname) || [])[1] || null;
+const matchView = document.getElementById('matchView');
+const MATCH_POLL_LIVE_MS = 30000;
+const MATCH_POLL_PENDING_MS = 20000;
+const LADDER_NAMES = Object.assign(Object.create(null), { '0': 'Unranked', '3': 'RM 1v1', '4': 'RM Team', '13': 'EW 1v1', '14': 'EW Team' });
+let matchData = null; // the last answer that could be read; a failed refresh keeps it on screen
+let matchOkAt = 0; // when that answer arrived (ms)
+let matchRefreshFailed = false;
+let matchTimer = null;
+let matchInFlight = false;
+let matchLastFetchAt = 0;
+let matchCopyTimer = null;
+let countryNames = null;
+const matchParts = Object.create(null); // each part's last HTML: a poll replaces only what changed, so focus stays put
+
+function initMatchPage() {
+    document.body.classList.add('match-mode');
+    // One h1 per page: here the map name is the page's heading, not the site name
+    const siteHeading = document.querySelector('.nav-logo h1');
+    if (siteHeading) siteHeading.setAttribute('role', 'none');
+    for (const el of [lobbyFilters, playerFilters, document.getElementById('spectateFilters'), lobbyGrid, playerGrid, spectateGrid,
+        document.querySelector('.lobbies-title'), document.querySelector('.layout-toggles'), document.querySelector('.lobbies-stats'),
+        document.getElementById('about')]) {
+        if (el) el.style.display = 'none';
+    }
+    // The view buttons go back to the home page, which then opens the chosen view
+    markViewButton('spectate');
+    for (const [view, v] of Object.entries(VIEWS)) {
+        document.getElementById(v.btn).addEventListener('click', () => {
+            rememberView(view);
+            location.href = '/';
+        });
+    }
+    // The note and result areas are live regions: they stay in the page (empty when there is nothing to say)
+    matchView.innerHTML = `
+        <div class="match-header glass-panel">
+            <div data-part="head"></div>
+            <div data-part="timing" class="match-timing"></div>
+            <div data-part="actions" class="match-actions"></div>
+            <p class="match-copy-status sr-only" role="status"></p>
+            <div class="match-copy-fallback" hidden>
+                <label for="matchLinkInput">Link to this game</label>
+                <input id="matchLinkInput" type="text" readonly>
+                <p class="match-note">The link is selected: press Ctrl+C (&#x2318;C on a Mac) to copy it.</p>
+            </div>
+            <div data-part="note" class="match-notes" role="status"></div>
+        </div>
+        <div data-part="result" aria-live="polite"></div>
+        <div data-part="teams" class="match-teams"></div>`;
+    matchView.hidden = false;
+    renderMatch();
+    fetchMatch();
+    // Polling pauses while the tab is hidden; coming back refreshes straight away
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden || matchInFlight || !matchPollDelay()) return;
+        if (Date.now() - matchLastFetchAt >= 5000) fetchMatch();
+    });
+}
+
+// The detail API's answer, or null when it can't be read
+function normalizeMatch(data) {
+    if (!data || typeof data !== 'object' || !['live', 'ended', 'unknown'].includes(data.status)) return null;
+    const d = { status: data.status, updatedAt: finiteOrNull(data.updatedAt) ?? 0, stale: data.stale === true, game: null, result: null };
+    if (d.status === 'unknown') return d;
+    d.game = normalizeSpectateGame(data.game);
+    if (!d.game) return null;
+    if (d.status === 'ended') d.result = normalizeMatchResult(data.result);
+    return d;
+}
+
+// Only a found result carries data; anything unreadable counts as still pending
+function normalizeMatchResult(r) {
+    if (!r || typeof r !== 'object' || r.state !== 'found') return { state: (r && r.state === 'unavailable') ? 'unavailable' : 'pending' };
+    const players = (Array.isArray(r.players) ? r.players : [])
+        .filter(p => p && typeof p === 'object' && intIn(p.id, 1, Number.MAX_SAFE_INTEGER) !== null)
+        .map(p => ({ id: p.id, won: p.won === true, oldRating: finiteOrNull(p.oldRating), newRating: finiteOrNull(p.newRating) }));
+    const replay = (r.replay && typeof r.replay === 'object') ? r.replay : {};
+    const replayBy = replay.available === true ? intIn(replay.profileId, 1, Number.MAX_SAFE_INTEGER) : null;
+    const duration = finiteOrNull(r.duration);
+    return {
+        state: 'found',
+        completedAt: intIn(r.completedAt, 1, Number.MAX_SAFE_INTEGER),
+        duration: duration !== null && duration >= 0 ? duration : null,
+        winningTeam: intIn(r.winningTeam, 1, 4),
+        noWinner: r.noWinner === true,
+        ratingKind: ['ranked', 'unranked'].includes(r.ratingKind) ? r.ratingKind : null,
+        players,
+        replay: { available: replayBy !== null, profileId: replayBy }
+    };
+}
+
+function matchPollDelay() {
+    if (!matchData || matchData.status === 'live') return MATCH_POLL_LIVE_MS; // nothing read yet: keep trying
+    if (matchData.status === 'ended' && matchData.result.state === 'pending') return MATCH_POLL_PENDING_MS;
+    return null; // result found or unavailable, or a game the server doesn't know: nothing more to wait for
+}
+
+async function fetchMatch() {
+    clearTimeout(matchTimer);
+    matchTimer = null;
+    if (matchInFlight) return;
+    matchInFlight = true;
+    try {
+        const r = await fetch(`/api/spectate/${matchPageId}`, { cache: 'no-store' });
+        // An id the server refuses is a game it doesn't know; any other failure is retried
+        const data = (r.status === 400 || r.status === 404) ? normalizeMatch({ status: 'unknown' })
+            : r.ok ? normalizeMatch(await r.json()) : null;
+        if (!data) throw new Error(r.ok ? 'unreadable game data' : 'HTTP ' + r.status);
+        matchData = data;
+        matchOkAt = Date.now();
+        matchRefreshFailed = false;
+    } catch (e) {
+        console.warn("Couldn't refresh the game:", e);
+        matchRefreshFailed = true;
+    }
+    matchInFlight = false;
+    matchLastFetchAt = Date.now();
+    try { renderMatch(); } catch (e) { console.warn('Could not show the game:', e); }
+    const delay = matchPollDelay();
+    // While the tab is hidden the timer does nothing; becoming visible refreshes (see initMatchPage)
+    if (delay) matchTimer = setTimeout(() => { if (!document.hidden) fetchMatch(); }, delay);
+}
+
+function renderMatch() {
+    const d = matchData;
+    const parts = {
+        head: matchHeadHtml(d),
+        timing: d && d.game ? matchTimingHtml(d) : '',
+        actions: matchActionsHtml(d),
+        note: matchNoteHtml(d),
+        result: matchResultHtml(d),
+        teams: d && d.game ? matchTeamsHtml(d.game) : ''
+    };
+    for (const [name, html] of Object.entries(parts)) {
+        if (matchParts[name] === html) continue;
+        const el = matchView.querySelector(`[data-part="${name}"]`);
+        if (!el) continue;
+        el.innerHTML = html;
+        if (name !== 'note' && name !== 'result') el.hidden = !html; // live regions stay, so later changes are announced
+        matchParts[name] = html;
+    }
+    if (d) document.title = d.game
+        ? `${d.status === 'live' ? 'Live' : 'Ended'}: ${d.game.map} – ${d.game.title} | AoE2Lobby.online`
+        : 'Game not found | AoE2Lobby.online';
+    tickMatch();
+}
+
+function matchHeadHtml(d) {
+    if (!d || !d.game) {
+        // Not found, or nothing read yet (still loading, or the first request failed)
+        if (d) return `
+            <div class="match-topline"><span class="match-status match-status-unknown">Not found</span></div>
+            <h1 class="match-title">Game not found</h1>
+            <p class="match-subtitle">Match ${esc(matchPageId)}</p>`;
+        return `
+            <h1 class="match-title">Game ${esc(matchPageId)}</h1>
+            ${matchRefreshFailed
+                ? '<p class="match-subtitle">Couldn\'t load this game right now. Trying again shortly&hellip;</p>'
+                : '<p class="match-subtitle match-loading"><span class="spinner-inline" aria-hidden="true"></span>Loading the game&hellip;</p>'}`;
+    }
+    const g = d.game, live = d.status === 'live';
+    return `
+        <div class="match-topline">
+            ${live ? '<span class="match-status match-status-live"><span class="pulse-indicator" aria-hidden="true"></span>LIVE</span>'
+                : '<span class="match-status match-status-ended">ENDED</span>'}
+            ${g.isRanked ? '<span class="badge treaty-badge">Ranked</span>' : '<span class="badge mod-info-badge">Unranked</span>'}
+            ${live ? `<span class="match-spectators" title="Spectators watching now">&#x1F441; ${g.observers} spectator${g.observers === 1 ? '' : 's'}</span>` : ''}
+        </div>
+        <h1 class="match-title">${esc(g.map)}</h1>
+        <p class="match-subtitle">${esc(g.title)}</p>
+        <div class="tags-row">
+            ${renderInfoBadges(g)}
+            ${g.server ? `<span class="badge server-badge" title="Server">&#x1F310; ${esc(g.server)}</span>` : ''}
+            ${g.civsHidden ? '<span class="badge civs-hidden-badge" title="This lobby hides civilizations">Civs hidden</span>' : ''}
+        </div>`;
+}
+
+function matchTimingHtml(d) {
+    const g = d.game, items = [];
+    if (g.startTime > 0) items.push(`<span class="match-started" data-start="${g.startTime}">${minutesAgo(g.startTime)}</span>`);
+    if (d.status === 'live') {
+        items.push(g.observerDelay > 0
+            ? `<span>Spectators watch about ${g.observerDelay} min behind the live game</span>`
+            : '<span>No spectator delay</span>');
+        if (g.observerDelay > 0 && g.startTime > 0) {
+            // Until the delay has passed since the start, the delayed stream has nothing to show yet
+            const readyAt = g.startTime + g.observerDelay * 60;
+            const wait = countdownText(readyAt);
+            items.push(`<span class="match-countdown" data-ready-at="${readyAt}"${wait ? '' : ' hidden'}>${wait ? `Delayed stream starts in ${wait}` : ''}</span>`);
+        }
+    } else if (d.result.state === 'found' && d.result.completedAt) {
+        items.push(`<span>Ended at ${clockTime(d.result.completedAt)}</span>`);
+    } else if (g.endedAt) {
+        items.push(`<span>Left the live list at ${clockTime(g.endedAt)}</span>`);
+    }
+    return items.join('');
+}
+
+function matchActionsHtml(d) {
+    if (d && !d.game) return ''; // not found: its message links to the list instead
+    // aoe2de:// needs the visitor's click: it is never opened on its own
+    const watch = d && d.status === 'live' && isMatchId(d.game.id)
+        ? `<a class="btn-join match-watch" href="aoe2de://1/${d.game.id}" title="Opens Age of Empires II: DE as a spectator">&#x1F441; Watch in game</a>`
+        : '';
+    return `${watch}
+        <button type="button" class="btn-view match-copy" data-action="copy-match-link">Copy link</button>
+        <a class="match-back" href="/" data-action="open-view" data-view="spectate">&larr; All games</a>`;
+}
+
+function matchNoteHtml(d) {
+    let html = '';
+    if (d && d.status !== 'ended') {
+        const unavailable = unavailableText(d.updatedAt, d.stale);
+        if (unavailable) html += `<p class="spectate-notice">${esc(unavailable)}</p>`;
+    }
+    if (d && matchRefreshFailed) html += `<p class="match-refresh-note">Couldn't refresh. Showing the game as of ${clockTime(matchOkAt / 1000)}.</p>`;
+    return html;
+}
+
+function matchResultHtml(d) {
+    if (d && !d.game) return `
+        <section class="match-result glass-panel">
+            <p>This game isn't in the live list. It may have ended a while ago, or the link is wrong.</p>
+            <p><a class="btn-view" href="/" data-action="open-view" data-view="spectate">See games in progress</a></p>
+        </section>`;
+    if (!d || d.status !== 'ended') return '';
+    const r = d.result;
+    const body = r.state === 'pending'
+        ? '<p class="match-result-pending"><span class="spinner-inline" aria-hidden="true"></span>Game over &mdash; getting the result&hellip;</p>'
+        : r.state === 'unavailable' ? '<p>The result hasn\'t been reported.</p>' : matchFoundHtml(d.game, r);
+    return `<section class="match-result glass-panel"><h2>Result</h2>${body}</section>`;
+}
+
+function matchFoundHtml(g, r) {
+    const humans = new Map(g.players.filter(p => p.kind === 'human').map(p => [p.id, p]));
+    const names = (list) => `<span class="match-winner-names">${list.map(p => esc(p.name)).join(', ')}</span>`;
+    // A team only when the winners form one; otherwise the winning players by name
+    let winner = 'No result reported';
+    if (!r.noWinner && r.winningTeam !== null) {
+        const team = g.players.filter(p => p.team === r.winningTeam);
+        winner = `Team ${r.winningTeam} won${team.length ? `: ${names(team)}` : ''}`;
+    } else if (!r.noWinner) {
+        const won = r.players.filter(p => p.won && humans.has(p.id)).map(p => humans.get(p.id));
+        if (won.length) winner = `${names(won)} won`;
+    }
+    const rows = groupTeams(g.players).flatMap(t => t.players).filter(p => p.kind === 'human').map(p => {
+        const row = r.players.find(x => x.id === p.id);
+        return row ? `
+            <li class="match-result-player">
+                ${colorSwatchHtml(p.color)}
+                <span class="match-result-name">${esc(p.name)}</span>
+                <span class="result-tag ${row.won ? 'result-won' : 'result-lost'}">${row.won ? 'Won' : 'Lost'}</span>
+                ${ratingChangeHtml(row, r.ratingKind)}
+            </li>` : '';
+    }).join('');
+    // The aoe.ms link redirects to the official replay download; it is never shown for a lobby that didn't record
+    const replay = g.record === false ? '<p class="match-note">This lobby didn\'t record a replay.</p>'
+        : (r.replay.available && isMatchId(g.id))
+            ? `<p class="match-replay"><a class="btn-join" href="https://aoe.ms/replay/?gameId=${g.id}&amp;profileId=${r.replay.profileId}" rel="noopener">Download replay</a>
+                <span class="match-note">Downloads the official replay ZIP (an .aoe2record file) from Age of Empires.</span></p>`
+            : '<p class="match-note">No replay was uploaded for this game.</p>';
+    return `
+        <p class="match-winner"><span aria-hidden="true">&#x1F3C6;</span> ${winner}</p>
+        ${r.duration !== null ? `<p class="match-length">Game length: ${durationText(r.duration)}</p>` : ''}
+        ${rows ? `<ul class="match-result-players">${rows}</ul>` : ''}
+        ${replay}`;
+}
+
+// +17 / −15, labelled with the rating it changed (unranked lobbies change a separate unranked rating)
+function ratingChangeHtml(row, kind) {
+    if (row.oldRating === null || row.newRating === null) return '';
+    const diff = Math.round(row.newRating - row.oldRating);
+    const label = kind === 'unranked' ? 'unranked rating' : kind === 'ranked' ? 'ranked' : 'rating';
+    return `<span class="rating-change${diff > 0 ? ' rating-up' : diff < 0 ? ' rating-down' : ''}" title="${esc(`${row.oldRating} → ${row.newRating}`)}">${diff > 0 ? '+' + diff : diff < 0 ? '&minus;' + -diff : '&plusmn;0'}</span>
+        <span class="rating-kind">${label}</span>`;
+}
+
+function durationText(seconds) {
+    const mins = Math.round(seconds / 60);
+    if (mins < 1) return 'under a minute';
+    return mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)} h ${mins % 60} min`;
+}
+
+function matchTeamsHtml(g) {
+    const ladder = (g.ladder && LADDER_NAMES[g.ladder]) || null;
+    const ratingTitle = ladder ? `${ladder} rating` : 'Rating';
+    return groupTeams(g.players).map(({ team, players }) => {
+        const avg = team !== null ? ratingAverage(players, p => p.rating) : null;
+        return `
+            <section class="match-team glass-panel">
+                <h2 class="match-team-head">
+                    <span>${team !== null ? `Team ${team}` : 'No team'}</span>
+                    ${avg !== null ? `<span class="match-team-avg" title="Average rating of the team's players">avg <span class="player-elo">${avg}</span></span>` : ''}
+                </h2>
+                <ul class="match-players">${players.map(p => matchPlayerHtml(p, g, ratingTitle)).join('')}</ul>
+            </section>`;
+    }).join('');
+}
+
+function matchPlayerHtml(p, g, ratingTitle) {
+    const human = p.kind === 'human';
+    const civ = g.civsHidden ? '<span class="civ-chip civ-hidden" title="This lobby hides civilizations">Hidden</span>'
+        : p.civ ? `<span class="civ-chip" title="Civilization">${esc(p.civ)}</span>` : '';
+    return `
+        <li class="match-player">
+            ${colorSwatchHtml(p.color)}
+            <span class="match-player-main">
+                <span class="match-player-name">${esc(p.name)}</span>
+                <span class="match-player-meta">${civ}${human && p.country ? countryBadgeHtml(p.country) : ''}${human ? playerLinksHtml(p) : ''}</span>
+            </span>
+            <span class="player-elo"${human ? ` title="${esc(ratingTitle)}"` : ''}>${p.rating !== null ? esc(p.rating) : '&mdash;'}</span>
+        </li>`;
+}
+
+// Uppercase code with the full name as a tooltip (flag emoji don't render on Windows)
+function countryBadgeHtml(code) {
+    const upper = code.toUpperCase();
+    let name = '';
+    try {
+        countryNames = countryNames || new Intl.DisplayNames(['en'], { type: 'region' });
+        name = countryNames.of(upper) || '';
+    } catch (e) {}
+    return `<abbr class="country-badge" title="${esc(name || upper)}">${esc(upper)}</abbr>`;
+}
+
+function tickMatch() {
+    if (!matchView) return;
+    for (const el of matchView.querySelectorAll('.match-started[data-start]')) el.textContent = minutesAgo(Number(el.dataset.start));
+    for (const el of matchView.querySelectorAll('.match-countdown[data-ready-at]')) {
+        const wait = countdownText(Number(el.dataset.readyAt));
+        el.textContent = wait ? `Delayed stream starts in ${wait}` : '';
+        el.hidden = !wait;
+    }
+}
+
+// Copy this page's link; without the Clipboard API (or when it is refused) select it in a read-only box instead
+function copyMatchLink(btn) {
+    const url = location.href;
+    const status = matchView.querySelector('.match-copy-status');
+    const fallback = () => {
+        const box = matchView.querySelector('.match-copy-fallback');
+        const input = box && box.querySelector('input');
+        if (!input) return;
+        input.value = url;
+        box.hidden = false;
+        input.focus();
+        input.select();
+    };
+    const copied = () => {
+        btn.textContent = 'Copied';
+        if (status) status.textContent = 'Link copied';
+        clearTimeout(matchCopyTimer);
+        matchCopyTimer = setTimeout(() => {
+            btn.textContent = 'Copy link';
+            if (status) status.textContent = '';
+        }, 2000);
+    };
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(copied, fallback);
+        else fallback();
+    } catch (e) {
+        fallback();
+    }
+}

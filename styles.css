@@ -1079,3 +1079,498 @@ input.filter-active {
     color: var(--text-secondary);
     border-color: var(--border-color);
 }
+
+/* Keyboard focus stays visible (.btn turns the browser outline off) */
+.btn:focus-visible,
+.btn-join:focus-visible,
+.btn-view:focus-visible,
+.player-link:focus-visible,
+.clear-filters-btn:focus-visible,
+.match-link:focus-visible,
+.match-view a:focus-visible,
+.match-view button:focus-visible,
+.match-view input:focus-visible {
+    outline: 2px solid var(--gold-primary);
+    outline-offset: 2px;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* Player colours 1-8 (aoe2companion's colorHex). The light edge keeps blue and grey visible on the dark panels,
+   and the dark ring keeps yellow and teal from glowing into them */
+.player-color {
+    flex: none;
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+}
+
+.player-color-1 { background: #405BFF; }
+.player-color-2 { background: #FF0000; }
+.player-color-3 { background: #00FF00; }
+.player-color-4 { background: #FFFF00; }
+.player-color-5 { background: #00FFFF; }
+.player-color-6 { background: #FF57B3; }
+.player-color-7 { background: #797979; }
+.player-color-8 { background: #FF9600; }
+
+.player-color-none {
+    border-style: dashed;
+    border-color: var(--border-color);
+    box-shadow: none;
+}
+
+.spectate-teams .player-color {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+}
+
+.civs-hidden-badge {
+    background: rgba(139, 148, 158, 0.2);
+    color: #cbd5e1;
+}
+
+/* Spectate cards: the map name and Details lead to the game's own page */
+.match-link {
+    color: inherit;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
+.match-link:hover {
+    color: var(--gold-primary);
+    text-decoration: underline;
+}
+
+/* On narrow cards the buttons drop below the player count as one row instead of squeezing it */
+.spectate-card .card-footer {
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.spectate-card .players-count-text {
+    white-space: nowrap;
+}
+
+.spectate-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 0.5rem;
+    margin-left: auto;
+}
+
+/* ---------------------------------------------------------------- Match page (/spectate/<id>) */
+.match-view {
+    padding-bottom: 3rem;
+}
+
+.match-view[hidden],
+.match-view [hidden] {
+    display: none !important;
+}
+
+.match-header {
+    padding: 1.5rem;
+    margin-bottom: 1.25rem;
+}
+
+.match-topline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+    margin-bottom: 0.6rem;
+}
+
+/* LIVE / ENDED / Not found; z-index keeps the pulse ring above the pill's own background */
+.match-status {
+    position: relative;
+    z-index: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.2rem 0.75rem;
+    border-radius: 999px;
+    border: 1px solid var(--border-color);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+
+.match-status .pulse-indicator {
+    width: 8px;
+    height: 8px;
+}
+
+.match-status-live {
+    color: #4ade80;
+    border-color: rgba(46, 160, 67, 0.6);
+    background: rgba(46, 160, 67, 0.15);
+}
+
+.match-status-ended {
+    color: var(--gold-primary);
+    border-color: var(--gold-dim);
+    background: rgba(212, 175, 55, 0.1);
+}
+
+.match-status-unknown {
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.match-spectators {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.match-title {
+    font-family: var(--font-heading);
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+}
+
+.match-subtitle {
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
+.match-loading {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-top: 0.5rem;
+}
+
+.match-loading .spinner-inline,
+.match-result-pending .spinner-inline {
+    margin-left: 0;
+}
+
+.match-timing {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1.25rem;
+    margin-top: 1rem;
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+}
+
+.match-countdown {
+    color: var(--gold-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.match-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 1.25rem;
+}
+
+.match-actions .btn-join,
+.match-actions .btn-view {
+    padding: 0.6rem 1.1rem;
+    font-size: 0.95rem;
+}
+
+.match-watch {
+    background: var(--gold-primary);
+    color: #000;
+    font-weight: 600;
+}
+
+.match-watch:hover {
+    background: #e5c355;
+}
+
+.match-back {
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.95rem;
+    padding: 0.35rem 0.25rem;
+}
+
+.match-back:hover {
+    color: var(--gold-primary);
+    text-decoration: underline;
+}
+
+.match-copy-fallback {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.75rem;
+    max-width: 640px;
+}
+
+.match-copy-fallback label {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.match-copy-fallback input {
+    width: 100%;
+    padding: 0.6rem 0.8rem;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: rgba(0, 0, 0, 0.3);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.9rem;
+}
+
+.match-notes:not(:empty) {
+    margin-top: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.match-notes .spectate-notice {
+    text-align: left;
+}
+
+.match-refresh-note,
+.match-note,
+.rating-kind {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+/* Result (once the game has ended) and the not-found message */
+.match-result {
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.match-result h2 {
+    font-family: var(--font-heading);
+    font-size: 1.2rem;
+}
+
+.match-result-pending {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    color: var(--text-secondary);
+}
+
+.match-winner {
+    font-size: 1.15rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.match-winner-names {
+    color: var(--gold-primary);
+}
+
+.match-length {
+    color: var(--text-secondary);
+}
+
+.match-result-players {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.match-result-player {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem 0.6rem;
+}
+
+.match-result-name {
+    font-weight: 500;
+    overflow-wrap: anywhere;
+    min-width: 0;
+}
+
+.result-tag {
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 0.05rem 0.55rem;
+    border-radius: 10px;
+}
+
+.result-won {
+    color: #4ade80;
+    background: rgba(46, 160, 67, 0.18);
+}
+
+.result-lost {
+    color: #fca5a5;
+    background: rgba(248, 113, 113, 0.15);
+}
+
+.rating-change {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.rating-up {
+    color: #4ade80;
+}
+
+.rating-down {
+    color: #f87171;
+}
+
+.match-replay {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+}
+
+/* Teams: one card per team, and one per player without a team */
+.match-teams {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+    gap: 1rem;
+}
+
+.match-team {
+    min-width: 0;
+    padding: 1rem 0 0.4rem;
+}
+
+.match-team-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0 1.25rem 0.5rem;
+    border-bottom: 1px solid var(--border-color);
+    font-family: var(--font-heading);
+    font-size: 1rem;
+    letter-spacing: 1px;
+}
+
+.match-team-avg {
+    font-family: var(--font-body);
+    font-size: 0.8rem;
+    letter-spacing: 0.3px;
+    color: var(--text-secondary);
+}
+
+.match-team-avg .player-elo {
+    font-size: 0.95rem;
+}
+
+.match-players {
+    list-style: none;
+}
+
+.match-player {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.65rem 1.25rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.match-player:last-child {
+    border-bottom: none;
+}
+
+.match-player-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.match-player-name {
+    font-weight: 600;
+    font-size: 1.05rem;
+    overflow-wrap: anywhere;
+}
+
+.match-player-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.match-player-meta:empty {
+    display: none;
+}
+
+.match-player-meta .player-links {
+    margin-left: 0;
+    flex-wrap: wrap;
+}
+
+.match-player .player-elo {
+    flex: none;
+}
+
+.civ-chip.civ-hidden {
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.05);
+    border-color: var(--border-color);
+    font-style: italic;
+}
+
+/* Country: uppercase code, full name in the tooltip */
+.country-badge {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 0 0.4rem;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-secondary);
+    text-decoration: none;
+    cursor: help;
+}
+
+@media (max-width: 480px) {
+    .match-mode .app-container {
+        padding: 0 1rem;
+    }
+    .match-header,
+    .match-result {
+        padding: 1rem;
+    }
+    .match-title {
+        font-size: 1.5rem;
+    }
+    .match-team-head {
+        padding: 0 1rem 0.5rem;
+    }
+    .match-player {
+        gap: 0.6rem;
+        padding: 0.6rem 1rem;
+    }
+}

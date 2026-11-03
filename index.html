@@ -9,10 +9,10 @@
     <meta name="robots" content="index, follow, max-image-preview:large">
     <meta name="theme-color" content="#0d1117">
 
-    <!-- Icons -->
-    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
-    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
-    <link rel="manifest" href="site.webmanifest">
+    <!-- Icons (root-absolute, like every asset here, so match pages at /spectate/<id> load them too) -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="manifest" href="/site.webmanifest">
 
     <!-- Link previews (Discord, Steam, Reddit, X) -->
     <meta property="og:type" content="website">
@@ -54,7 +54,7 @@
     </script>
 
     <!-- Styles (fonts are self-hosted from /fonts, see styles.css) -->
-    <link rel="stylesheet" href="./styles.css?v=23">
+    <link rel="stylesheet" href="/styles.css?v=24">
 </head>
 <body>
     <!-- Background Elements -->
@@ -289,6 +289,9 @@
                 <!-- Games in progress are injected here by app.js -->
             </section>
 
+            <!-- Match page (/spectate/<id>): one game, filled by app.js. Its status and result areas are live regions -->
+            <section id="matchView" class="match-view" hidden></section>
+
             <noscript>
                 <p class="about-section glass-panel">This live lobby list needs JavaScript. Turn it on to see open Age of Empires II: DE lobbies.</p>
             </noscript>
@@ -305,7 +308,7 @@
                 </details>
                 <details>
                     <summary>Can I watch games that already started?</summary>
-                    <p>Yes. Open <strong>Spectate</strong> to see games in progress, ranked and custom, with each team's players, ratings and civilizations. Press <strong>Spectate</strong> on a game to watch it in Age of Empires II: DE. Games have a short spectator delay, usually 2 minutes, and the button shows a countdown until it ends. A lobby leaves the lobby list as soon as its game starts and appears under Spectate instead.</p>
+                    <p>Yes. Open <strong>Spectate</strong> to see games in progress, ranked and custom, with each team's players, ratings and civilizations. Press <strong>Spectate</strong> on a game to watch it in Age of Empires II: DE. Games have a short spectator delay, usually 2 minutes, and the button shows a countdown until it ends. A lobby leaves the lobby list as soon as its game starts and appears under Spectate instead. Press <strong>Details</strong> (or the map name) for the game's own page, with a link you can share; once the game ends it shows the winner, the rating changes and a replay download.</p>
                 </details>
                 <details>
                     <summary>Which ELO is shown for each player?</summary>
@@ -321,7 +324,7 @@
                 </details>
                 <details>
                     <summary>Where does the data come from?</summary>
-                    <p>The lobby list comes from the game's public lobby service. Lobby settings (such as starting age, resources, treaty and mods), AI slots, player ratings, Steam links and the Spectate list come from <a href="https://aoe2lobby.com/" target="_blank" rel="noopener">aoe2lobby.com</a>, and map names from <a href="https://www.aoe2companion.com/" target="_blank" rel="noopener">aoe2companion.com</a>. AoE2Lobby.online is a fan-made site and isn't affiliated with Microsoft, Xbox Game Studios, World's Edge or Forgotten Empires.</p>
+                    <p>The lobby list comes from the game's public lobby service. Lobby settings (such as starting age, resources, treaty and mods), AI slots, player ratings, Steam links and the Spectate list come from <a href="https://aoe2lobby.com/" target="_blank" rel="noopener">aoe2lobby.com</a>, and map names from <a href="https://www.aoe2companion.com/" target="_blank" rel="noopener">aoe2companion.com</a>. Results of finished games come from the game's public match history, and replay downloads are the official aoe.ms links. AoE2Lobby.online is a fan-made site and isn't affiliated with Microsoft, Xbox Game Studios, World's Edge or Forgotten Empires.</p>
                 </details>
                 <details>
                     <summary>Privacy and contact</summary>
@@ -334,7 +337,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="app.js?v=24"></script>
+    <script src="/app.js?v=25"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>
