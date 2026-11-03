@@ -1,7 +1,32 @@
 node_modules/
 .DS_Store
-scraped_lobbies.json
-scraped_lobbies_relic.json
+scraped_*.json
+raw_*_dump.json
+*_dump*.html
 *.log
+*.tmp
 cloudflared.exe
 map_names.json
+
+# Secrets
+.env*
+*.pem
+*.key
+
+# Old captures of aoe2lobby.com / API responses (player data), kept locally but no longer tracked
+/aoe2lobby_tbody.html
+/aoe2lobby_ws.json
+/aoe2tracker.json
+/api_resp.json
+/dump.html
+/dump_output.html
+/lobbies.json
+/lobbies_parsed.json
+/lobby.html
+/lobby_html.html
+/rows_dump.txt
+/screenshot.png
+/test.json
+/test_aoestats.json
+/test_comp.json
+/test_recs.json
