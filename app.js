@@ -1366,6 +1366,9 @@ function normalizeMatchResult(r) {
 function matchPollDelay() {
     if (!matchData || matchData.status === 'live') return MATCH_POLL_LIVE_MS; // nothing read yet: keep trying
     if (matchData.status === 'ended' && matchData.result.state === 'pending') return MATCH_POLL_PENDING_MS;
+    // "Unknown" from a server without usable live data (feed down, or the snapshot too old) only means it can't
+    // tell yet, so keep asking until it can
+    if (matchData.status === 'unknown' && matchData.stale) return MATCH_POLL_LIVE_MS;
     return null; // result found or unavailable, or a game the server doesn't know: nothing more to wait for
 }
 
