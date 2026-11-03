@@ -1,9 +1,22 @@
-const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 
+// Uses Node's global WebSocket (undici), which accepts { headers } as its second argument.
+if (typeof WebSocket === 'undefined') {
+    console.error('Node >=22.12 required (global WebSocket missing)');
+    process.exit(1);
+}
+
+// Fail loudly: pm2 restarts the process (restart_delay in ecosystem.config.js) instead of a zombie
+// that stays "online" but no longer scrapes.
+process.on('unhandledRejection', e => { console.error('Unhandled rejection:', e); process.exit(1); });
+process.on('uncaughtException', e => { console.error('Uncaught exception:', e); process.exit(1); });
+
 const OUTPUT_PATH = path.join(__dirname, 'scraped_lobbies_v2.json');
 const PLAYERS_PATH = path.join(__dirname, 'scraped_players_v2.json');
+
+const WS_URL = 'wss://aoe2lobby.com/ws/lobby/';
+const USER_AGENT = 'aoe2lobby.online lobby mirror (+https://aoe2lobby.online)';
 
 // Value labels as aoe2lobby.com defines them. It also sends this table as "schema" when a socket
 // connects; that live copy wins (see label()), these are the fallback.
@@ -26,13 +39,27 @@ const FALLBACK_SCHEMA = {
 };
 let liveSchema = null;
 
+// Own string entries only, so a feed value such as "__proto__" or "constructor" cannot return a prototype member
 function label(field, value, unknown = "Unknown") {
     if (value === null || value === undefined) return unknown;
-    return liveSchema?.[field]?.[String(value)] ?? FALLBACK_SCHEMA[field]?.[value] ?? unknown;
+    const key = String(value);
+    const live = liveSchema?.[field];
+    if (live && typeof live === 'object' && Object.hasOwn(live, key) && typeof live[key] === 'string') return live[key];
+    const fallback = FALLBACK_SCHEMA[field];
+    if (fallback && Object.hasOwn(fallback, key)) return fallback[key];
+    return unknown;
+}
+
+// Feed ids are positive integers (numbers, or digit strings as object keys); anything else is dropped
+function toId(value) {
+    const n = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
+    return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
 let lobbyMatchAll = null;
-let lobbyEloUpdate = {}; // { profileId: { mode1: stats, mode2: stats } }
+let lastDataAt = 0; // when the last lobby_match_all arrived
+const startedAt = Date.now();
+let lobbyEloUpdate = Object.create(null); // { profileId: { mode1: stats, mode2: stats } }
 
 // Leaderboards to receive ratings for. aoe2lobby.com's page only subscribes to its defaults (0, 3, 4),
 // so Empire Wars ratings would otherwise never arrive.
@@ -40,105 +67,163 @@ const ELO_TYPES = ['0', '3', '4', '13', '14'];
 
 function mergeElo(update) {
     let merged = 0;
-    for (const mode in update) {
+    if (!update || typeof update !== 'object') return merged;
+    for (const mode of ELO_TYPES) {
+        if (!Object.hasOwn(update, mode)) continue;
         const elos = update[mode];
-        for (const profileId in elos) {
-            if (!lobbyEloUpdate[profileId]) lobbyEloUpdate[profileId] = {};
-            lobbyEloUpdate[profileId][mode] = elos[profileId];
+        if (!elos || typeof elos !== 'object') continue;
+        for (const profileId of Object.keys(elos)) {
+            if (!/^\d+$/.test(profileId)) continue;
+            const stats = elos[profileId];
+            if (!stats || typeof stats !== 'object') continue;
+            if (!lobbyEloUpdate[profileId]) lobbyEloUpdate[profileId] = Object.create(null);
+            lobbyEloUpdate[profileId][mode] = stats;
             merged++;
         }
     }
     return merged;
 }
 
+// Only the ladders this player has data on
+function playerStats(profileId) {
+    const all = lobbyEloUpdate[profileId];
+    const stats = {};
+    if (all) {
+        for (const mode of ELO_TYPES) {
+            if (all[mode] && Object.keys(all[mode]).length) stats[mode] = all[mode];
+        }
+    }
+    return stats;
+}
+
 // aoe2lobby.com sends a full snapshot when a socket connects but no live updates afterwards,
-// so take a fresh snapshot over a short-lived socket every SNAPSHOT_MS (Node 22+ global WebSocket).
+// so take a fresh snapshot over a short-lived socket every SNAPSHOT_MS. This is the only source.
 const SNAPSHOT_MS = 15000;
+const SNAPSHOT_TIMEOUT_MS = 10000;
 function takeSnapshot() {
     return new Promise(resolve => {
         let ws;
-        let gotMatches = false, gotElo = false;
-        const done = () => {
+        let gotMatches = false, gotElo = false, finished = false;
+        const done = (reason) => {
+            if (finished) return;
+            finished = true;
             clearTimeout(timer);
             try { ws.close(); } catch (e) { }
+            if (gotMatches) {
+                // Lobbies are fresh even if the rating update did not arrive; ratings from earlier snapshots are kept
+                try { dumpData(); } catch (e) { console.error('Failed to save snapshot:', e); }
+            } else {
+                console.error(`Snapshot failed: ${reason}`);
+            }
             resolve();
         };
-        const timer = setTimeout(done, 10000);
+        const timer = setTimeout(() => done(`no lobby_match_all within ${SNAPSHOT_TIMEOUT_MS / 1000} s`), SNAPSHOT_TIMEOUT_MS);
         try {
-            ws = new WebSocket('wss://aoe2lobby.com/ws/lobby/');
+            ws = new WebSocket(WS_URL, { headers: { 'User-Agent': USER_AGENT } });
         } catch (e) {
-            return done();
+            return done(e.message);
         }
         ws.onopen = () => ws.send(JSON.stringify({ action: 'subscribe', type: 'elotypes', context: 'lobby', ids: ELO_TYPES }));
-        ws.onerror = done;
+        ws.onerror = (e) => done(`socket error ${e?.message || e?.error?.message || ''}`.trim());
+        ws.onclose = (e) => done(`socket closed (code ${e?.code})`);
         ws.onmessage = (msg) => {
+            if (finished) return;
             try {
                 const data = JSON.parse(msg.data);
-                if (data.schema) liveSchema = data.schema;
-                if (data.lobby_match_all) { lobbyMatchAll = data.lobby_match_all; gotMatches = true; }
+                if (data.schema && typeof data.schema === 'object') liveSchema = data.schema;
+                if (data.lobby_match_all && typeof data.lobby_match_all === 'object') {
+                    lobbyMatchAll = data.lobby_match_all;
+                    lastDataAt = Date.now();
+                    gotMatches = true;
+                }
                 if (data.lobby_elo_update) { mergeElo(data.lobby_elo_update); gotElo = true; }
-                if (gotMatches && gotElo) { dumpData(); done(); }
-            } catch (e) { }
+                if (gotMatches && gotElo) done();
+            } catch (e) {
+                console.error('Bad snapshot message:', e.message);
+            }
         };
     });
 }
 
-function scheduleDump() {
-    clearTimeout(global.dumpTimeout);
-    global.dumpTimeout = setTimeout(dumpData, 2000);
+// One snapshot at a time: a slow one makes the next tick skip instead of opening a second socket
+let snapshotInFlight = false;
+async function snapshotTick() {
+    if (snapshotInFlight) return;
+    snapshotInFlight = true;
+    try {
+        await takeSnapshot();
+    } finally {
+        snapshotInFlight = false;
+    }
 }
 
-async function dumpData() {
+// Write to a temp file and rename it over the target, so the server never reads a half-written file
+function writeJsonAtomic(file, obj) {
+    const tmp = file + '.' + process.pid + '.tmp';
+    try {
+        fs.writeFileSync(tmp, JSON.stringify(obj));
+        fs.renameSync(tmp, file);
+        return true;
+    } catch (e) {
+        console.error('Failed to write ' + file + ':', e.message);
+        try { fs.unlinkSync(tmp); } catch (_) { }
+        return false;
+    }
+}
+
+const MAX_DATA_AGE_MS = 60000;
+let lastSavedSummary = '';
+
+function dumpData() {
     if (!lobbyMatchAll) return;
+    // Never refresh the files (and their mtime) with a frozen snapshot: the server treats old files as stale
+    if (Date.now() - lastDataAt > MAX_DATA_AGE_MS) return;
 
-    const scrapedLobbies = {};
-    const scrapedPlayers = {};
+    // Keyed by String(matchid) and String(profileId), never by display name
+    const scrapedLobbies = Object.create(null);
+    const scrapedPlayers = Object.create(null);
 
-    for (const matchId in lobbyMatchAll) {
-        const lobby = lobbyMatchAll[matchId];
-        
+    for (const key of Object.keys(lobbyMatchAll)) {
+        const lobby = lobbyMatchAll[key];
+        if (!lobby || typeof lobby !== 'object') continue;
+        const matchId = toId(lobby.matchid) ?? toId(key);
+        if (matchId === null) continue;
+        const hostProfileId = toId(lobby.host_profileid);
+
         let hostName = 'UNKNOWN';
         const players = [];
-        
-        if (lobby.slots) {
-            for (const slotKey in lobby.slots) {
-                const slot = lobby.slots[slotKey];
-                if (slot.name && slot.name !== 'Closed' && slot.name !== 'Open') {
-                    if (slot.profileid === lobby.host_profileid) {
-                        hostName = slot.name;
-                    }
 
-                    const pStats = lobbyEloUpdate[slot.profileid] || {};
-                    
-                    scrapedPlayers[slot.name.toLowerCase()] = {
-                        profileId: slot.profileid,
-                        steamProfile: slot.steam_profile || null,
-                        stats: pStats // Store all stats for all modes!
-                    };
+        if (lobby.slots && typeof lobby.slots === 'object') {
+            for (const slot of Object.values(lobby.slots)) {
+                if (!slot || typeof slot.name !== 'string' || !slot.name || slot.name === 'Closed' || slot.name === 'Open') continue;
+                const profileId = toId(slot.profileid);
+                if (profileId === null) continue;
+                if (profileId === hostProfileId) hostName = slot.name;
 
-                    players.push({
-                        name: slot.name,
-                        profileId: slot.profileid,
-                        steamProfile: slot.steam_profile || null,
-                        civ: label('civilization', slot.civilization, null), // e.g. Franks, or Random / Custom / Hidden before the game starts
-                        stats: pStats
-                    });
-                }
+                const steamProfile = typeof slot.steam_profile === 'string' && slot.steam_profile ? slot.steam_profile : null;
+                const civ = label('civilization', slot.civilization, null); // e.g. Franks, or Random / Custom / Hidden before the game starts
+                const stats = playerStats(profileId);
+
+                scrapedPlayers[String(profileId)] = { profileId, name: slot.name, steamProfile, civ, stats };
+                players.push({ name: slot.name, profileId, civ, steamProfile, stats });
             }
         }
-        
+
         if (hostName === 'UNKNOWN' && players.length > 0) {
             hostName = players[0].name;
         }
         if (hostName === 'UNKNOWN') continue;
 
-        scrapedLobbies[hostName.toLowerCase()] = {
+        scrapedLobbies[String(matchId)] = {
+            matchId: String(matchId),
             host: hostName,
-            title: lobby.description || "",
-            map: lobby.map_name || "Unknown Map",
+            hostProfileId,
+            title: typeof lobby.description === 'string' ? lobby.description : "",
+            map: typeof lobby.map_name === 'string' && lobby.map_name ? lobby.map_name : "Unknown Map",
             isPlaying: lobby.open_slots === false,
-            slotsTotal: lobby.slots_total, // slots a player can take (open + taken); closed and AI slots excluded
-            aiSlots: Object.values(lobby.slots || {}).filter(slot => slot.status === 2).length,
+            slotsTotal: Number.isSafeInteger(lobby.slots_total) ? lobby.slots_total : 0, // slots a player can take (open + taken); closed and AI slots excluded
+            aiSlots: Object.values(lobby.slots || {}).filter(slot => slot && slot.status === 2).length,
+            password: lobby.password === true,
             players: players,
             settings: {
                 Mode: label('mode', lobby.mode),
@@ -154,82 +239,26 @@ async function dumpData() {
         };
     }
 
-    fs.writeFileSync(OUTPUT_PATH, JSON.stringify(scrapedLobbies, null, 2));
-    fs.writeFileSync(PLAYERS_PATH, JSON.stringify(scrapedPlayers, null, 2));
-    console.log(`Saved ${Object.keys(scrapedLobbies).length} lobbies and ${Object.keys(scrapedPlayers).length} players to disk.`);
+    const savedLobbies = writeJsonAtomic(OUTPUT_PATH, scrapedLobbies);
+    const savedPlayers = writeJsonAtomic(PLAYERS_PATH, scrapedPlayers);
+    // Log only when the counts change, to keep pm2 logs small
+    const summary = `${Object.keys(scrapedLobbies).length} lobbies and ${Object.keys(scrapedPlayers).length} players`;
+    if (savedLobbies && savedPlayers && summary !== lastSavedSummary) {
+        console.log(`Saved ${summary} to disk.`);
+        lastSavedSummary = summary;
+    }
 }
 
-(async () => {
-    console.log("Starting WebSocket interceptor for aoe2lobby.com in daemon mode...");
-    const browser = await puppeteer.launch({
-        headless: 'new',
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-        args: process.env.PUPPETEER_NO_SANDBOX ? ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] : []
-    });
-    const page = await browser.newPage();
-    // Ask aoe2lobby.com's socket for every leaderboard we show, not just the page defaults
-    await page.evaluateOnNewDocument((eloTypes) => {
-        const NativeWebSocket = window.WebSocket;
-        window.WebSocket = function (url, protocols) {
-            const ws = protocols === undefined ? new NativeWebSocket(url) : new NativeWebSocket(url, protocols);
-            ws.addEventListener('open', () => {
-                ws.send(JSON.stringify({ action: 'subscribe', type: 'elotypes', context: 'lobby', ids: eloTypes }));
-            });
-            return ws;
-        };
-        window.WebSocket.prototype = NativeWebSocket.prototype;
-        Object.assign(window.WebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
-    }, ELO_TYPES);
-    const cdp = await page.target().createCDPSession();
-    await cdp.send('Network.enable');
-    await cdp.send('Page.enable');
-    
-    cdp.on('Network.webSocketFrameReceived', response => {
-        try {
-            const payload = response.response.payloadData;
-            if (payload.includes('"schema":')) {
-                const data = JSON.parse(payload);
-                if (data.schema) liveSchema = data.schema;
-            }
-            if (payload.includes('"lobby_match_all":')) {
-                const data = JSON.parse(payload);
-                if (data.lobby_match_all) {
-                    lobbyMatchAll = data.lobby_match_all;
-                    dumpData();
-                }
-            }
-            // Live changes between full snapshots: new/changed lobbies and closed lobbies
-            if (lobbyMatchAll && payload.includes('"lobby_match_update":')) {
-                const data = JSON.parse(payload);
-                if (data.lobby_match_update) {
-                    Object.assign(lobbyMatchAll, data.lobby_match_update);
-                    scheduleDump();
-                }
-            }
-            if (lobbyMatchAll && payload.includes('"lobby_match_remove":')) {
-                const data = JSON.parse(payload);
-                if (Array.isArray(data.lobby_match_remove)) {
-                    for (const id of data.lobby_match_remove) delete lobbyMatchAll[id];
-                    scheduleDump();
-                }
-            }
-            if (payload.includes('"lobby_elo_update":')) {
-                const data = JSON.parse(payload);
-                if (data.lobby_elo_update && mergeElo(data.lobby_elo_update) > 0) scheduleDump();
-            }
-        } catch (e) { }
-    });
+// Watchdog: if no lobby_match_all arrives for WATCHDOG_MS, exit so pm2 restarts the scraper
+const WATCHDOG_MS = 180000;
+setInterval(() => {
+    const since = Math.max(lastDataAt, startedAt);
+    if (Date.now() - since > WATCHDOG_MS) {
+        console.error(`No lobby_match_all from aoe2lobby.com for ${Math.round((Date.now() - since) / 1000)} s; exiting so pm2 restarts the scraper.`);
+        process.exit(1);
+    }
+}, 10000);
 
-    await page.goto('https://aoe2lobby.com/', { waitUntil: 'networkidle2' });
-    
-    // Periodically dump data every 20 seconds as a fallback
-    setInterval(dumpData, 20000);
-
-    // Primary freshness source: a direct snapshot every 15 seconds
-    setInterval(takeSnapshot, SNAPSHOT_MS);
-
-    // Periodically reload the page to trigger a fresh lobby_match_all payload for new lobbies
-    setInterval(() => {
-        page.reload({ waitUntil: 'networkidle2' }).catch(() => {});
-    }, 60000);
-})();
+console.log(`Starting aoe2lobby.com lobby scraper (direct WebSocket snapshot every ${SNAPSHOT_MS / 1000} s)...`);
+snapshotTick();
+setInterval(snapshotTick, SNAPSHOT_MS);
