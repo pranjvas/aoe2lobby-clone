@@ -1426,7 +1426,15 @@ function renderMatch() {
         if (matchParts[name] === html) continue;
         const el = matchView.querySelector(`[data-part="${name}"]`);
         if (!el) continue;
+        // A rebuilt part gives focus back to the same control (or the part's first one, when it is gone, as the Watch
+        // link is once the game ends), so keyboard and screen-reader users keep their place
+        const focused = el.contains?.(document.activeElement) ? document.activeElement : null;
         el.innerHTML = html;
+        if (focused) {
+            const action = focused.getAttribute('data-action');
+            const next = (action && el.querySelector(`[data-action="${action}"]`)) || el.querySelector('a[href], button');
+            if (next) next.focus();
+        }
         if (name !== 'note' && name !== 'result') el.hidden = !html; // live regions stay, so later changes are announced
         matchParts[name] = html;
     }

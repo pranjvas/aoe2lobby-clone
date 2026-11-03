@@ -127,7 +127,8 @@ Every request to an external service goes through `server.js`, because the CSP i
 
 - **Civ table** (12 of 12 consistent against aoe2companion, across ranked, custom and vs-AI games): `-61` Saxons,
   `-62` Varangians, `-63` Danes. Never read them as `abs(id)`, because the schema's 61-63 are Return of Rome civs.
-  The schema's `15` "Aztec" is shown as "Aztecs".
+  The schema's `15` "Aztec" is shown as "Aztecs", and its Return of Rome internal names `58` "OldPersians", `62`
+  "OldRomans" and `66` "LacViet" as "Persians", "Romans" and "Lac Viet" (in the lobby list too).
   - Any other unlabelled id shows as `Unknown civ` and is logged once, so the table can be updated by hand.
   - A live aoe2companion lookup fallback, in the style of `resolveMapNames`, is a follow-up if new civs ever appear
     without a schema update.
@@ -301,6 +302,8 @@ When `status` is `ended`, `result` becomes the following:
 - **Spectator delay:** worded as "Spectators watch about N min behind the live game". While elapsed time is under
   the delay, a countdown shows when the delayed stream starts.
 - **Copy link:** uses the Clipboard API, falling back to selecting the text.
+- **Focus:** a poll rebuilds only the parts that changed, and a rebuilt part gives focus back to the same control
+  (or the part's first one when it is gone, like Watch in game once the game ends).
 - **Card links:** every Spectate card links to its match page.
 - **Country:** shown as an uppercase code badge with the full name as a tooltip (`Intl.DisplayNames`). Flag emoji
   don't render on Windows.
