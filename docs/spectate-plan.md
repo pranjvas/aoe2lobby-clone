@@ -234,14 +234,18 @@ When `status` is `ended`, `result` becomes the following:
   builds the link `https://aoe.ms/replay/?gameId=<game.id>&profileId=<replay.profileId>`.
 
 - **`unknown`:** the server never saw the game, for example after a restart or a wrong link. `game` and `result`
-  are `null`.
+  are `null`. With `stale: true` it only means the server has no usable live data (no snapshot, or one over 10
+  minutes old), so it can't tell: a game of a stale snapshot is never reported `live`.
 - **`pending`:** the result is still being looked up. The page polls again.
 - **`unavailable`:** the lookup gave up, about 15 minutes after the game left the feed.
 
 ### Server behaviour
 
 - One shared freshness rule: `/api/spectate` and `/api/spectate/<id>` both refresh the snapshot on demand, at most
-  once a minute, as today. Nothing polls on its own.
+  once a minute, as today. Nothing polls on its own. A snapshot over 10 minutes old is stale: the list shows no
+  games, and the detail and the page tags treat its games as `unknown`.
+- **Implausible snapshots:** a snapshot with no games, or with under half the games of a fresh previous one, is a
+  feed glitch (hundreds of games are always in progress). It counts as a failed refresh, so it ends no games.
 - **Ended games:** on each refresh, games that were in the previous snapshot and are missing from the new one move
   to an `endedGames` map, with `endedAt` set to the new snapshot's time. Entries are kept for 2 hours, capped by
   count.
@@ -269,6 +273,9 @@ When `status` is `ended`, `result` becomes the following:
   Players and Spectate buttons go back to `/`, opening the chosen view.
 - **Polling:** every 30 s while the game is live, and every 20 s while its result is pending. It stops once the
   result is `found` or `unavailable`, or the game is `unknown`, and pauses while the tab is hidden.
+- **No live data** (`unknown` or `live` with `stale: true`): the page keeps polling and says the game can't be
+  checked yet, never "not found". A game already on screen stays, as last seen live, without the LIVE pill,
+  spectator count, delay countdown or Watch in game.
 - **Teams:** teams are grouped by `team`. Each `team: null` player gets a card of their own, labelled "No team".
   The Spectate list cards use the same grouping, so free-for-all games are no longer lumped into "Team 1".
 - **Player rows:** a colour swatch, the name (AI shows as "AI"), the civ or "Hidden", the country badge, the

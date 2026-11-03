@@ -534,11 +534,23 @@ function spectateBody(snapshot, snapAt) {
     };
 }
 
+// A snapshot is usable for this long: older, the list shows no games and no game counts as live
+function spectateFresh(cache) {
+    return !!cache.body && Date.now() - cache.snapAt <= SPECTATE_STALE_MS;
+}
+
 async function refreshSpectate() {
     const snapAt = Date.now();
     const snapshot = await fetchSpectateSnapshot();
     const { body, games, unknownMaps } = spectateBody(snapshot, snapAt);
-    noteEndedGames(spectateCache.games, games, snapAt);
+    // Hundreds of games are always in progress and they don't halve within minutes, so a snapshot with no games, or with
+    // under half the games of a recent one, is a feed glitch: it counts as a failed refresh, or every running game it
+    // misses would be marked as ended
+    const prev = spectateCache;
+    if (!games.size || (spectateFresh(prev) && prev.games.size >= 20 && games.size < prev.games.size / 2)) {
+        throw new Error(`implausible snapshot: ${games.size} games, after ${prev.games.size}`);
+    }
+    noteEndedGames(prev.games, games, snapAt);
     const entry = { at: Date.now(), snapAt, body, games };
     spectateCache = entry;
     // Look up unknown map names in the background, then rebuild this snapshot with them (unless a newer one replaced it)
@@ -598,9 +610,10 @@ function pruneEndedGames() {
     }
 }
 
-// A game by id: live in the given snapshot, or ended within ENDED_KEEP_MS
+// A game by id: live in the given snapshot, or ended within ENDED_KEEP_MS. A snapshot too old to list (the feed is down)
+// can't tell whether its games are still running, so they are unknown until a refresh succeeds.
 function spectateGameById(cache, id) {
-    const live = cache.games.get(id);
+    const live = spectateFresh(cache) ? cache.games.get(id) : undefined;
     if (live) return { status: 'live', game: live, ended: null };
     const ended = endedGames.get(id);
     if (ended && ended.game.endedAt >= Math.floor((Date.now() - ENDED_KEEP_MS) / 1000)) return { status: 'ended', game: ended.game, ended };
@@ -715,7 +728,7 @@ async function serveSpectateList(res) {
         const cache = await freshSpectate();
         body = cache.body;
         if (!body) body = JSON.stringify({ updatedAt: null, stale: true, games: [] });
-        else if (Date.now() - cache.snapAt > SPECTATE_STALE_MS) {
+        else if (!spectateFresh(cache)) {
             body = JSON.stringify({ updatedAt: Math.floor(cache.snapAt / 1000), stale: true, games: [] });
         }
     } catch (e) {
@@ -738,7 +751,7 @@ async function serveSpectateMatch(res, id) {
     res.end(JSON.stringify({
         status: found.status,
         updatedAt: cache.body ? Math.floor(cache.snapAt / 1000) : null,
-        stale: !cache.body || Date.now() - cache.snapAt > SPECTATE_STALE_MS,
+        stale: !spectateFresh(cache),
         game: found.game,
         result
     }));

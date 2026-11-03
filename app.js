@@ -1365,6 +1365,12 @@ function normalizeMatchResult(r) {
     };
 }
 
+// The server has no usable live data (feed down, or its snapshot too old), so it can't tell whether the game is still
+// on: shown as a wait, never as live or as not found
+function matchWaiting(d) {
+    return !!d && d.stale && (d.status === 'unknown' || d.status === 'live');
+}
+
 function matchPollDelay() {
     if (!matchData || matchData.status === 'live') return MATCH_POLL_LIVE_MS; // nothing read yet: keep trying
     if (matchData.status === 'ended' && matchData.result.state === 'pending') return MATCH_POLL_PENDING_MS;
@@ -1385,6 +1391,11 @@ async function fetchMatch() {
         const data = (r.status === 400 || r.status === 404) ? normalizeMatch({ status: 'unknown' })
             : r.ok ? normalizeMatch(await r.json()) : null;
         if (!data) throw new Error(r.ok ? 'unreadable game data' : 'HTTP ' + r.status);
+        // While the server can't tell, a game already on screen stays there as it was last seen live
+        if (data.status === 'unknown' && data.stale && matchData && matchData.game && matchData.status !== 'ended') {
+            data.game = matchData.game;
+            data.lastLiveAt = matchData.status === 'live' ? matchData.updatedAt : matchData.lastLiveAt;
+        }
         matchData = data;
         matchOkAt = Date.now();
         matchRefreshFailed = false;
@@ -1419,14 +1430,18 @@ function renderMatch() {
         matchParts[name] = html;
     }
     if (d) document.title = d.game
-        ? `${d.status === 'live' ? 'Live' : 'Ended'}: ${d.game.map} – ${d.game.title} | AoE2Lobby.online`
-        : 'Game not found | AoE2Lobby.online';
+        ? `${matchWaiting(d) ? '' : d.status === 'live' ? 'Live: ' : 'Ended: '}${d.game.map} – ${d.game.title} | AoE2Lobby.online`
+        : matchWaiting(d) ? `Game ${matchPageId} | AoE2Lobby.online` : 'Game not found | AoE2Lobby.online';
     tickMatch();
 }
 
 function matchHeadHtml(d) {
     if (!d || !d.game) {
-        // Not found, or nothing read yet (still loading, or the first request failed)
+        // The server can't tell yet, not found, or nothing read yet (still loading, or the first request failed)
+        if (matchWaiting(d)) return `
+            <div class="match-topline"><span class="match-status match-status-unknown">No live data</span></div>
+            <h1 class="match-title">Game ${esc(matchPageId)}</h1>
+            <p class="match-subtitle">This game can't be checked until the live game data is back. Trying again shortly&hellip;</p>`;
         if (d) return `
             <div class="match-topline"><span class="match-status match-status-unknown">Not found</span></div>
             <h1 class="match-title">Game not found</h1>
@@ -1437,11 +1452,12 @@ function matchHeadHtml(d) {
                 ? '<p class="match-subtitle">Couldn\'t load this game right now. Trying again shortly&hellip;</p>'
                 : '<p class="match-subtitle match-loading"><span class="spinner-inline" aria-hidden="true"></span>Loading the game&hellip;</p>'}`;
     }
-    const g = d.game, live = d.status === 'live';
+    const g = d.game, waiting = matchWaiting(d), live = d.status === 'live' && !waiting;
     const ladder = (g.ladder && LADDER_NAMES[g.ladder]) || null; // named on the page: the Spectate cards follow Elo Type instead
     return `
         <div class="match-topline">
             ${live ? '<span class="match-status match-status-live"><span class="pulse-indicator" aria-hidden="true"></span>LIVE</span>'
+                : waiting ? '<span class="match-status match-status-unknown" title="Live game data is unavailable, so the game may have ended">No live data</span>'
                 : '<span class="match-status match-status-ended">ENDED</span>'}
             ${g.isRanked ? '<span class="badge treaty-badge">Ranked</span>' : g.isQuickPlay ? '<span class="badge quickplay-badge">Quick Play</span>' : '<span class="badge mod-info-badge">Unranked</span>'}
             ${live ? `<span class="match-spectators" title="Spectators watching now">&#x1F441; ${g.observers} spectator${g.observers === 1 ? '' : 's'}</span>` : ''}
@@ -1459,7 +1475,11 @@ function matchHeadHtml(d) {
 function matchTimingHtml(d) {
     const g = d.game, items = [];
     if (g.startTime > 0) items.push(`<span class="match-started" data-start="${g.startTime}">${minutesAgo(g.startTime)}</span>`);
-    if (d.status === 'live') {
+    if (matchWaiting(d)) {
+        // No delay or countdown: the game may have ended since
+        const seen = d.status === 'live' ? d.updatedAt : d.lastLiveAt;
+        if (seen > 0) items.push(`<span>Last seen live at ${clockTime(seen)}</span>`);
+    } else if (d.status === 'live') {
         items.push(g.observerDelay > 0
             ? `<span>Spectators watch about ${g.observerDelay} min behind the live game</span>`
             : '<span>No spectator delay</span>');
@@ -1478,9 +1498,9 @@ function matchTimingHtml(d) {
 }
 
 function matchActionsHtml(d) {
-    if (d && !d.game) return ''; // not found: its message links to the list instead
-    // aoe2de:// needs the visitor's click: it is never opened on its own
-    const watch = d && d.status === 'live' && isMatchId(d.game.id)
+    if (d && !d.game && !matchWaiting(d)) return ''; // not found: its message links to the list instead
+    // aoe2de:// needs the visitor's click: it is never opened on its own (and only offered while the game is known to be on)
+    const watch = d && d.game && d.status === 'live' && !matchWaiting(d) && isMatchId(d.game.id)
         ? `<a class="btn-join match-watch" href="aoe2de://1/${d.game.id}" title="Opens Age of Empires II: DE as a spectator">&#x1F441; Watch in game</a>`
         : '';
     return `${watch}
@@ -1499,6 +1519,7 @@ function matchNoteHtml(d) {
 }
 
 function matchResultHtml(d) {
+    if (d && !d.game && matchWaiting(d)) return ''; // the heading says it can't be checked yet
     if (d && !d.game) return `
         <section class="match-result glass-panel">
             <p>This game isn't in the live list. It may have ended a while ago, or the link is wrong.</p>
