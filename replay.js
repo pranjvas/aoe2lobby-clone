@@ -9,6 +9,7 @@ const PLAYER_COLORS = { 1: '#405BFF', 2: '#FF0000', 3: '#00FF00', 4: '#FFFF00', 
 const SPEEDS = [1, 2, 4, 8, 16, 32, 64];
 const ORDER_FADE_MS = 30000;    // how long a "units sent here" marker stays on the map (game time)
 const FLARE_MS = 8000;
+const UNIT_FADE_MS = 150000;     // a unit with no orders for this long after arriving is dropped: it may have died
 const CARD_REFRESH_MS = 250;     // player cards and tables redraw at most this often while playing
 const AGES = ['feudal', 'castle', 'imperial'];
 const AGE_NAMES = { dark: 'Dark Age', feudal: 'Feudal Age', castle: 'Castle Age', imperial: 'Imperial Age', postimperial: 'Post-Imperial' };
@@ -121,7 +122,7 @@ function parseInWorker(buffer, load) {
     return new Promise((resolve, reject) => {
         let worker;
         try {
-            worker = new Worker('/replay-worker.js?v=2');
+            worker = new Worker('/replay-worker.js?v=3');
         } catch (e) {
             reject(new Error('This browser can\'t run the replay reader.'));
             return;
@@ -427,7 +428,9 @@ function buildGrid() {
 const LAYERS = [
     { key: 'resources', label: 'Resources', on: true },
     { key: 'buildings', label: 'Buildings', on: true },
-    { key: 'orders', label: 'Units sent', on: true },
+    { key: 'units', label: 'Units (estimated)', on: true },
+    { key: 'workers', label: 'Villagers (estimated)', on: false },
+    { key: 'orders', label: 'Where units were sent', on: false },
     { key: 'work', label: 'Villagers sent to gather', on: false },
     { key: 'flares', label: 'Flares', on: true }
 ];
@@ -481,10 +484,11 @@ function buildMapPanel() {
         marks.append(item);
     }
     panel.append(wrap, layers, marks, el('p', 'rv-map-note',
-        'Everything else is in each player\'s colour. Buildings show where they were placed: the file doesn\'t say when '
-        + 'one is finished or destroyed. Dots show where units were sent in the last 30 game seconds, crosses where '
-        + 'villagers were sent to gather, and rings are flares. On the timeline, bars mark age-ups and dots mark '
-        + 'resignations. Drag to move, scroll or use the buttons to zoom.'));
+        'Everything else is in each player\'s colour. Units are estimates: the file says where each one was sent, so it\'s '
+        + 'drawn walking there in a straight line at a typical speed, and it fades out a while after its last order, '
+        + 'because the file doesn\'t say when a unit dies. Fights don\'t show. Buildings show where they were placed: the '
+        + 'file doesn\'t say when one is finished or destroyed. Rings are flares. On the timeline, bars mark age-ups and '
+        + 'dots mark resignations. Drag to move, scroll or use the buttons to zoom.'));
     view.map = new MapView(canvas, tip, on);
     return panel;
 }
@@ -694,6 +698,7 @@ class MapView {
         if (this.layers.resources) this.drawResources(ctx, px);
         if (this.layers.buildings) this.drawBuildings(ctx, t);
         ctx.setTransform(1, 0, 0, 1, 0, 0);
+        if (this.layers.units || this.layers.workers) this.drawUnits(ctx, t, px);
         if (this.layers.orders || this.layers.work) this.drawOrders(ctx, t, px);
         if (this.layers.flares) this.drawFlares(ctx, t, px);
         this.dirty = false;
@@ -744,6 +749,37 @@ class MapView {
             const f = this.footprints[i], p = game.byNumber.get(f.e.p);
             if (p) place(f, p.colorHex);
         }
+    }
+
+    // Each unit's estimated place at time t: along its current leg, then waiting where it was sent
+    drawUnits(ctx, t, px) {
+        const u = game.units;
+        if (!u) return;
+        const r = Math.max(2.6 * this.dpr, px * 0.7), legs = u.legs;
+        ctx.lineWidth = Math.max(0.75, this.dpr * 0.75);
+        ctx.strokeStyle = 'rgba(10,12,16,0.85)';
+        for (let i = 0; i < u.owner.length; i++) {
+            if (!this.layers[u.worker[i] ? 'workers' : 'units']) continue;
+            let lo = u.first[i], hi = u.first[i + 1] - 1, leg = -1;
+            while (lo <= hi) {
+                const mid = (lo + hi) >> 1;
+                if (legs[mid * 6] <= t) { leg = mid; lo = mid + 1; } else hi = mid - 1;
+            }
+            if (leg < 0) continue;
+            const b = leg * 6, from = legs[b], arrive = legs[b + 5], idle = t - arrive;
+            if (idle > UNIT_FADE_MS) continue;
+            const f = arrive > from ? Math.min(1, (t - from) / (arrive - from)) : 1;
+            const [sx, sy] = this.toScreen(legs[b + 1] + (legs[b + 3] - legs[b + 1]) * f, legs[b + 2] + (legs[b + 4] - legs[b + 2]) * f);
+            const p = game.byNumber.get(u.owner[i]);
+            if (!p) continue;
+            ctx.globalAlpha = idle > 0 ? Math.max(0.3, 1 - idle / UNIT_FADE_MS) : 1;
+            ctx.fillStyle = p.colorHex;
+            ctx.beginPath();
+            ctx.arc(sx, sy, r, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
     }
 
     drawOrders(ctx, t, px) {

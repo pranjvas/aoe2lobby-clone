@@ -1714,6 +1714,11 @@ const FAN_OUT = new Set(['delete', 'townBell', 'gate', 'backToWork', 'unknown140
 const CANCEL_REACH_MS = 10 * 60 * 1000;
 const MAX_STANDING_IDS = 512; // the longest action in 745 replays lists about 238
 const AGE_TECHS = { feudal: 101, castle: 102, imperial: 103 };
+// Estimated paths: the file says where units were sent, not where they are, so a unit is taken to walk straight there
+const UNIT_SPEED = 1;            // tiles per game second, about a foot soldier
+const WORKER_SPEED = 0.85;
+const VILLAGER_TYPES = new Set([83, 293]);
+const MAX_LEGS = 1000000;        // the largest game in 30 sampled has about 100,000
 const MIN_STEPS_TO_TELL = 10;
 const TREASON = 408; // Regicide's one tech that can be bought again at the same building
 // What the viewer loops over, far above any real game: [limit, largest of 745 replays]
@@ -1864,9 +1869,9 @@ const hasAmount = a => a.food > 0 || a.wood > 0 || a.gold > 0 || a.stone > 0;
 // building and a queue slot, so it takes back the newest order still standing at that building (an estimate); working
 // out the slot instead did worse, because when an order leaves the queue isn't known. An age line then proves its
 // click stood, so finish() undoes a cancel that took one.
-function collectCommands(seats, humans, resourceIds) {
-    const events = [], apm = {}, queues = new Map(), selected = new Map(), standing = new Map();
-    let unreadable = 0, countedAt = -1;
+function collectCommands(seats, humans, resourceIds, starts, homes) {
+    const events = [], apm = {}, queues = new Map(), selected = new Map(), standing = new Map(), tracks = new Map();
+    let unreadable = 0, countedAt = -1, legCount = 0;
     const counted = new Set();
     for (const p of humans) apm[p] = [];
     const stand = (ids, order) => {
@@ -1902,11 +1907,43 @@ function collectCommands(seats, humans, resourceIds) {
         counted.add(key);
         return true;
     };
+    const placeOf = (u, t) => {
+        if (t >= u.arrive) return [u.tx, u.ty];
+        const f = (t - u.from) / (u.arrive - u.from);
+        return [u.x + (u.tx - u.x) * f, u.y + (u.ty - u.y) * f];
+    };
+    // Sends units towards (x, y) from wherever they had got to. A unit not seen before starts where the file put it, or
+    // beside the first unit it was sent with, or at its player's base.
+    const send = (ids, p, t, x, y, working) => {
+        if (!ids || legCount >= MAX_LEGS) return;
+        let beside = null;
+        for (const id of ids) {
+            const u = tracks.get(id);
+            if (u) { beside = placeOf(u, t); break; }
+        }
+        for (const id of ids) {
+            let u = tracks.get(id);
+            if (!u) {
+                const known = starts.get(id);
+                const at = known ? [known.x, known.y] : beside || homes.get(p) || [x, y];
+                u = { p, worker: !!(known && known.worker), x: at[0], y: at[1], tx: at[0], ty: at[1], from: t, arrive: t, legs: [] };
+                if (known) { u.legs.push(0, at[0], at[1], at[0], at[1], 0); legCount++; }
+                tracks.set(id, u);
+            }
+            if (working) u.worker = true;
+            const [cx, cy] = placeOf(u, t);
+            const arrive = t + Math.hypot(x - cx, y - cy) / (u.worker ? WORKER_SPEED : UNIT_SPEED) * 1000;
+            u.legs.push(t, cx, cy, x, y, arrive);
+            legCount++;
+            Object.assign(u, { x: cx, y: cy, tx: x, ty: y, from: t, arrive });
+        }
+    };
     const add = (a, t) => {
         const p = a.player;
-        const sel = a.ids ? a.ids.length : (selected.get(p) || 1);
         // "Same selection" means the units of the last order or move, whatever came between
-        if (a.ids && (a.kind === 'order' || a.kind === 'move')) selected.set(p, a.ids.length);
+        const ids = a.ids || selected.get(p) || null;
+        const sel = ids ? ids.length : 1;
+        if (a.ids && (a.kind === 'order' || a.kind === 'move')) selected.set(p, a.ids);
         switch (a.kind) {
             case 'queue': { const e = { t, p, k: 'queue', unit: a.unit, n: a.amount }; events.push(e); stand(a.ids, e); break; }
             case 'aiQueue': { const e = { t, p, k: 'queue', unit: a.unit, n: 1 }; events.push(e); stand(a.ids, e); break; }
@@ -1920,8 +1957,8 @@ function collectCommands(seats, humans, resourceIds) {
                 stand(a.building >= 0 ? [a.building] : a.ids, e);
                 break;
             }
-            case 'build': events.push({ t, p, k: 'build', unit: a.unit, x: a.x, y: a.y }); break;
-            case 'wall': events.push({ t, p, k: 'wall', unit: a.unit, x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2 }); break;
+            case 'build': events.push({ t, p, k: 'build', unit: a.unit, x: a.x, y: a.y }); send(a.ids, p, t, a.x, a.y, true); break;
+            case 'wall': events.push({ t, p, k: 'wall', unit: a.unit, x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2 }); send(a.ids, p, t, a.x1, a.y1, true); break;
             case 'flare': events.push({ t, p, k: 'flare', x: a.x, y: a.y }); break;
             case 'buy': case 'sell': events.push({ t, p, k: a.kind, resource: a.resourceName, amount: a.amount }); break;
             // One tribute sends a record per row of the panel, most of them empty
@@ -1933,6 +1970,7 @@ function collectCommands(seats, humans, resourceIds) {
                     const e = { t, p, k: a.kind, x: a.x, y: a.y, n: sel };
                     if (a.kind === 'order' && resourceIds.has(a.target)) e.work = true;
                     events.push(e);
+                    send(ids, p, t, a.x, a.y, !!e.work);
                 }
         }
     };
@@ -1963,7 +2001,17 @@ function collectCommands(seats, humans, resourceIds) {
             }
             const kept = events.filter(e => !e.cancelled && (e.k !== 'queue' || e.n > 0));
             for (const e of kept) delete e.passedOver;
-            return { events: kept, apm, unreadable };
+            // One flat array of legs [t, x0, y0, x1, y1, arrive] and where each unit's start
+            const owner = [], worker = [], first = [0], legs = new Float64Array(legCount * 6);
+            let at = 0;
+            for (const u of tracks.values()) {
+                owner.push(u.p);
+                worker.push(u.worker ? 1 : 0);
+                legs.set(u.legs, at);
+                at += u.legs.length;
+                first.push(at / 6);
+            }
+            return { events: kept, apm, unreadable, units: { owner, worker, first, legs } };
         }
     };
 }
@@ -2015,7 +2063,13 @@ async function parseFile(input, inflateRaw, onProgress = () => { }) {
     onProgress('Reading the game…');
     const stats = Object.fromEntries(seated.map(p => [p.number, []]));
     const chat = [];
-    const commands = collectCommands(seats, humans, resourceIds);
+    const starts = new Map(), homes = new Map();
+    for (const record of section.players) {
+        if (record.number === 0) continue;
+        if (record.start) homes.set(record.number, [record.start.x, record.start.y]);
+        for (const o of record.objects) if (o.classId !== 80) starts.set(o.id, { x: o.x, y: o.y, worker: VILLAGER_TYPES.has(o.typeId) });
+    }
+    const commands = collectCommands(seats, humans, resourceIds, starts, homes);
     // A player's client logs its camera at every step, from the first; a watching client logs none. That's what tells
     // the two apart: the recording player reads 1 for a watcher, and the file name holds the same number. A read can
     // land between a step and its camera record, so a file with only a few steps says neither (null).
@@ -2037,7 +2091,7 @@ async function parseFile(input, inflateRaw, onProgress = () => { }) {
     }));
     const teamOf = new Map(seated.map(p => [p.number, p.teamId > 1 ? p.teamId : null]));
     const { rows: chatLines, ages } = splitChat(chat, startAges, teamOf);
-    const { events, apm, unreadable } = commands.finish(ages);
+    const { events, apm, unreadable, units } = commands.finish(ages);
 
     const sides = new Set(seated.map(p => p.teamId > 1 ? p.teamId : `solo${p.number}`));
     const ratings = ratingsOf(walk.postgame, seated.length === 2 && sides.size === 2);
@@ -2086,6 +2140,7 @@ async function parseFile(input, inflateRaw, onProgress = () => { }) {
         map: { dimension: head.map.dimension, terrain: head.map.terrain, elevation: head.map.elevation },
         gaia,
         startObjects,
+        units,
         sizes: ReplaySizes.buildingSizes(header),
         events: allEvents,
         apm,

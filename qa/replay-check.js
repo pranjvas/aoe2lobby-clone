@@ -163,6 +163,13 @@ function modelProblems(m) {
         for (const r of rows) { if (!(r[0] >= prev && Number.isFinite(r[1]) && r[2] >= 0)) bad++; prev = r[0]; }
         expect(!bad, `${bad} bad stats rows for player ${num}`);
     }
+    const u = m.units;
+    expect(u && u.owner.length === u.worker.length && u.first.length === u.owner.length + 1 && u.legs.length === u.first[u.first.length - 1] * 6, 'units shape');
+    let badLegs = 0;
+    for (let i = 0; u && i < u.legs.length; i += 6) {
+        if (!(u.legs[i + 5] >= u.legs[i]) || !inMap(u.legs[i + 1], u.legs[i + 2]) || !inMap(u.legs[i + 3], u.legs[i + 4])) badLegs++;
+    }
+    expect(!badLegs, `${badLegs} bad unit legs`);
     for (const c of m.chat || []) expect(typeof c.text === 'string' && Number.isFinite(c.t) && !/^<player_id,/.test(c.text), 'chat row');
     expect(!(m.warnings || []).some(w => /couldn't be read/.test(w)), 'unreadable orders');
     return p;

@@ -439,7 +439,9 @@ can replay the simulation itself. What the file does carry, and the viewer shows
   takes back the newest order standing at that building, within 10 game minutes. Working the slot out from train times
   did worse, because when an order leaves the queue isn't known. An age line proves its click stood, so it undoes a
   cancel that took that click, and takes the unit it passed over instead.
-- **Not available:** where units are, fights, kills, units alive, villagers per resource, the bank split by resource.
+- **Estimated positions:** see [Unit paths](#unit-paths).
+- **Not available:** where units really are, fights, kills, units alive, villagers per resource, the bank split by
+  resource.
 
 ### Loading a file
 
@@ -486,6 +488,7 @@ visitor having to download a file and drop it in, which is how aoe2insights work
   map: { dimension, terrain: Uint8Array, elevation: Uint8Array },          // row-major, dimension * dimension
   gaia: { gold, stone, relic, tree, forage, fish, herdable, huntable },     // flat [x, y, x, y, ...] arrays
   startObjects: [{ player, unit, x, y }],
+  units: { owner, worker, first, legs },  // estimated paths, see Unit paths
   sizes: [{ [buildingId]: tiles }],      // this game's footprints, by player number (0 is gaia)
   events: [{ t, p, k, ... }],            // what the viewer uses, sorted by t (kinds below)
   apm: { [player]: [actions in minute 0, minute 1, ...] },
@@ -515,6 +518,21 @@ Facts worth keeping (each was measured on 745 replays; the byte layouts are in [
 - Limits refuse a file that holds far more than a real game does (in `replay-parse.js`, with the largest real values
   beside them), and long lists stop at 100,000 rows, above the largest real one (88,005 market rows).
 - Infinite-resource games read a bank of 0 throughout, and a bank can dip below 0.
+
+### Unit paths
+
+The file says where each unit was sent, not where it is. So `units` in the model holds an estimated path for every unit
+that got an order: it walks in a straight line to each destination at a typical speed (1 tile a game second, 0.85 for a
+villager), from wherever it had got to. A starting unit begins where the file puts it. A trained unit first appears
+beside the first unit it was sent with, or else at its player's base. A unit sent to build or to a resource counts as
+a villager, on a layer of its own. With no orders for 2.5 game minutes after arriving, a unit is dropped from the map,
+because the file doesn't say when it died. Same-selection orders resolve as in [actions](replay-format/actions.md).
+
+`units` is `{ owner, worker, first, legs }`: `legs` is flat `[t, x0, y0, x1, y1, arrive]`, and unit i's legs run from
+`first[i]` up to `first[i + 1]`. A typical game has about 6,400 units with orders, around 4 orders each.
+
+The result shows the shape of a game, armies marching and bases growing, but it isn't the game: no pathfinding, no
+speed differences between units, and no fights.
 
 ### Near-live
 
