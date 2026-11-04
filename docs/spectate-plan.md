@@ -12,7 +12,8 @@ The site's spectate features use public data only:
 Never use CaptureAge's code, formats (`.caderec`), keys or certificates, its local gRPC API (CadeRemote), or the
 authenticated Game API or relay. CaptureAge's rich live view comes from a locally running, signed-in game client
 streaming its own simulation; no public source carries live game state (positions, resources, kills). Every public
-live source carries metadata only, and replays exist only after a game ends.
+live source carries metadata only. A recording is written while a game runs, but only on the PC of a real game client
+playing or watching it (see [Near-live](#near-live-not-built)).
 
 So spectating on the site has two halves:
 
@@ -51,27 +52,24 @@ Every request to an external service goes through `server.js`, because the CSP i
 
 See [V1b design](#v1b-design).
 
-### V2: post-game analysis from the public replay
+### V2: replay viewer (this branch)
 
-- Server pipeline: `getReplayFiles` (batches of 10 or fewer, under about 120 requests a minute). Use each signed
-  URL straight away and never log or store it. Gunzip the file, parse it in Node, and cache the result per match.
-- Parser: `aoe2rec-js` (WASM, fastest path to current-patch support) or a JS port of mgz's fast path (MIT,
-  patchable). First prove that current-build recordings parse.
-- Features, in priority order:
-  - exact age-up times;
-  - a build-order timeline;
-  - eAPM per minute;
-  - units and techs queued;
-  - market and tribute logs;
-  - the chat log (public matches only);
-  - a minimap of building placements;
-  - playback with `?t=` share links.
-- Label every estimate (unit paths, idle time, army counts) as an estimate.
+A finished game played back on the site, from its `.aoe2record` file, read in the visitor's browser. The server
+never fetches, stores or sees a replay: the visitor drops in a file from their savegame folder or the ZIP the match
+page's **Download replay** link gives them. See [V2 design](#v2-design).
+
+- `/replay`: drop or pick a file (`.aoe2record`, or the official ZIP holding one).
+- A map of the game: terrain, starting resources, buildings and walls as they are placed, where players send units,
+  and flares.
+- A timeline (play, pause, speeds up to 64x, a scrubber marked with age-ups and resignations).
+- Per player at any moment: resources in the bank (the game's own figure), age, units trained by type, buildings,
+  techs, actions per minute, market trades and tributes. Charts over the game, the build order, the chat.
+- Parser: a JS port of mgz's fast path (MIT), fixed for save versions 67.2, 68 and 68.9, which mgz doesn't cover.
 
 ### Not feasible or not appropriate
 
 - **No public source:** live resources, population, army value, kills, fog, a live minimap or render, or live
-  scrubbing.
+  scrubbing. [Near-live](#near-live-not-built) covers what a real game client watching a game could supply.
 - **Fairness:** watching your own live game.
 - **Licensing:** the game's sprites and sounds, unless the Game Content Usage Rules clearly allow them.
 - **Auto-launching:** opening `aoe2de://` without a user gesture.
@@ -419,3 +417,111 @@ default) and checks:
 - the overlay routes, their headers, and 404s for everything else;
 - that `civ-info.json` is served and well formed, while the build script and docs are not served. It prints the
   civs in play that have no details.
+
+## V2 design
+
+### Why a replay, and what it can show
+
+A recorded game is the list of what each player ordered, with the game time of each order. The game works out what
+happened (units walking, fights, gathering) by running its own engine on those orders, so nothing outside the game
+can replay the simulation itself. What the file does carry, and the viewer shows:
+
+- **Exact:** the map (terrain, elevation, every starting tree, mine, relic and animal), the players (name, civ,
+  colour, team), every order with its time (buildings and walls placed where, units and techs queued, where units
+  were sent, market trades, tributes, flares, resignations), the chat, the moment each player reaches an age (the
+  game announces it as a chat line), each game's building footprints, and, every 500 game steps, each player's
+  resources in the bank (food, wood, gold and stone added together) and their number of objects (units, buildings,
+  walls and foundations). Those samples are 6 to 125 game seconds apart, about once a minute in a big game, so the page
+  says how old the bank figure is.
+- **Estimated, and labelled so:** resources spent (each order's base cost, before civ bonuses; an order the game
+  refused still counts), units trained (queued, not necessarily finished). A cancel names only a queue slot, so it
+  takes back the newest order standing at that building, within 10 game minutes. Working the slot out from train times
+  did worse, because when an order leaves the queue isn't known. An age line proves its click stood, so it undoes a
+  cancel that took that click, and takes the unit it passed over instead.
+- **Not available:** where units are, fights, kills, units alive, villagers per resource, the bank split by resource.
+
+### Loading a file
+
+- `/replay` serves `replay.html`. The visitor drops a file or picks one: an `.aoe2record`, or the ZIP from the match
+  page's **Download replay** (one `.aoe2record` inside, stored or deflated).
+- The page reads the file into memory and hands it to a worker (`replay-worker.js`), which parses it with
+  `replay-parse.js` and returns the model below. The header is raw DEFLATE; the worker inflates it with
+  `DecompressionStream('deflate-raw')`, stopping at 128 MB. Files over 64 MB are refused.
+- Nothing is sent anywhere: the page's only request is `/replay-data.json` (names, costs, terrain colours).
+  Everything from the file goes into the page with `textContent`.
+
+### Parser output
+
+`ReplayParse.parseFile(bytes, inflateRaw, onProgress)` resolves to:
+
+```js
+{
+  file: { game: 'VER 9.4', save: 68.9, build: 188329, complete: true },   // complete: the body ran to its end
+  startedAt: 1793696458,                 // unix seconds, or null
+  duration: 2909034,                     // game milliseconds (the in-game clock)
+  settings: { map, mapSize, dimension, rmsMapId, speed, population, infiniteResources, turbo, treaty, lobby, mod,
+              rated, hiddenCivs },                // speed 'Normal' | 'Fast' ...
+  // startingAge 'dark' ... 'postimperial', per player: a "Standard" start can differ between players and modes
+  players: [{ number, name, profileId, civId, color, team, human, startingAge, start: { x, y }, rating }],
+  map: { dimension, terrain: Uint8Array, elevation: Uint8Array },          // row-major, dimension * dimension
+  gaia: { gold, stone, relic, tree, forage, fish, herdable, huntable },     // flat [x, y, x, y, ...] arrays
+  startObjects: [{ player, unit, x, y }],
+  sizes: [{ [buildingId]: tiles }],      // this game's footprints, by player number (0 is gaia)
+  events: [{ t, p, k, ... }],            // what the viewer uses, sorted by t (kinds below)
+  apm: { [player]: [actions in minute 0, minute 1, ...] },
+  stats: { [player]: [[t, bank, objects], ...] },
+  chat: [{ t, p, text, audience }],
+  warnings: []
+}
+```
+
+Event kinds: `queue {unit, n}`, `research {tech}`, `age {age, label}`, `build {unit, x, y}`,
+`wall {unit, x1, y1, x2, y2}`, `move | attackMove | patrol | attackGround | order {x, y, n, work?}` (n units
+selected; `work` is an order onto a resource), `flare {x, y}`, `buy | sell {resource, amount}`,
+`tribute {to, food, wood, gold, stone}`, `resign {}`. Coordinates are tiles. Cancelled orders are already taken out.
+
+Facts worth keeping (each was measured on 745 replays; the byte layouts are in [replay-format](replay-format/)):
+
+- Tiles are stored row by row: tile (x, y) is index `y * dimension + x` (100% of 911,105 trees sit on forest tiles
+  that way, 33% the other way round).
+- One train order lists every selected building, but trains `amount` units in total, not per building: reading it
+  per building would need players to gather about 47,000 resources in 15 seconds.
+- Age lines arrive a median of 130, 160 and 190 seconds after the click, the game's research times. The line's text
+  is in the recorder's language, and typed chat can copy it, so the parser tells them by `messageAGP`'s tag and
+  counts ages in order.
+- AI commands are in the file. Actions per minute count humans only, leave out what the client sends by itself, and
+  count a mass delete, town bell or tribute once per instant, because one key press sends a record per object.
+- Limits refuse a file that holds far more than a real game does (in `replay-parse.js`, with the largest real values
+  beside them), and long lists stop at 100,000 rows, above the largest real one (88,005 market rows).
+- Infinite-resource games read a bank of 0 throughout, and a bank can dip below 0.
+
+### Near-live (not built)
+
+Researched on 4 Nov 2026, after the first version of this plan called live stats impossible.
+
+- **It exists elsewhere.** [aoe2recs.com](https://aoe2recs.com/), the Spectator Dashboard, shows games in progress
+  with each player's current age, their top three units and the in-game chat, updating live, for about seven games at
+  a time, nearly all with top-rated players. It shows no resources, unit positions or live map. It doesn't say how it
+  works; in-game chat is in no public API, so the data almost certainly comes from real game clients watching those
+  games. A community catalog infers the same, and the small number of games fits one client per game.
+- **What the files show.** Every one of 744 replays was created when its game started and last written when it
+  ended, including the 9 the account only watched. A watched recording holds the game from its first second even when
+  the watcher joined late, in the same format as a played one, so `replay-parse.js` reads it. It parses in about
+  150 ms, and it reads a file that stops mid-game.
+- **Proven on a running game (4 Nov 2026):** the file grew by about 1.3 KB a second with its last-write time current,
+  and `replay-parse.js` read it while the game was writing it, in about 100 ms a read. Between reads 8 seconds apart the
+  game clock, the orders and the bank rows all moved on. Whether that game was played or watched wasn't recorded, so
+  a watched game's file growing the same way is still to be confirmed.
+- **Routes:**
+  - Follow on your own PC: the page re-reads the growing file (File System Access API, Chrome and Edge). Only useful
+    to someone with the game open.
+  - A spectator PC: a PC or Windows server running the real game watches chosen games and uploads the recording, so
+    any visitor can follow in the browser with no game. One game per running copy; it needs a game licence and account,
+    and the game's terms must be checked before automating it.
+  - Ask aoe2recs' operator for permission to use their live feed: top games only, and only what they show.
+- **Hard rule:** a recording of a game you're playing holds every player's orders with no delay, so a live view of it
+  would be a cheat tool. Any live feature must refuse those games. The file doesn't say so itself (`recordingPlayer`
+  reads 1 for a watcher), so it would have to compare the game clock with the live feed's start time.
+- **Still impossible on a website:** unit positions, fights and kills need the game's engine. CaptureAge has them by
+  running the real game on the same PC.
+

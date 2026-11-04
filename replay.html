@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AoE2 Replay Viewer – Watch a Game in Your Browser | AoE2Lobby.online</title>
+    <meta name="description" content="Watch an Age of Empires II: DE replay in your browser: the map, every building, where armies were sent, resources in the bank, ages, units, techs and chat. The file never leaves your computer.">
+    <link rel="canonical" href="https://aoe2lobby.online/replay">
+    <meta name="robots" content="index, follow">
+    <meta name="theme-color" content="#0d1117">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="manifest" href="/site.webmanifest">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="AoE2Lobby.online">
+    <meta property="og:title" content="AoE2 Replay Viewer – AoE2Lobby.online">
+    <meta property="og:description" content="Play back an Age of Empires II: DE replay in your browser: map, buildings, armies, resources, ages and chat.">
+    <meta property="og:url" content="https://aoe2lobby.online/replay">
+    <meta property="og:image" content="https://aoe2lobby.online/og-image.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="stylesheet" href="/styles.css?v=27">
+    <link rel="stylesheet" href="/replay.css?v=1">
+</head>
+<body>
+    <div class="bg-shape shape-1"></div>
+    <div class="bg-shape shape-2"></div>
+    <div class="bg-shape shape-3"></div>
+
+    <div class="app-container">
+        <header class="navbar">
+            <a class="nav-logo nav-logo-link" href="/">
+                <span class="logo-icon">🛡️</span>
+                <h1>AoE2<span>Lobby</span> <small class="nav-tagline">Replay viewer</small></h1>
+            </a>
+        </header>
+
+        <main class="main-content rv-main">
+            <!-- Picking a file. The page works on the file in this browser; nothing is uploaded -->
+            <section id="rvLoad" class="glass-panel rv-load">
+                <h2>Watch a replay</h2>
+                <p class="rv-lead">Play back a finished Age of Empires II: DE game: the map, every building, where players
+                    sent their units, resources in the bank, ages, units, techs and the chat.</p>
+                <div id="rvDrop" class="rv-drop">
+                    <p class="rv-drop-title">Drop a replay here</p>
+                    <p><button type="button" id="rvPick" class="btn-join">Choose a file</button></p>
+                    <input type="file" id="rvFile" accept=".aoe2record,.zip,application/zip" hidden>
+                    <p class="match-note">An <code>.aoe2record</code> file, or the ZIP from a match page's
+                        <strong>Download replay</strong>. It's read in your browser and never uploaded.</p>
+                </div>
+                <p id="rvStatus" class="rv-status" role="status" aria-live="polite"></p>
+                <details class="rv-where">
+                    <summary>Where do I find replays?</summary>
+                    <ul>
+                        <li><strong>Your own games:</strong> the game saves them in
+                            <code>Games\Age of Empires 2 DE\&lt;your id&gt;\savegame</code> in your user folder.
+                            Games you watched in the game are there too.</li>
+                        <li><strong>A game you watched here:</strong> once it ends, its match page has a
+                            <strong>Download replay</strong> link. Drop the ZIP it gives you here.</li>
+                    </ul>
+                </details>
+                <details class="rv-where">
+                    <summary>What it can and can't show</summary>
+                    <p>A replay holds what each player ordered, not what happened: the game works that out by
+                        running its engine. So this page shows the orders (buildings placed, units and techs queued,
+                        where units were sent) plus what the game writes into the file itself: when each player
+                        reaches an age and, every few seconds to two minutes, their resources in the bank and how many
+                        units and buildings they have. It can't show units moving, fights or kills. Totals worked out
+                        from orders, such as resources spent, are estimates, and are labelled so.</p>
+                </details>
+            </section>
+
+            <!-- The game, filled in by replay.js -->
+            <section id="rvView" class="rv-view" hidden></section>
+        </main>
+    </div>
+
+    <script src="/replay.js?v=1"></script>
+    <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
+</body>
+</html>

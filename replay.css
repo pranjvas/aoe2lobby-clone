@@ -1,0 +1,795 @@
+/* Replay viewer (/replay). Builds on styles.css (tokens, navbar, panels, buttons); everything here is rv- prefixed */
+
+:root {
+    --rv-surface: #0f141b;          /* chart and map backdrop */
+    --rv-grid: rgba(255, 255, 255, 0.07);
+    --rv-axis: rgba(255, 255, 255, 0.16);
+    --rv-muted: #7d8da1;
+    --rv-food: #e0714f;
+    --rv-wood: #a27a4f;
+    --rv-gold: #e2bd3c;
+    --rv-stone: #9aa4ae;
+}
+
+.nav-logo-link {
+    color: inherit;
+    text-decoration: none;
+}
+
+.rv-main {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+/* A display rule below would otherwise beat the hidden attribute */
+.rv-main [hidden] {
+    display: none !important;
+}
+
+.rv-main code {
+    font-size: 0.85em;
+    background: rgba(255, 255, 255, 0.06);
+    padding: 0.05em 0.35em;
+    border-radius: 4px;
+    word-break: break-word;
+}
+
+/* ---------------------------------------------------------------- picking a file */
+.rv-load {
+    padding: 1.75rem;
+    max-width: 860px;
+    width: 100%;
+    margin: 0 auto;
+}
+
+.rv-load h2 {
+    font-family: var(--font-heading);
+    color: var(--gold-primary);
+    font-size: 1.6rem;
+    margin-bottom: 0.4rem;
+}
+
+.rv-lead {
+    color: var(--text-secondary);
+    margin-bottom: 1.25rem;
+}
+
+.rv-drop {
+    border: 2px dashed rgba(212, 175, 55, 0.35);
+    border-radius: 12px;
+    padding: 1.75rem 1.25rem;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    align-items: center;
+    transition: var(--transition);
+}
+
+.rv-drop-title {
+    font-size: 1.15rem;
+    font-weight: 600;
+}
+
+.rv-dragging .rv-drop {
+    border-color: var(--gold-primary);
+    background: var(--gold-dim);
+}
+
+.rv-status {
+    margin-top: 1rem;
+    min-height: 1.6em;
+    color: var(--text-secondary);
+}
+
+.rv-status.rv-error {
+    color: #f87171;
+}
+
+.rv-where {
+    margin-top: 0.75rem;
+    color: var(--text-secondary);
+    font-size: 0.92rem;
+}
+
+.rv-where summary {
+    cursor: pointer;
+    color: var(--text-primary);
+}
+
+.rv-where ul,
+.rv-where p {
+    margin: 0.5rem 0 0 1.2rem;
+}
+
+.rv-where p {
+    margin-left: 0;
+}
+
+.rv-where li {
+    margin-bottom: 0.35rem;
+}
+
+/* ---------------------------------------------------------------- the game */
+.rv-view {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.rv-head {
+    padding: 1rem 1.25rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1.5rem;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.rv-head h2 {
+    font-family: var(--font-heading);
+    color: var(--gold-primary);
+    font-size: 1.4rem;
+    line-height: 1.25;
+}
+
+.rv-meta {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.rv-notes {
+    color: var(--rv-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.rv-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+    gap: 1rem;
+    align-items: start;
+}
+
+@media (max-width: 1100px) {
+    .rv-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+/* ------------------------------------------------ map */
+.rv-map-panel {
+    padding: 0.75rem;
+    position: sticky; /* stays in view beside a long list of players */
+    top: 0.5rem;
+}
+
+@media (max-width: 1100px) {
+    .rv-map-panel {
+        position: relative;
+        top: auto;
+    }
+}
+
+.rv-map-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 2 / 1;
+    background: var(--rv-surface);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.rv-map-wrap canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    touch-action: pan-y;
+    cursor: grab;
+}
+
+.rv-map-tip {
+    position: absolute;
+    pointer-events: none;
+    background: rgba(10, 12, 16, 0.92);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 0.35rem 0.55rem;
+    font-size: 0.8rem;
+    line-height: 1.35;
+    max-width: 260px;
+    z-index: 2;
+}
+
+.rv-layers {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1rem;
+    margin-top: 0.6rem;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.rv-layers label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    cursor: pointer;
+}
+
+.rv-layers input {
+    accent-color: var(--gold-primary);
+}
+
+.rv-marks-key {
+    margin-top: 0.3rem;
+    font-size: 0.78rem;
+}
+
+.rv-mark-key {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.rv-key {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+}
+
+.rv-zoom {
+    display: inline-flex;
+    gap: 0.25rem;
+    margin-left: auto;
+}
+
+.rv-zoom-btn {
+    padding: 0.1rem 0.5rem;
+    font-size: 0.8rem;
+    min-width: 1.7rem;
+}
+
+.rv-map-note {
+    font-size: 0.78rem;
+    color: var(--rv-muted);
+    margin-top: 0.4rem;
+}
+
+/* ------------------------------------------------ players */
+.rv-players {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.rv-team {
+    padding: 0.6rem 0.75rem 0.75rem;
+}
+
+.rv-team-name {
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--rv-muted);
+    margin-bottom: 0.4rem;
+}
+
+.rv-team-players {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 0.5rem;
+}
+
+.rv-player {
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 0.55rem 0.65rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    min-width: 0;
+}
+
+.rv-player.rv-out {
+    opacity: 0.55;
+}
+
+.rv-player-head {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+}
+
+.rv-player-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.rv-player-civ {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    white-space: nowrap;
+    margin-left: auto;
+}
+
+.rv-player-sub {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.15rem 0.6rem;
+    font-size: 0.78rem;
+    color: var(--rv-muted);
+}
+
+.rv-age {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.rv-tag-out {
+    color: #f87171;
+}
+
+.rv-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.25rem 0.5rem;
+}
+
+.rv-stat {
+    min-width: 0;
+}
+
+.rv-stat-value {
+    font-weight: 600;
+    font-size: 1.02rem;
+    line-height: 1.2;
+}
+
+.rv-stat-label {
+    font-size: 0.7rem;
+    color: var(--rv-muted);
+    line-height: 1.25;
+}
+
+.rv-spent {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.1rem 0.6rem;
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+}
+
+.rv-res {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.rv-res::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.rv-res-food::before { background: var(--rv-food); }
+.rv-res-wood::before { background: var(--rv-wood); }
+.rv-res-gold::before { background: var(--rv-gold); }
+.rv-res-stone::before { background: var(--rv-stone); }
+
+.rv-army {
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+/* ------------------------------------------------ timeline */
+.rv-timeline {
+    padding: 0.75rem 1rem;
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    gap: 0.75rem;
+    align-items: center;
+    position: sticky;
+    bottom: 0.5rem;
+    z-index: 5;
+    background: rgba(13, 17, 23, 0.92);
+}
+
+.rv-play {
+    width: 2.6rem;
+    height: 2.6rem;
+    border-radius: 50%;
+    border: 1px solid var(--gold-primary);
+    background: rgba(212, 175, 55, 0.12);
+    color: var(--gold-primary);
+    font-size: 1rem;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+}
+
+.rv-play:hover {
+    background: rgba(212, 175, 55, 0.22);
+}
+
+.rv-play:focus-visible,
+.rv-tab:focus-visible,
+.rv-speed:focus-visible,
+.rv-scrub:focus-visible {
+    outline: 2px solid var(--gold-primary);
+    outline-offset: 2px;
+}
+
+.rv-clock {
+    font-variant-numeric: tabular-nums;
+    font-size: 0.95rem;
+    white-space: nowrap;
+}
+
+.rv-clock-total {
+    color: var(--rv-muted);
+}
+
+.rv-track {
+    position: relative;
+    height: 2.4rem;
+    min-width: 0;
+}
+
+.rv-marks {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 1rem;
+}
+
+.rv-mark {
+    position: absolute;
+    top: 2px;
+    width: 3px;
+    height: 0.75rem;
+    border-radius: 2px;
+    transform: translateX(-1px);
+}
+
+.rv-mark-resign {
+    width: 9px;
+    height: 9px;
+    top: 3px;
+    border-radius: 50%;
+    border: 2px solid var(--rv-surface);
+    transform: translateX(-4px);
+}
+
+.rv-scrub {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    accent-color: var(--gold-primary);
+    cursor: pointer;
+}
+
+.rv-speed {
+    background: rgba(0, 0, 0, 0.3);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 0.35rem 0.4rem;
+    font-family: var(--font-body);
+}
+
+@media (max-width: 640px) {
+    .rv-timeline {
+        grid-template-columns: auto minmax(0, 1fr) auto;
+    }
+    .rv-track {
+        grid-column: 1 / -1;
+        grid-row: 2;
+    }
+}
+
+/* ------------------------------------------------ tabs */
+.rv-tabs-panel {
+    padding: 0.75rem 1rem 1rem;
+}
+
+.rv-tablist {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 0.9rem;
+}
+
+.rv-tab {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-family: var(--font-body);
+    font-size: 0.92rem;
+    padding: 0.5rem 0.8rem;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+}
+
+.rv-tab[aria-selected="true"] {
+    color: var(--gold-primary);
+    border-bottom-color: var(--gold-primary);
+}
+
+.rv-panel-note {
+    font-size: 0.82rem;
+    color: var(--rv-muted);
+    margin-bottom: 0.75rem;
+}
+
+/* ------------------------------------------------ charts */
+.rv-charts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+    gap: 1rem;
+}
+
+.rv-chart {
+    background: var(--rv-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 0.75rem 0.75rem 0.5rem;
+    min-width: 0;
+}
+
+.rv-chart h3 {
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.rv-chart-sub {
+    font-size: 0.76rem;
+    color: var(--rv-muted);
+    margin-bottom: 0.4rem;
+}
+
+.rv-chart-plot {
+    position: relative;
+}
+
+.rv-chart svg {
+    display: block;
+    width: 100%;
+    height: 220px; /* drawn at its real width, so 11 px text stays 11 px */
+    overflow: hidden;
+}
+
+.rv-chart-tip {
+    position: absolute;
+    top: 0;
+    pointer-events: none;
+    background: rgba(10, 12, 16, 0.95);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.76rem;
+    line-height: 1.4;
+    z-index: 3;
+    white-space: nowrap;
+}
+
+.rv-chart-tip-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.rv-chart-tip-row strong {
+    min-width: 3.2em;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.rv-line-key {
+    display: inline-block;
+    width: 12px;
+    height: 2px;
+    border-radius: 1px;
+}
+
+.rv-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 0.4rem;
+    margin-top: 0.4rem;
+}
+
+.rv-legend button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 0.76rem;
+    padding: 0.1rem 0.35rem;
+    cursor: pointer;
+}
+
+.rv-legend button[aria-pressed="true"] {
+    border-color: var(--border-hover);
+    color: var(--text-primary);
+}
+
+.rv-legend button:focus-visible {
+    outline: 2px solid var(--gold-primary);
+}
+
+.rv-table-toggle {
+    margin-top: 0.4rem;
+    font-size: 0.76rem;
+}
+
+.rv-table-toggle summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+}
+
+/* ------------------------------------------------ tables and lists */
+.rv-table-wrap {
+    overflow-x: auto;
+    max-width: 100%;
+}
+
+.rv-table {
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    width: 100%;
+}
+
+.rv-table th,
+.rv-table td {
+    padding: 0.3rem 0.5rem;
+    border-bottom: 1px solid var(--rv-grid);
+    text-align: left;
+    white-space: nowrap;
+}
+
+.rv-table td.rv-num,
+.rv-table th.rv-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.rv-table thead th {
+    color: var(--text-secondary);
+    font-weight: 500;
+    position: sticky;
+    top: 0;
+    background: var(--rv-surface);
+}
+
+.rv-table .rv-zero {
+    color: rgba(255, 255, 255, 0.2);
+}
+
+.rv-pick-player {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-bottom: 0.75rem;
+}
+
+.rv-pick-player button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 0.3rem 0.6rem;
+    cursor: pointer;
+}
+
+.rv-pick-player button[aria-pressed="true"] {
+    border-color: var(--gold-primary);
+    color: var(--text-primary);
+}
+
+.rv-log {
+    list-style: none;
+    max-height: 460px;
+    overflow-y: auto;
+    font-size: 0.86rem;
+}
+
+.rv-log li {
+    display: grid;
+    grid-template-columns: 3.6rem minmax(0, 1fr);
+    gap: 0.6rem;
+    padding: 0.22rem 0.25rem;
+    border-bottom: 1px solid var(--rv-grid);
+}
+
+.rv-log li.rv-future {
+    opacity: 0.4;
+}
+
+.rv-log li.rv-now {
+    background: var(--gold-dim);
+}
+
+.rv-log-time {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    background: none;
+    border: none;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    padding: 0;
+}
+
+.rv-log-time:hover,
+.rv-log-time:focus-visible {
+    color: var(--gold-primary);
+    text-decoration: underline;
+}
+
+.rv-log-body {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.rv-log-who {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-weight: 600;
+    margin-right: 0.35rem;
+}
+
+.rv-log-aud {
+    color: var(--rv-muted);
+    font-size: 0.78rem;
+    margin-right: 0.35rem;
+}
+
+.rv-log-kind {
+    color: var(--rv-muted);
+    font-size: 0.78rem;
+}
+
+.rv-empty {
+    color: var(--rv-muted);
+    font-size: 0.88rem;
+    padding: 0.5rem 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .rv-drop {
+        transition: none;
+    }
+}

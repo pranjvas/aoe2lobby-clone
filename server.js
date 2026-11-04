@@ -14,6 +14,7 @@ const API_PORT = process.env.API_PORT || 3002;
 const HOST = process.env.HOST || '127.0.0.1';
 const PUBLIC_FILES = new Set([
     '/index.html', '/app.js', '/styles.css', '/overlay.js', '/overlay.css', '/civ-info.json', '/favicon.png',
+    '/replay.js', '/replay.css', '/replay-parse.js', '/replay-worker.js', '/replay-data.json', // the replay viewer (/replay)
     '/favicon-32.png', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/og-image.png', '/site.webmanifest',
     '/robots.txt', '/sitemap.xml',
     '/fonts/cinzel-variable.woff2', '/fonts/outfit-variable.woff2', '/fonts/cinzel-ext.woff2', '/fonts/outfit-ext.woff2', '/fonts/OFL.txt', // self-hosted fonts
@@ -891,17 +892,18 @@ async function serveSpectatePage(res, id) {
     res.end(html);
 }
 
-// /overlay/<matchId> and /overlay/player/<profileId>: the caster overlay (an OBS browser source), never indexed
-async function serveOverlayPage(res) {
+// A page served under a route of its own: /overlay/<matchId> and /overlay/player/<profileId> (the caster overlay,
+// an OBS browser source, never indexed), and /replay (the replay viewer)
+async function serveHtmlPage(res, file, noindex) {
     let html;
     try {
-        html = await fs.promises.readFile(path.join(__dirname, 'overlay.html'));
+        html = await fs.promises.readFile(path.join(__dirname, file));
     } catch (e) {
         res.writeHead(e.code === 'ENOENT' ? 404 : 500);
         res.end(e.code === 'ENOENT' ? 'File not found' : 'Server error: ' + e.code);
         return;
     }
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Robots-Tag': 'noindex' });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...(noindex ? { 'X-Robots-Tag': 'noindex' } : {}) });
     res.end(html);
 }
 
@@ -1347,6 +1349,7 @@ async function handleRequest(req, res) {
     // Spectate routes match the whole path (the query string is dropped): "/api/spectate", "/api/spectate/index",
     // "/api/spectate/<id>", "/api/spectate/player/<profileId>", and the pages "/spectate/<id>", "/overlay/<id>" and
     // "/overlay/player/<profileId>" with an optional trailing slash. Anything else under them is a 404, never a static file.
+    // "/replay" is the replay viewer's page.
     const pathname = req.url.split('?')[0];
     if (pathname === '/api/spectate') {
         await serveSpectateList(res);
@@ -1374,7 +1377,11 @@ async function handleRequest(req, res) {
             res.end('File not found');
             return;
         }
-        await serveOverlayPage(res);
+        await serveHtmlPage(res, 'overlay.html', true);
+        return;
+    }
+    if (pathname === '/replay' || pathname === '/replay/') {
+        await serveHtmlPage(res, 'replay.html', false);
         return;
     }
     if (pathname.startsWith('/api/spectate/')) {

@@ -13,6 +13,7 @@ SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 FILES=(
   package.json package-lock.json ecosystem.config.js server.js scraper.js
   index.html app.js styles.css overlay.html overlay.js overlay.css civ-info.json fonts
+  replay.html replay.js replay.css replay-parse.js replay-worker.js replay-data.json
   favicon.png favicon-32.png apple-touch-icon.png icon-192.png icon-512.png og-image.png
   site.webmanifest robots.txt sitemap.xml 7e7c007e5148f7d5a2953120e8410d70.txt
 )
