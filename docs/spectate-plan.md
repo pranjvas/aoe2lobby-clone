@@ -555,8 +555,13 @@ own PC is built, as [Live follow](#live-follow); the other routes aren't.
   150 ms, and it reads a file that stops mid-game.
 - **Proven on a running game (4 Nov 2026):** the file grew by about 1.3 KB a second with its last-write time current,
   and `replay-parse.js` read it while the game was writing it, in about 100 ms a read. Between reads 8 seconds apart the
-  game clock, the orders and the bank rows all moved on. That game was one the account played, so a watched game's
-  file growing the same way is still to be confirmed.
+  game clock, the orders and the bank rows all moved on. A game the account only watched did the same: joined through
+  `aoe2de://1/<id>`, its recording appeared 22 seconds later, read as `watched`, and grew by about 1.2 KB a second.
+- **A watcher starts at 0:00.** That game was 28 minutes in, but the recording began at the start and ran at game speed
+  (1.6 game minutes a minute). So the newest moment is wherever the watching client has got to, not the real game, until
+  it's fast-forwarded in the game.
+- **Not tested:** Chrome's folder dialog, and Chrome reading a file the game has open. The dialog can't be automated
+  here. Node reads the file while the game writes it.
 - **Routes:**
   - Follow on your own PC: the page re-reads the growing file (File System Access API, Chrome and Edge). Only useful
     to someone with the game open. Built.
@@ -566,6 +571,12 @@ own PC is built, as [Live follow](#live-follow); the other routes aren't.
   - Ask aoe2recs' operator for permission to use their live feed: top games only, and only what they show.
 - **Hard rule:** a recording of a game you're playing holds every player's orders with no delay, so a live view of it
   would be a cheat tool. Any live feature must refuse those games.
+- **On this VPS (6 cores, 11 GB, no GPU), not built:** a real game client could in theory run under Proton with a software
+  renderer. Nothing can be offloaded to visitors' browsers: the game draws inside itself, and only needs to run, since
+  browsers draw the map from the recording. What stands in the way is a second game account (one can't be in two
+  places), logging it in, something to press Spectate unattended (Microsoft's agreement rules out "automating
+  inauthentic activity", and the game's own licence hasn't been read), and sharing a server with the site.
+- **Dropped:** an installed station program on a PC. The owner ruled out client software.
 - **Still impossible on a website:** unit positions, fights and kills need the game's engine. CaptureAge has them by
   running the real game on the same PC.
 
