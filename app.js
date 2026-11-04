@@ -1605,9 +1605,9 @@ function matchFoundHtml(g, r) {
     // The aoe.ms link redirects to the official replay download. A lobby set not to record is only the host's setting:
     // other players' uploads still count
     const replay = (r.replay.available && isMatchId(g.id))
-        ? `<p class="match-replay"><a class="btn-join" href="https://aoe.ms/replay/?gameId=${g.id}&amp;profileId=${r.replay.profileId}" rel="noopener">Download replay</a>
-                <a class="btn-view" href="/replay">Open the replay viewer</a>
-                <span class="match-note">Downloads the official replay ZIP (an .aoe2record file) from Age of Empires. Drop it into the replay viewer to watch the game here: the map, buildings, armies, resources, ages and chat.</span></p>`
+        ? `<p class="match-replay"><a class="btn-join" href="/replay?match=${g.id}">Watch this game</a>
+                <a class="btn-view" href="https://aoe.ms/replay/?gameId=${g.id}&amp;profileId=${r.replay.profileId}" rel="noopener">Download replay</a>
+                <span class="match-note">Plays the game back here: the map, buildings, where units were sent, resources, ages and chat. Download replay gives you the official ZIP (an .aoe2record file).</span></p>`
         : g.record === false ? '<p class="match-note">This lobby didn\'t record a replay.</p>'
             : '<p class="match-note">No replay was uploaded for this game.</p>';
     return `

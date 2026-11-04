@@ -892,6 +892,83 @@ async function serveSpectatePage(res, id) {
     res.end(html);
 }
 
+// --- Replays: /api/replay/<matchId> ------------------------------------------------------------------------
+// The official replay ZIP of a finished game, for the viewer. It takes only a match id: the game must be one this server
+// has seen end, and the link is built from that game's own result, so nobody can point it at anything else. The link
+// redirects to the file, and that address is never logged or kept. Files stay in memory for a short while, so
+// everyone opening a shared game costs one download.
+const REPLAY_MAX_BYTES = 32 * 1024 * 1024;
+const REPLAY_TIMEOUT_MS = 30000;
+const REPLAY_FETCHES_PER_MINUTE = 30;
+const REPLAY_KEEP_MS = 30 * 60 * 1000;
+const REPLAY_KEEP_BYTES = 64 * 1024 * 1024;
+const replayFiles = new Map(); // match id -> { body, at }, oldest first
+const replayFetches = new Map(); // match id -> the download in progress
+let replayWindow = { startedAt: 0, count: 0 };
+
+function keepReplay(id, body) {
+    replayFiles.set(id, { body, at: Date.now() });
+    let bytes = 0;
+    for (const file of replayFiles.values()) bytes += file.body.length;
+    for (const [oldId, file] of replayFiles) {
+        if (bytes <= REPLAY_KEEP_BYTES && Date.now() - file.at < REPLAY_KEEP_MS) break;
+        bytes -= file.body.length;
+        replayFiles.delete(oldId);
+    }
+}
+
+async function downloadReplay(id, profileId) {
+    const res = await fetch(`https://aoe.ms/replay/?gameId=${id}&profileId=${profileId}`, { signal: AbortSignal.timeout(REPLAY_TIMEOUT_MS) });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of res.body) {
+        size += chunk.length;
+        if (size > REPLAY_MAX_BYTES) throw new Error('too large');
+        chunks.push(chunk);
+    }
+    const body = Buffer.concat(chunks);
+    if (body.length < 4 || body[0] !== 0x50 || body[1] !== 0x4b) throw new Error('not a ZIP');
+    return body;
+}
+
+async function serveReplay(res, id) {
+    const refuse = (status, error, headers = {}) => {
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers });
+        res.end(JSON.stringify({ error }));
+    };
+    const cache = await freshSpectate();
+    const found = spectateGameById(cache, id);
+    if (found.status === 'live') return refuse(409, 'live');
+    if (!found.ended) return refuse(404, 'unknown');
+    startResultLookup(found.ended);
+    if (found.ended.lookup) await settleWithin(found.ended.lookup, RESULT_WAIT_MS);
+    const result = found.ended.result;
+    if (!result || result.state !== 'found') return refuse(404, 'pending');
+    if (!result.replay || !result.replay.available) return refuse(404, 'none');
+    const kept = replayFiles.get(id);
+    let body = kept && Date.now() - kept.at < REPLAY_KEEP_MS ? kept.body : null;
+    if (!body) {
+        let download = replayFetches.get(id);
+        if (!download) {
+            if (Date.now() - replayWindow.startedAt > 60000) replayWindow = { startedAt: Date.now(), count: 0 };
+            if (++replayWindow.count > REPLAY_FETCHES_PER_MINUTE) return refuse(429, 'busy', { 'Retry-After': '60' });
+            download = downloadReplay(id, result.replay.profileId).finally(() => replayFetches.delete(id));
+            replayFetches.set(id, download);
+        }
+        try {
+            body = await download;
+        } catch (e) {
+            // The name alone: a message could carry the address
+            console.error(`Replay of ${id} failed: ${e.name}`);
+            return refuse(502, 'failed');
+        }
+        keepReplay(id, body);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': body.length, 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' });
+    res.end(body);
+}
+
 // A page served under a route of its own: /overlay/<matchId> and /overlay/player/<profileId> (the caster overlay,
 // an OBS browser source, never indexed), and /replay (the replay viewer)
 async function serveHtmlPage(res, file, noindex) {
@@ -1378,6 +1455,16 @@ async function handleRequest(req, res) {
             return;
         }
         await serveHtmlPage(res, 'overlay.html', true);
+        return;
+    }
+    if (pathname.startsWith('/api/replay/')) {
+        const id = pathname.slice('/api/replay/'.length);
+        if (!isMatchId(id)) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Not a match id' }));
+            return;
+        }
+        await serveReplay(res, Number(id));
         return;
     }
     if (pathname === '/replay' || pathname === '/replay/') {

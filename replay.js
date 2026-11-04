@@ -35,6 +35,7 @@ let game = null;                  // the parsed replay plus what the viewer deri
 let view = null;                  // the built page: elements, map, charts
 let currentLoad = null;           // the file being read: a newer one replaces it
 let follow = null;                // the running game being followed: { handle, size, changedAt, timer, failures, shown }
+let matchFetch = null;            // the download of ?match=<id>, which a file opened meanwhile cancels
 const clockState = { t: 0, playing: false, speed: 8, lastFrame: 0, lastCards: 0, frame: 0 };
 
 // ------------------------------------------------------------------ small helpers
@@ -144,6 +145,7 @@ async function openFile(file) {
     if (file.size > MAX_FILE_BYTES) { status('That file is too big to be a replay (over 64 MB).', true); return; }
     if (file.size < 64) { status('That file is too small to be a replay.', true); return; }
     // Only a file that will really be read replaces the one being read
+    if (matchFetch) matchFetch.abort();
     stopFollowing();
     if (currentLoad && currentLoad.stop) currentLoad.stop();
     const load = currentLoad = { stop: null };
@@ -170,6 +172,36 @@ async function openFile(file) {
             $('rvPick').disabled = false;
             $('rvFile').value = '';
         }
+    }
+}
+
+const MATCH_ERRORS = {
+    live: 'That game is still being played. Its replay can be opened here once it ends.',
+    pending: 'That game\'s result isn\'t in yet, which can take a few minutes. Try again shortly.',
+    none: 'Nobody uploaded a replay of that game.',
+    unknown: 'This site only keeps a game for 2 hours after it ends, so it can\'t fetch that one any more. If you have the replay file, drop it here.',
+    busy: 'Too many replays are being fetched right now. Try again in a minute.'
+};
+
+// /replay?match=<id>: the server fetches the official replay of a game that has ended. The file is then read here
+// like a dropped one. It's dated long ago because the game is known to be over, so it isn't taken for a running game.
+async function openMatch(id) {
+    const fetching = matchFetch = new AbortController();
+    status('Fetching the replay…');
+    try {
+        const r = await fetch(`/api/replay/${id}`, { signal: fetching.signal });
+        if (!r.ok) {
+            const answer = await r.json().catch(() => ({}));
+            status(MATCH_ERRORS[answer.error] || 'That replay couldn\'t be fetched. Try again in a minute.', true);
+            return;
+        }
+        const blob = await r.blob();
+        matchFetch = null;
+        openFile(new File([blob], `Game ${id}`, { lastModified: 0 }));
+    } catch (e) {
+        if (e.name !== 'AbortError') status('That replay couldn\'t be fetched. Try again in a minute.', true);
+    } finally {
+        if (matchFetch === fetching) matchFetch = null;
     }
 }
 
@@ -354,7 +386,8 @@ function buildHead() {
     const g = game, s = g.settings;
     const head = el('header', 'glass-panel rv-head');
     const left = el('div');
-    const title = el('h2', null, s.map || (gameData.maps && gameData.maps[s.rmsMapId]) || 'Unknown map');
+    // The file names a built-in map in the recorder's language; the table has it in English
+    const title = el('h2', null, (gameData.maps && gameData.maps[s.rmsMapId]) || s.map || 'Unknown map');
     title.tabIndex = -1;
     const meta = [formatLabel(g)];
     if (s.mapSize) meta.push(s.mapSize);
@@ -1648,3 +1681,5 @@ window.addEventListener('pointercancel', endScrub);
 
 wireLoading();
 loadGameData();
+const matchId = new URLSearchParams(location.search).get('match');
+if (/^\d{1,15}$/.test(matchId || '')) openMatch(matchId);

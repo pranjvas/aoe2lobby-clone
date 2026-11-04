@@ -45,7 +45,8 @@
                     <p><button type="button" id="rvPick" class="btn-join">Choose a file</button></p>
                     <input type="file" id="rvFile" accept=".aoe2record,.zip,application/zip" hidden>
                     <p class="match-note">An <code>.aoe2record</code> file, or the ZIP from a match page's
-                        <strong>Download replay</strong>. It's read in your browser and never uploaded.</p>
+                        <strong>Download replay</strong>. A file you drop here is read in your browser and never
+                        uploaded.</p>
                 </div>
                 <!-- Shown where a page can read a folder: Chrome and Edge on a computer -->
                 <div id="rvFollow" class="rv-follow" hidden>
@@ -62,8 +63,9 @@
                         <li><strong>Your own games:</strong> the game saves them in
                             <code>Games\Age of Empires 2 DE\&lt;your id&gt;\savegame</code> in your user folder.
                             Games you watched in the game are there too.</li>
-                        <li><strong>A game you watched here:</strong> once it ends, its match page has a
-                            <strong>Download replay</strong> link. Drop the ZIP it gives you here.</li>
+                        <li><strong>A game on this site:</strong> once it ends, its match page has
+                            <strong>Watch this game</strong>, which opens it here with no file needed, for 2 hours
+                            after it ends. <strong>Download replay</strong> gives you the file to keep.</li>
                     </ul>
                 </details>
                 <details class="rv-where">
@@ -82,7 +84,7 @@
         </main>
     </div>
 
-    <script src="/replay.js?v=3"></script>
+    <script src="/replay.js?v=4"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>

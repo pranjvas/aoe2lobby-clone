@@ -67,6 +67,18 @@ async function serverChecks() {
         check('replay-data.json cached for at most a day', /max-age=86400/.test(data.cache), data.cache);
     }
     for (const p of ['/tools/build-replay-data.js', '/qa/replay-check.js', '/docs/spectate-plan.md']) check(`${p} is not served`, (await get(p)).status === 404);
+    // The replay fetcher takes a known game's id and nothing else
+    for (const p of ['/api/replay/abc', '/api/replay/', '/api/replay/1/2', '/api/replay/..%2f..%2fserver.js', '/api/replay/https%3A%2F%2Fexample.com']) {
+        const r = await get(p);
+        check(`${p} is refused`, r.status === 404 && /json/.test(r.type), r.status);
+    }
+    const unknown = await get('/api/replay/999999999999999');
+    check('an unknown game is refused', unknown.status === 404 && /"unknown"/.test(unknown.body), unknown.body.slice(0, 80));
+    const games = JSON.parse((await get('/api/spectate/index')).body).games || [];
+    if (games.length) {
+        const r = await get(`/api/replay/${games[0].id}`);
+        check('a game in progress is refused', r.status === 409 && /"live"/.test(r.body), r.status);
+    }
 }
 
 // ------------------------------------------------------------------ parse mode

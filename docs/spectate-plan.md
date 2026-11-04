@@ -54,11 +54,12 @@ See [V1b design](#v1b-design).
 
 ### V2: replay viewer (this branch)
 
-A finished game played back on the site, from its `.aoe2record` file, read in the visitor's browser. The server
-never fetches, stores or sees a replay: the visitor drops in a file from their savegame folder or the ZIP the match
-page's **Download replay** link gives them. See [V2 design](#v2-design).
+A finished game played back on the site, from its `.aoe2record` file, read in the visitor's browser. The file comes
+from the match page's **Watch this game**, which has the server fetch the official replay, or is dropped in from the
+visitor's savegame folder. See [V2 design](#v2-design).
 
-- `/replay`: drop or pick a file (`.aoe2record`, or the official ZIP holding one).
+- `/replay?match=<id>`: a finished game the server still knows. `/replay`: drop or pick a file (`.aoe2record`, or
+  the official ZIP holding one).
 - A map of the game: terrain, starting resources, buildings and walls as they are placed, where players send units,
   and flares.
 - A timeline (play, pause, speeds up to 64x, a scrubber marked with age-ups and resignations).
@@ -447,8 +448,26 @@ can replay the simulation itself. What the file does carry, and the viewer shows
 - The page reads the file into memory and hands it to a worker (`replay-worker.js`), which parses it with
   `replay-parse.js` and returns the model below. The header is raw DEFLATE; the worker inflates it with
   `DecompressionStream('deflate-raw')`, stopping at 128 MB. Files over 64 MB are refused.
-- Nothing is sent anywhere: the page's only request is `/replay-data.json` (names, costs, terrain colours).
-  Everything from the file goes into the page with `textContent`.
+- A dropped file is sent nowhere: the page's only request for it is `/replay-data.json` (names, costs, terrain
+  colours). Everything from a file goes into the page with `textContent`.
+
+### Fetching a replay
+
+The owner lifted the rule against the server fetching replays on 4 Nov 2026, within these limits. It stops the
+visitor having to download a file and drop it in, which is how aoe2insights works too.
+
+- `GET /api/replay/<matchId>` takes only a match id. The game must be one this server has seen end, within the 2 hours
+  it keeps them, and the link is built from that game's own result: `https://aoe.ms/replay/?gameId=<id>&profileId=<the
+  largest uploader>`. Nobody can point it at anything else.
+- The link redirected to `api.ageofempires.com`, which served the ZIP itself (`application/zip`), when tested on a
+  real game. Whatever it redirects to is never logged or kept, and `matchurls[].url` is still never touched.
+- The answer is the ZIP (`no-store`, `noindex`), read in the browser like a dropped file. Errors are JSON
+  `{error}`: `live` (409), `pending`, `none`, `unknown` (404), `busy` (429, `Retry-After`), `failed` (502).
+- Limits: 32 MB a file, 30 seconds, 30 downloads a minute. Files stay in memory for 30 minutes, 64 MB in all, and two
+  requests for one game share a download, so a shared game costs one fetch. Nothing is written to disk.
+- An official download has no closing record and was recorded by a player, so it looks like a running game of the
+  visitor's own to the [lock](#live-follow). It's safe to open, because the server only serves games that have ended,
+  so the page dates the file long ago to pass that check.
 
 ### Parser output
 
