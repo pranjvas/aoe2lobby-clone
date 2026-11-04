@@ -19,7 +19,7 @@
     <meta property="og:image" content="https://aoe2lobby.online/og-image.png">
     <meta name="twitter:card" content="summary_large_image">
     <link rel="stylesheet" href="/styles.css?v=27">
-    <link rel="stylesheet" href="/replay.css?v=2">
+    <link rel="stylesheet" href="/replay.css?v=3">
 </head>
 <body>
     <div class="bg-shape shape-1"></div>
@@ -48,6 +48,17 @@
                         <strong>Download replay</strong>. A file you drop here is read in your browser and never
                         uploaded.</p>
                 </div>
+                <form id="rvFind" class="rv-follow">
+                    <h3>Find a player's game</h3>
+                    <p>Any recent game with an uploaded replay, with no file needed. Type the exact name, capitals
+                        included, or a profile number.</p>
+                    <p class="rv-find-row">
+                        <input type="search" id="rvFindQ" maxlength="40" autocomplete="off" spellcheck="false"
+                            placeholder="Player name" aria-label="Player name or profile number">
+                        <button type="submit" class="btn-join">Find games</button>
+                    </p>
+                </form>
+                <ol id="rvGames" class="rv-games" hidden></ol>
                 <!-- Shown where a page can read a folder: Chrome and Edge on a computer -->
                 <div id="rvFollow" class="rv-follow" hidden>
                     <h3>Follow a game in progress</h3>
@@ -63,9 +74,9 @@
                         <li><strong>Your own games:</strong> the game saves them in
                             <code>Games\Age of Empires 2 DE\&lt;your id&gt;\savegame</code> in your user folder.
                             Games you watched in the game are there too.</li>
-                        <li><strong>A game on this site:</strong> once it ends, its match page has
-                            <strong>Watch this game</strong>, which opens it here with no file needed, for 2 hours
-                            after it ends. <strong>Download replay</strong> gives you the file to keep.</li>
+                        <li><strong>Anyone's recent game:</strong> search for a player above, or use a finished
+                            game's <strong>Watch this game</strong>: no file needed. <strong>Download replay</strong>
+                            gives you the file to keep.</li>
                     </ul>
                 </details>
                 <details class="rv-where">
@@ -85,7 +96,7 @@
         </main>
     </div>
 
-    <script src="/replay.js?v=5"></script>
+    <script src="/replay.js?v=6"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>

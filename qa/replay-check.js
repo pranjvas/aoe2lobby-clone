@@ -72,6 +72,20 @@ async function serverChecks() {
         const r = await get(p);
         check(`${p} is refused`, r.status === 404 && /json/.test(r.type), r.status);
     }
+    const empty = await get('/api/player-games');
+    check('a search needs a query', empty.status === 400, empty.status);
+    const long = await get(`/api/player-games?q=${'x'.repeat(41)}`);
+    check('a long query is refused', long.status === 400, long.status);
+    const nobody = await get('/api/player-games?q=noSuchPlayerXYZ123');
+    check('an unknown name finds nobody', nobody.status === 200 && /"accounts":0/.test(nobody.body), nobody.body.slice(0, 80));
+    const found = await get('/api/player-games?q=Hera');
+    let list = null;
+    try { list = JSON.parse(found.body); } catch (e) { }
+    check('a real name finds games', found.status === 200 && !!list && list.accounts > 0, found.status);
+    if (list) {
+        check('a search answer holds no replay addresses', !/https?:|matchurls|"sig/.test(found.body));
+        check('games come newest first', list.games.every((g, i, a) => !i || a[i - 1].startTime >= g.startTime));
+    }
     const unknown = await get('/api/replay/999999999999999');
     check('an unknown game is refused', unknown.status === 404 && /"unknown"/.test(unknown.body), unknown.body.slice(0, 80));
     const games = JSON.parse((await get('/api/spectate/index')).body).games || [];

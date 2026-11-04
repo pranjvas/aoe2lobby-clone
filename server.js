@@ -894,9 +894,9 @@ async function serveSpectatePage(res, id) {
 
 // --- Replays: /api/replay/<matchId> ------------------------------------------------------------------------
 // The official replay ZIP of a finished game, for the viewer. It takes only a match id: the game must be one this server
-// has seen end, and the link is built from that game's own result, so nobody can point it at anything else. The link
-// redirects to the file, and that address is never logged or kept. Files stay in memory for a short while, so
-// everyone opening a shared game costs one download.
+// has seen end, or one a player search listed, and the link is built from what the public match history said about that
+// game, so nobody can point it at anything else. The link redirects to the file, and that address is never logged or
+// kept. Files stay in memory for a short while, so everyone opening a shared game costs one download.
 const REPLAY_MAX_BYTES = 32 * 1024 * 1024;
 const REPLAY_TIMEOUT_MS = 30000;
 const REPLAY_FETCHES_PER_MINUTE = 30;
@@ -905,6 +905,89 @@ const REPLAY_KEEP_BYTES = 64 * 1024 * 1024;
 const replayFiles = new Map(); // match id -> { body, at }, oldest first
 const replayFetches = new Map(); // match id -> the download in progress
 let replayWindow = { startedAt: 0, count: 0 };
+const KNOWN_REPLAY_MS = 24 * 60 * 60 * 1000;
+const KNOWN_REPLAY_MAX = 5000;
+const knownReplays = new Map(); // match id -> { profileId, at }: the uploader of a game a search listed, oldest first
+
+function rememberReplay(id, profileId) {
+    knownReplays.delete(id);
+    knownReplays.set(id, { profileId, at: Date.now() });
+    if (knownReplays.size > KNOWN_REPLAY_MAX) knownReplays.delete(knownReplays.keys().next().value);
+}
+
+// --- A player's recent games: /api/player-games?q=<exact name or profile id> ---------------------------------
+// The history is public, but names are exact and shared: one name can be ten accounts, so several are asked for at once.
+const SEARCH_ACCOUNTS = 5;
+const SEARCH_GAMES = 30;
+const SEARCH_KEEP_MS = 60000;
+const SEARCH_PER_MINUTE = 30;
+const searches = new Map(); // query -> { body, at }
+let searchWindow = { startedAt: 0, count: 0 };
+
+function mapLabel(mapname) {
+    const name = String(mapname || '').replace(/\.rms2?$/i, '').replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim();
+    return name || 'Unknown map';
+}
+
+// Only ids, names, outcomes and times are read, and of an upload only its size: matchurls[].url is never touched
+function gamesFromHistory(data, accounts) {
+    const names = new Map();
+    for (const p of Array.isArray(own(data, 'profiles')) ? data.profiles : []) names.set(profileIdOf(own(p, 'profile_id')), str(own(p, 'alias')));
+    const games = new Map();
+    for (const entry of Array.isArray(own(data, 'matchHistoryStats')) ? data.matchHistoryStats : []) {
+        const id = num(own(entry, 'id')), start = num(own(entry, 'startgametime')), end = num(own(entry, 'completiontime'));
+        if (!Number.isSafeInteger(id) || id <= 0 || games.has(id) || !(end > start)) continue;
+        let uploader = null, best = 0;
+        for (const u of Array.isArray(entry.matchurls) ? entry.matchurls : []) {
+            const size = num(own(u, 'size')), by = profileIdOf(own(u, 'profile_id'));
+            if (by && Number.isSafeInteger(size) && size > best) { best = size; uploader = by; }
+        }
+        if (uploader) rememberReplay(id, uploader);
+        const players = (Array.isArray(entry.matchhistorymember) ? entry.matchhistorymember : []).map(m => {
+            const pid = profileIdOf(own(m, 'profile_id'));
+            return { name: names.get(pid) || 'Player', team: num(own(m, 'teamid')), won: num(own(m, 'outcome')) === 1, searched: accounts.has(pid) };
+        });
+        games.set(id, { id, map: mapLabel(own(entry, 'mapname')), startTime: start, seconds: end - start, replay: !!uploader, players });
+    }
+    return [...games.values()].sort((a, b) => b.startTime - a.startTime).slice(0, SEARCH_GAMES);
+}
+
+async function servePlayerGames(res, query) {
+    const answer = (status, payload, headers = {}) => {
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers });
+        res.end(typeof payload === 'string' ? payload : JSON.stringify(payload));
+    };
+    const q = String(query || '').trim();
+    if (!q || Array.from(q).length > 40) return answer(400, { error: 'bad query' });
+    const kept = searches.get(q);
+    if (kept && Date.now() - kept.at < SEARCH_KEEP_MS) return answer(200, kept.body);
+    if (Date.now() - searchWindow.startedAt > 60000) searchWindow = { startedAt: Date.now(), count: 0 };
+    if (++searchWindow.count > SEARCH_PER_MINUTE) return answer(429, { error: 'busy' }, { 'Retry-After': '60' });
+    try {
+        let ids = [];
+        if (/^\d{1,12}$/.test(q) && isProfileId(Number(q))) {
+            ids = [Number(q)];
+        } else {
+            const stats = JSON.parse(await httpsGet(`${RELIC_API}/leaderboard/GetPersonalStat?title=age2&aliases=${encodeURIComponent(JSON.stringify([q]))}`));
+            for (const group of Array.isArray(own(stats, 'statGroups')) ? stats.statGroups : []) {
+                for (const m of Array.isArray(own(group, 'members')) ? group.members : []) {
+                    const id = profileIdOf(own(m, 'profile_id'));
+                    if (id && !ids.includes(id) && ids.length < SEARCH_ACCOUNTS) ids.push(id);
+                }
+            }
+        }
+        const games = ids.length
+            ? gamesFromHistory(JSON.parse(await httpsGet(`${RELIC_API}/leaderboard/getRecentMatchHistory?title=age2&profile_ids=${encodeURIComponent(JSON.stringify(ids))}`)), new Set(ids))
+            : [];
+        const body = JSON.stringify({ query: q, accounts: ids.length, games });
+        searches.set(q, { body, at: Date.now() });
+        if (searches.size > 200) searches.delete(searches.keys().next().value);
+        answer(200, body);
+    } catch (e) {
+        console.error(`Player search failed: ${e.name}`);
+        answer(502, { error: 'failed' });
+    }
+}
 
 function keepReplay(id, body) {
     replayFiles.set(id, { body, at: Date.now() });
@@ -940,12 +1023,17 @@ async function serveReplay(res, id) {
     const cache = await freshSpectate();
     const found = spectateGameById(cache, id);
     if (found.status === 'live') return refuse(409, 'live');
-    if (!found.ended) return refuse(404, 'unknown');
-    startResultLookup(found.ended);
-    if (found.ended.lookup) await settleWithin(found.ended.lookup, RESULT_WAIT_MS);
-    const result = found.ended.result;
-    if (!result || result.state !== 'found') return refuse(404, 'pending');
-    if (!result.replay || !result.replay.available) return refuse(404, 'none');
+    const listed = knownReplays.get(id);
+    let uploader = listed && Date.now() - listed.at < KNOWN_REPLAY_MS ? listed.profileId : null;
+    if (!uploader) {
+        if (!found.ended) return refuse(404, 'unknown');
+        startResultLookup(found.ended);
+        if (found.ended.lookup) await settleWithin(found.ended.lookup, RESULT_WAIT_MS);
+        const result = found.ended.result;
+        if (!result || result.state !== 'found') return refuse(404, 'pending');
+        if (!result.replay || !result.replay.available) return refuse(404, 'none');
+        uploader = result.replay.profileId;
+    }
     const kept = replayFiles.get(id);
     let body = kept && Date.now() - kept.at < REPLAY_KEEP_MS ? kept.body : null;
     if (!body) {
@@ -953,7 +1041,7 @@ async function serveReplay(res, id) {
         if (!download) {
             if (Date.now() - replayWindow.startedAt > 60000) replayWindow = { startedAt: Date.now(), count: 0 };
             if (++replayWindow.count > REPLAY_FETCHES_PER_MINUTE) return refuse(429, 'busy', { 'Retry-After': '60' });
-            download = downloadReplay(id, result.replay.profileId).finally(() => replayFetches.delete(id));
+            download = downloadReplay(id, uploader).finally(() => replayFetches.delete(id));
             replayFetches.set(id, download);
         }
         try {
@@ -1455,6 +1543,10 @@ async function handleRequest(req, res) {
             return;
         }
         await serveHtmlPage(res, 'overlay.html', true);
+        return;
+    }
+    if (pathname === '/api/player-games') {
+        await servePlayerGames(res, new URLSearchParams(req.url.split('?')[1] || '').get('q'));
         return;
     }
     if (pathname.startsWith('/api/replay/')) {

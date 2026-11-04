@@ -122,7 +122,7 @@ function parseInWorker(buffer, load) {
     return new Promise((resolve, reject) => {
         let worker;
         try {
-            worker = new Worker('/replay-worker.js?v=3');
+            worker = new Worker('/replay-worker.js?v=4');
         } catch (e) {
             reject(new Error('This browser can\'t run the replay reader.'));
             return;
@@ -180,7 +180,7 @@ const MATCH_ERRORS = {
     live: 'That game is still being played. Its replay can be opened here once it ends.',
     pending: 'That game\'s result isn\'t in yet, which can take a few minutes. Try again shortly.',
     none: 'Nobody uploaded a replay of that game.',
-    unknown: 'This site only keeps a game for 2 hours after it ends, so it can\'t fetch that one any more. If you have the replay file, drop it here.',
+    unknown: 'This site can\'t fetch that game any more. Find it again by searching for one of its players below, or drop the replay file here.',
     busy: 'Too many replays are being fetched right now. Try again in a minute.'
 };
 
@@ -206,7 +206,64 @@ async function openMatch(id) {
     }
 }
 
+// A player's recent games, each opening with no file. The answer goes in as text, like everything from outside.
+async function findGames(query) {
+    const list = $('rvGames');
+    list.textContent = '';
+    list.hidden = true;
+    status('Looking up recent games…');
+    try {
+        const r = await fetch(`/api/player-games?q=${encodeURIComponent(query)}`);
+        const answer = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            status(answer.error === 'busy' ? 'Too many searches right now. Try again in a minute.' : 'That search didn\'t work. Try again in a minute.', true);
+            return;
+        }
+        if (!answer.accounts) {
+            status('No player has exactly that name. Names must match exactly, capitals included.', true);
+            return;
+        }
+        const games = answer.games || [];
+        if (!games.length) { status('No recent games for that player.', true); return; }
+        const watchable = games.filter(g => g.replay).length;
+        status(`${games.length} recent game${games.length === 1 ? '' : 's'}, ${watchable} with a replay${answer.accounts > 1 ? `, across ${answer.accounts} accounts with that name` : ''}.`);
+        for (const g of games) list.append(gameRow(g));
+        list.hidden = false;
+    } catch (e) {
+        status('That search didn\'t work. Try again in a minute.', true);
+    }
+}
+
+function gameRow(g) {
+    const li = el('li', 'rv-game');
+    const body = el('div', 'rv-game-body');
+    const mine = g.players.find(p => p.searched);
+    const when = new Date(g.startTime * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    const teams = new Map();
+    for (const p of g.players) {
+        if (!teams.has(p.team)) teams.set(p.team, []);
+        teams.get(p.team).push(p.name);
+    }
+    body.append(el('strong', null, g.map), el('span', 'rv-game-meta', [when, clock(g.seconds * 1000), mine ? (mine.won ? 'Won' : 'Lost') : ''].filter(Boolean).join(' · ')),
+        el('span', 'rv-game-players', [...teams.values()].map(names => names.join(', ')).join(' vs ')));
+    li.append(body);
+    if (g.replay) {
+        const link = el('a', 'btn-view', 'Watch');
+        link.href = `/replay?match=${encodeURIComponent(g.id)}`;
+        link.setAttribute('aria-label', `Watch the game on ${g.map}, ${when}`);
+        li.append(link);
+    } else {
+        li.append(el('span', 'rv-game-meta', 'No replay'));
+    }
+    return li;
+}
+
 function wireLoading() {
+    $('rvFind').addEventListener('submit', e => {
+        e.preventDefault();
+        const query = $('rvFindQ').value.trim();
+        if (query) findGames(query);
+    });
     $('rvPick').addEventListener('click', () => $('rvFile').click());
     if (window.showDirectoryPicker) {
         $('rvFollow').hidden = false;
@@ -1717,5 +1774,7 @@ window.addEventListener('pointercancel', endScrub);
 
 wireLoading();
 loadGameData();
-const matchId = new URLSearchParams(location.search).get('match');
+const startUp = new URLSearchParams(location.search);
+const matchId = startUp.get('match'), playerQuery = (startUp.get('player') || '').trim().slice(0, 40);
 if (/^\d{1,15}$/.test(matchId || '')) openMatch(matchId);
+else if (playerQuery) { $('rvFindQ').value = playerQuery; findGames(playerQuery); }

@@ -459,8 +459,13 @@ The owner lifted the rule against the server fetching replays on 4 Nov 2026, wit
 visitor having to download a file and drop it in, which is how aoe2insights works too.
 
 - `GET /api/replay/<matchId>` takes only a match id. The game must be one this server has seen end, within the 2 hours
-  it keeps them, and the link is built from that game's own result: `https://aoe.ms/replay/?gameId=<id>&profileId=<the
-  largest uploader>`. Nobody can point it at anything else.
+  it keeps them, or one a player search listed in the last 24 hours, and the link is built from what the public match
+  history said about it: `https://aoe.ms/replay/?gameId=<id>&profileId=<the largest uploader>`. Nobody can point it at
+  anything else.
+- `GET /api/player-games?q=<name or profile id>` lists up to 30 recent games, newest first:
+  `{query, accounts, games: [{id, map, startTime, seconds, replay, players: [{name, team, won, searched}]}]}`. Names are
+  exact and case-sensitive, and one name can be many accounts ("Hera" is 10), so up to 5 accounts are looked up in one
+  request. 30 searches a minute, each kept for a minute. `/replay?player=<query>` runs one on load.
 - The link redirected to `api.ageofempires.com`, which served the ZIP itself (`application/zip`), when tested on a
   real game. Whatever it redirects to is never logged or kept, and `matchurls[].url` is still never touched.
 - The answer is the ZIP (`no-store`, `noindex`), read in the browser like a dropped file. Errors are JSON

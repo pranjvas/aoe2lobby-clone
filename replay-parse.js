@@ -2123,7 +2123,8 @@ async function parseFile(input, inflateRaw, onProgress = () => { }) {
         duration: walk.time,
         settings: {
             map: (mapName && mapName.name) || null,
-            mapSize: (mapName && mapName.sizeLabel) || null,
+            // The file's label is in the recorder's language; the tile count isn't
+            mapSize: (mapName && (ReplayObjects.SIZE_LABELS[mapName.sizeTiles] || mapName.sizeLabel)) || null,
             dimension: head.map.dimension,
             rmsMapId: de.rmsMapId,
             speed: SPEEDS[Math.round(de.speed * 100)] || null,

@@ -96,6 +96,62 @@
     margin-top: 0.6rem;
 }
 
+.rv-find-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.rv-find-row input {
+    flex: 1 1 200px;
+    min-width: 0;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    font: inherit;
+}
+
+.rv-find-row input:focus-visible {
+    outline: 2px solid var(--gold-primary);
+    outline-offset: 1px;
+}
+
+.rv-games {
+    list-style: none;
+    margin-top: 0.75rem;
+    max-height: 420px;
+    overflow-y: auto;
+}
+
+.rv-game {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.25rem;
+    border-bottom: 1px solid var(--rv-grid);
+}
+
+.rv-game-body {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+}
+
+.rv-game-meta {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    white-space: nowrap;
+}
+
+.rv-game-players {
+    color: var(--rv-muted);
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
+}
+
 .rv-status {
     margin-top: 1rem;
     min-height: 1.6em;
