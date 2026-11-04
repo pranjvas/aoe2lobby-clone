@@ -539,12 +539,12 @@ class MapView {
     }
 
     // Tile (x, y) to canvas pixels. The map is a 2:1 diamond like the game's minimap: tile (0, 0) at the left corner,
-    // x running down to the bottom corner and y up to the top corner.
+    // x running up to the top corner and y down to the bottom corner (as RecAnalyst draws it).
     matrix() {
         const W = this.canvas.width, H = this.canvas.height, d = this.dim, z = this.zoom;
         const a = z * W / (2 * d), b = z * H / (2 * d);
         // Zoomed about the canvas centre, then panned
-        return [a, b, a, -b, W / 2 * (1 - z) + this.panX * this.dpr, H / 2 + this.panY * this.dpr];
+        return [a, -b, a, b, W / 2 * (1 - z) + this.panX * this.dpr, H / 2 + this.panY * this.dpr];
     }
 
     toScreen(x, y) {

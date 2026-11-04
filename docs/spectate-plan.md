@@ -484,7 +484,8 @@ selected; `work` is an order onto a resource), `flare {x, y}`, `buy | sell {reso
 Facts worth keeping (each was measured on 745 replays; the byte layouts are in [replay-format](replay-format/)):
 
 - Tiles are stored row by row: tile (x, y) is index `y * dimension + x` (100% of 911,105 trees sit on forest tiles
-  that way, 33% the other way round).
+  that way, 33% the other way round). The map draws tile (0, 0) at the left corner, x up to the top corner and y down
+  to the bottom, as RecAnalyst's minimap does (a square image of the tiles, rotated 45 degrees counter-clockwise).
 - One train order lists every selected building, but trains `amount` units in total, not per building: reading it
   per building would need players to gather about 47,000 resources in 15 seconds.
 - Age lines arrive a median of 130, 160 and 190 seconds after the click, the game's research times. The line's text
