@@ -103,6 +103,7 @@ function status(text, isError = false) {
     const s = $('rvStatus');
     s.textContent = text;
     s.classList.toggle('rv-error', isError);
+    if (text) s.scrollIntoView({ block: 'nearest' });
 }
 
 // ------------------------------------------------------------------ loading
@@ -251,7 +252,8 @@ async function showSharedGames() {
             li.append(body, link);
             list.append(li);
         }
-        $('rvNow').hidden = !list.children.length;
+        $('rvNowEmpty').hidden = list.children.length > 0;
+        $('rvNow').hidden = false;
     } catch (e) { }
 }
 
@@ -483,14 +485,14 @@ function buildHead() {
     left.append(el('p', 'rv-notes', notes.join(' · ')));
     if (!follow) for (const w of g.warnings || []) left.append(el('p', 'rv-notes', w));
     if (gameData.failed) left.append(el('p', 'rv-notes', 'The game data couldn\'t be loaded: names show as ids, the map is one colour, and the villager, army and spent figures are wrong. Reload the page, or open the file again, to try again.'));
-    const again = el('button', 'btn-view', 'Open another replay');
+    const again = el('button', 'btn-view', 'Watch another game');
     again.type = 'button';
     again.addEventListener('click', () => {
         stopFollowing();
         stopPlaying();
         $('rvLoad').hidden = false;
         $('rvView').hidden = true;
-        $('rvPick').focus();
+        $('rvFindQ').focus();
     });
     head.append(left, again);
     return head;
@@ -1920,3 +1922,4 @@ if (/^\d{1,15}$/.test(liveId || '')) startWatching(liveId);
 else if (/^\d{1,15}$/.test(matchId || '')) openMatch(matchId);
 else if (playerQuery) { $('rvFindQ').value = playerQuery; findGames(playerQuery); }
 showSharedGames();
+setInterval(() => { if (!$('rvLoad').hidden) showSharedGames(); }, 30000);

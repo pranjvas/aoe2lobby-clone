@@ -19,7 +19,7 @@
     <meta property="og:image" content="https://aoe2lobby.online/og-image.png">
     <meta name="twitter:card" content="summary_large_image">
     <link rel="stylesheet" href="/styles.css?v=27">
-    <link rel="stylesheet" href="/replay.css?v=4">
+    <link rel="stylesheet" href="/replay.css?v=5">
 </head>
 <body>
     <div class="bg-shape shape-1"></div>
@@ -37,41 +37,46 @@
         <main class="main-content rv-main">
             <!-- Picking a file. The page works on the file in this browser; nothing is uploaded -->
             <section id="rvLoad" class="glass-panel rv-load">
-                <h2>Watch a replay</h2>
-                <p class="rv-lead">Play back a finished Age of Empires II: DE game: the map, every building, where players
-                    sent their units, resources in the bank, ages, units, techs and the chat.</p>
-                <div id="rvDrop" class="rv-drop">
-                    <p class="rv-drop-title">Drop a replay here</p>
-                    <p><button type="button" id="rvPick" class="btn-join">Choose a file</button></p>
-                    <input type="file" id="rvFile" accept=".aoe2record,.zip,application/zip" hidden>
-                    <p class="match-note">An <code>.aoe2record</code> file, or the ZIP from a match page's
-                        <strong>Download replay</strong>. A file you drop here is read in your browser and never
-                        uploaded.</p>
-                </div>
-                <div id="rvNow" class="rv-follow" hidden>
-                    <h3>Live on this site now</h3>
-                    <ol id="rvNowGames" class="rv-games"></ol>
-                </div>
+                <h2>Watch a game</h2>
+                <p class="rv-lead">Watch an Age of Empires II: DE game right here, with no file and no game installed:
+                    the map, every building, where players sent their units, resources in the bank, ages, units, techs
+                    and the chat.</p>
                 <form id="rvFind" class="rv-follow">
                     <h3>Find a player's game</h3>
-                    <p>Any recent game with an uploaded replay, with no file needed. Type the exact name, capitals
-                        included, or a profile number.</p>
+                    <p>Pick any of their recent games to watch. Type the exact name, capitals included, or a profile
+                        number.</p>
                     <p class="rv-find-row">
                         <input type="search" id="rvFindQ" maxlength="40" autocomplete="off" spellcheck="false"
                             placeholder="Player name" aria-label="Player name or profile number">
                         <button type="submit" class="btn-join">Find games</button>
                     </p>
+                    <p class="rv-try">Or try <a href="/replay?player=Hera">Hera</a> or
+                        <a href="/replay?player=TheViper">TheViper</a>.</p>
                 </form>
+                <p id="rvStatus" class="rv-status" role="status" aria-live="polite"></p>
                 <ol id="rvGames" class="rv-games" hidden></ol>
+                <div id="rvNow" class="rv-follow" hidden>
+                    <h3>Live on this site now</h3>
+                    <p id="rvNowEmpty">No game is being shared right now. When someone shares one, it appears here to
+                        watch with no game.</p>
+                    <ol id="rvNowGames" class="rv-games"></ol>
+                </div>
                 <!-- Shown where a page can read a folder: Chrome and Edge on a computer -->
                 <div id="rvFollow" class="rv-follow" hidden>
-                    <h3>Follow a game in progress</h3>
-                    <p>Watching a game in Age of Empires II? Pick your savegame folder and this page follows the game
-                        as it's recorded, with the whole game from its start to scrub through. It needs the game open
-                        on this computer, and only follows games you're watching, never one you're playing.</p>
+                    <h3>Follow or share a game you're watching</h3>
+                    <p>Watching a game in Age of Empires II on this computer? Pick your savegame folder and this page
+                        follows the game as it's recorded, with the whole game from its start to scrub through. From
+                        there it can be shared, so others can watch here with no game. It only follows games you're
+                        watching, never one you're playing.</p>
                     <p><button type="button" id="rvFollowPick" class="btn-view">Pick the savegame folder</button></p>
                 </div>
-                <p id="rvStatus" class="rv-status" role="status" aria-live="polite"></p>
+                <div id="rvDrop" class="rv-drop">
+                    <p class="rv-drop-title">Already have a replay file?</p>
+                    <p><button type="button" id="rvPick" class="btn-view">Choose a file</button></p>
+                    <input type="file" id="rvFile" accept=".aoe2record,.zip,application/zip" hidden>
+                    <p class="match-note">Optional. Drop an <code>.aoe2record</code> file or a match page's ZIP anywhere
+                        here. It's read in your browser and never uploaded.</p>
+                </div>
                 <details class="rv-where">
                     <summary>Where do I find replays?</summary>
                     <ul>
@@ -100,7 +105,7 @@
         </main>
     </div>
 
-    <script src="/replay.js?v=7"></script>
+    <script src="/replay.js?v=8"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>

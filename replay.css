@@ -68,8 +68,13 @@
 }
 
 .rv-drop-title {
-    font-size: 1.15rem;
+    font-size: 1.05rem;
     font-weight: 600;
+}
+
+.rv-load .rv-drop {
+    margin-top: 1rem;
+    padding: 1rem 1.25rem;
 }
 
 .rv-dragging .rv-drop {
@@ -94,6 +99,10 @@
 
 .rv-follow p + p {
     margin-top: 0.6rem;
+}
+
+.rv-try a {
+    color: var(--gold-primary);
 }
 
 .rv-find-row {
