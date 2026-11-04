@@ -339,6 +339,7 @@ function parseRelicLobby(match) {
         playersHtml: playersHtml,
         isPlaying: !!match.isPlaying,
         lastSeen: match.lastSeen,
+        createdTime: intIn(match.createdTime, 1, Number.MAX_SAFE_INTEGER),
         rawPlayers: players
     };
 }
@@ -747,7 +748,7 @@ function passwordBadge(item) {
 function lobbyDetailsKey(lobby) {
     return JSON.stringify([lobby.host, lobby.elo, lobby.title, lobby.map, lobby.type, lobby.matchType, lobby.mapSize,
         lobby.population, lobby.speed, lobby.modInfo, lobby.startingAge, lobby.resources, lobby.treaty, lobby.isPlaying, lobby.server,
-        lobby.isPasswordProtected]);
+        lobby.isPasswordProtected, lobby.createdTime]);
 }
 
 function renderSettingBadges(lobby) {
@@ -769,6 +770,16 @@ function renderSettingBadges(lobby) {
 function playerCountText(lobby) {
     return `&#x1F464; ${esc(lobby.currentPlayers)}/${esc(lobby.maxPlayers)}` +
         (lobby.aiSlots ? ` <span class="ai-count" title="Slots filled by AI">· ${esc(lobby.aiSlots)} AI</span>` : '');
+}
+
+// How long ago a lobby was made, in the largest unit that fits: "Created 12 mins ago", "3 hrs ago", "2 days ago"
+function lobbyAgeText(createdTime) {
+    const mins = Math.max(0, Math.floor((Date.now() / 1000 - createdTime) / 60));
+    const ago = (n, unit) => `Created ${n} ${unit}${n === 1 ? '' : 's'} ago`;
+    if (mins < 1) return 'Created just now';
+    if (mins < 60) return ago(mins, 'min');
+    if (mins < 1440) return ago(Math.floor(mins / 60), 'hr');
+    return ago(Math.floor(mins / 1440), 'day');
 }
 
 // "Full" / "Waiting" plus the server region, top right of a lobby card
@@ -812,6 +823,9 @@ function lobbyCardHtml(lobby) {
                 <div class="detail-row">
                     <span class="detail-icon" style="opacity: 0.7;">🗺️</span> <span style="font-weight: 500;">${esc(lobby.map)}</span>
                 </div>
+                ${lobby.createdTime ? `<div class="detail-row">
+                    <span class="detail-icon" style="opacity: 0.7;">🕒</span> <span class="lobby-age" title="${esc(new Date(lobby.createdTime * 1000).toLocaleString())}">${lobbyAgeText(lobby.createdTime)}</span>
+                </div>` : ''}
                 <div class="tags-row">
                     ${passwordBadge(lobby)}
                     ${renderInfoBadges(lobby)}
@@ -898,7 +912,9 @@ function renderLobbies(filteredLobbies) {
             const progress = node.querySelector('.fill-progress');
             const pList = node.querySelector('.player-list');
             const sBadge = node.querySelector('.server-badge');
+            const age = node.querySelector('.lobby-age');
             
+            if (age) age.textContent = lobbyAgeText(lobby.createdTime);
             if(countText && progress) {
                 countText.innerHTML = playerCountText(lobby);
                 progress.style.width = `${fillPercentage}%`;

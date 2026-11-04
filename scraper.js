@@ -240,6 +240,7 @@ function dumpData() {
             slotsTotal: Number.isSafeInteger(lobby.slots_total) ? lobby.slots_total : 0, // slots a player can take (open + taken); closed and AI slots excluded
             aiSlots: Object.values(lobby.slots || {}).filter(slot => slot && slot.status === 2).length,
             password: lobby.password === true,
+            createdTime: Number.isSafeInteger(lobby.created_time) && lobby.created_time > 0 ? lobby.created_time : null, // unix seconds
             players: players,
             settings: {
                 Mode: label('mode', lobby.mode),

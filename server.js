@@ -1304,6 +1304,7 @@ function loadScrapedLobbies(raw) {
             slotsTotal: num(val.slotsTotal),
             aiSlots: num(val.aiSlots, 0),
             password: val.password === true,
+            createdTime: num(val.createdTime),
             players,
             playersById: new Map(players.filter(p => p.profileId).map(p => [p.profileId, p])),
             settings: s
@@ -1598,6 +1599,7 @@ async function buildLobbiesBody() {
             aiSlots: (sm && sm.aiSlots) || 0,
             isPlaying: m.isPlaying === true,
             lastSeen: m.lastSeen,
+            createdTime: sm ? sm.createdTime : null, // only aoe2lobby.com's feed has it; Relic's list doesn't
             players: parsedPlayers
         };
     });
@@ -1642,6 +1644,7 @@ async function buildLobbiesBody() {
             aiSlots: lobby.aiSlots || 0,
             isPlaying: lobby.isPlaying === true,
             lastSeen: now,
+            createdTime: lobby.createdTime,
             players: parsedPlayers
         });
     }
