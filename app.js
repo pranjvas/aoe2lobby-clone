@@ -1360,7 +1360,7 @@ function initMatchPage() {
 // The detail API's answer, or null when it can't be read
 function normalizeMatch(data) {
     if (!data || typeof data !== 'object' || !['live', 'ended', 'unknown'].includes(data.status)) return null;
-    const d = { status: data.status, updatedAt: finiteOrNull(data.updatedAt) ?? 0, stale: data.stale === true, game: null, result: null };
+    const d = { status: data.status, updatedAt: finiteOrNull(data.updatedAt) ?? 0, stale: data.stale === true, relay: data.relay === true, game: null, result: null };
     if (d.status === 'unknown') return d;
     d.game = normalizeSpectateGame(data.game);
     if (!d.game) return null;
@@ -1546,7 +1546,12 @@ function matchActionsHtml(d) {
     const watch = d && d.game && d.status === 'live' && !matchWaiting(d) && isMatchId(d.game.id)
         ? `<a class="btn-join match-watch" href="aoe2de://1/${d.game.id}" title="Opens Age of Empires II: DE as a spectator">&#x1F441; Watch in game</a>`
         : '';
-    return `${watch}
+    // Someone is sharing this game from their own spectating client: followed here, with no game needed. It can
+    // still be running there after the real game has ended.
+    const followHere = d && d.game && d.relay && isMatchId(d.game.id)
+        ? `<a class="btn-join" href="/replay?live=${d.game.id}">Watch live here</a>`
+        : '';
+    return `${followHere}${watch}
         <button type="button" class="btn-view match-copy" data-action="copy-match-link">Copy link</button>
         <a class="match-back" href="/" data-action="open-view" data-view="spectate">&larr; All games</a>`;
 }

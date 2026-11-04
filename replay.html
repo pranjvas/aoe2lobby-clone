@@ -19,7 +19,7 @@
     <meta property="og:image" content="https://aoe2lobby.online/og-image.png">
     <meta name="twitter:card" content="summary_large_image">
     <link rel="stylesheet" href="/styles.css?v=27">
-    <link rel="stylesheet" href="/replay.css?v=3">
+    <link rel="stylesheet" href="/replay.css?v=4">
 </head>
 <body>
     <div class="bg-shape shape-1"></div>
@@ -47,6 +47,10 @@
                     <p class="match-note">An <code>.aoe2record</code> file, or the ZIP from a match page's
                         <strong>Download replay</strong>. A file you drop here is read in your browser and never
                         uploaded.</p>
+                </div>
+                <div id="rvNow" class="rv-follow" hidden>
+                    <h3>Live on this site now</h3>
+                    <ol id="rvNowGames" class="rv-games"></ol>
                 </div>
                 <form id="rvFind" class="rv-follow">
                     <h3>Find a player's game</h3>
@@ -96,7 +100,7 @@
         </main>
     </div>
 
-    <script src="/replay.js?v=6"></script>
+    <script src="/replay.js?v=7"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>

@@ -2131,6 +2131,7 @@ async function parseFile(input, inflateRaw, onProgress = () => { }) {
             population: de.populationLimit,
             infiniteResources: de.startingResourcesId === 5,
             turbo: !!de.turbo,
+            spectatorDelay: de.specDelay || 0,
             treaty: de.treatyLength,
             lobby: de.lobby || null,
             mod: de.mod || null,

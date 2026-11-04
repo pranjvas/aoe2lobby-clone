@@ -2,7 +2,7 @@
 // (replay-parse.js) or an error message. Nothing is fetched or sent anywhere.
 'use strict';
 
-importScripts('/replay-parse.js?v=4');
+importScripts('/replay-parse.js?v=5');
 
 // The header is raw DEFLATE (no zlib wrapper). A file can claim to inflate to anything, so this stops at maxBytes.
 async function inflateRaw(bytes, maxBytes) {

@@ -22,6 +22,8 @@ const FOLLOW_POLL_MS = 6000;     // how often a recording being followed is read
 const FOLLOW_FRESH_MS = 60000;   // a recording written to within this is taken to be running
 const FOLLOW_IDLE_MS = 600000;   // a pause can be long; this long without new data, the game is over
 const OWN_GAME_FRESH_MS = 300000;
+const SHARE_KEY_STORE = 'aoe2RelayKey';
+const SHARE_CHUNK_BYTES = 6 * 1024 * 1024;
 // A recording holds every player's orders as they happen, so a live view of your own game would show you your
 // opponents'. The game hides that from its players, and so must this page.
 const OWN_GAME_MESSAGE = 'This is a game you\'re playing. A recording holds every player\'s orders, so it can only be opened once the game has ended.';
@@ -122,7 +124,7 @@ function parseInWorker(buffer, load) {
     return new Promise((resolve, reject) => {
         let worker;
         try {
-            worker = new Worker('/replay-worker.js?v=4');
+            worker = new Worker('/replay-worker.js?v=5');
         } catch (e) {
             reject(new Error('This browser can\'t run the replay reader.'));
             return;
@@ -232,6 +234,25 @@ async function findGames(query) {
     } catch (e) {
         status('That search didn\'t work. Try again in a minute.', true);
     }
+}
+
+// Games being shared now, for anyone to follow
+async function showSharedGames() {
+    try {
+        const { games } = await (await fetch('/api/live')).json();
+        const list = $('rvNowGames');
+        list.textContent = '';
+        for (const g of games || []) {
+            const li = el('li', 'rv-game');
+            const body = el('div', 'rv-game-body');
+            body.append(el('strong', null, g.map), el('span', 'rv-game-players', g.players.join(', ')));
+            const link = el('a', 'btn-view', 'Watch live');
+            link.href = `/replay?live=${encodeURIComponent(g.id)}`;
+            li.append(body, link);
+            list.append(li);
+        }
+        $('rvNow').hidden = !list.children.length;
+    } catch (e) { }
 }
 
 function gameRow(g) {
@@ -1054,8 +1075,12 @@ function buildLiveControls() {
     row.append(badge, note);
     button('From the start', () => { seek(0); startPlaying(); });
     button('Go live', () => { stopPlaying(); seek(game.duration); });
+    if (!follow.remote) button('Share on the site', startSharing);
     button('Stop following', () => endFollowing('Stopped following. The game is shown up to here.'));
-    Object.assign(view, { liveRow: row, liveBadge: badge, liveNote: note });
+    const share = el('span', 'rv-live-share');
+    share.setAttribute('role', 'status');
+    row.append(share);
+    Object.assign(view, { liveRow: row, liveBadge: badge, liveNote: note, liveShare: share });
     return row;
 }
 
@@ -1066,7 +1091,8 @@ function renderLive(t) {
     const live = behind < 1000;
     view.liveBadge.classList.toggle('rv-live-behind', !live);
     view.liveBadge.textContent = live ? 'LIVE' : 'REPLAY';
-    view.liveNote.textContent = live ? 'Following the game as it is recorded' : `${clock(behind)} behind the newest moment`;
+    const here = follow.remote ? 'Following the game, at least 2 minutes behind it' : 'Following the game as it is recorded';
+    view.liveNote.textContent = live ? here : `${clock(behind)} behind the newest moment`;
 }
 
 function startPlaying() {
@@ -1697,6 +1723,9 @@ async function followStep() {
         }
         mine.size = size;
         mine.changedAt = Date.now();
+        if (size < 64) { status(mine.remote ? 'The game appears here at least 2 minutes behind. Waiting for it…' : 'Waiting for the game to start…'); return; }
+        // The buffer goes to the worker, so what's to be shared is copied first
+        const unsent = mine.sharing ? buffer.slice(mine.sharing.sent) : null;
         const model = await parseInWorker(buffer, load);
         if (mine !== follow) return;
         mine.failures = 0;
@@ -1711,9 +1740,15 @@ async function followStep() {
         if (model.file.watched === null) { status('Waiting for the game to start…'); return; }
         if (mine.shown) updateGame(model);
         else { mine.shown = true; showGame(model); status(''); }
+        if (unsent) await sendShare(mine, unsent, model.file.complete);
         if (model.file.complete) endFollowing('The game is over. This is the whole game.');
     } catch (e) {
         if (mine !== follow) return;
+        if (e.relayGone) {
+            if (mine.shown) endFollowing('The game is no longer being shared here. It is shown up to here.');
+            else { stopFollowing(); status('Nobody is sharing that game here right now.', true); }
+            return;
+        }
         if (++mine.failures >= 3) {
             stopFollowing();
             status(e.message && e.name === 'Error' ? e.message : 'The recording couldn\'t be read any more.', true);
@@ -1721,6 +1756,111 @@ async function followStep() {
     } finally {
         if (load === currentLoad) currentLoad = null;
         if (mine === follow) mine.timer = setTimeout(followStep, FOLLOW_POLL_MS);
+    }
+}
+
+// A game someone is sharing: the bytes arrive from the server rather than a folder, a few at a time
+function sharedRecording(id) {
+    let bytes = new Uint8Array(0);
+    return {
+        async getFile() {
+            const r = await fetch(`/api/live/${id}?from=${bytes.length}`);
+            if (r.status === 404) throw Object.assign(new Error('gone'), { relayGone: true });
+            if (r.status === 429) return new File([bytes], `Game ${id}`); // busy: the next read gets it
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const more = new Uint8Array(await r.arrayBuffer());
+            if (more.length) {
+                const next = new Uint8Array(bytes.length + more.length);
+                next.set(bytes);
+                next.set(more, bytes.length);
+                bytes = next;
+            }
+            return new File([bytes], `Game ${id}`, { lastModified: Date.now() });
+        }
+    };
+}
+
+async function startWatching(id) {
+    stopFollowing();
+    status('Looking for the game…');
+    await loadGameData();
+    follow = { handle: sharedRecording(id), size: -1, changedAt: Date.now(), timer: 0, failures: 0, remote: true };
+    followStep();
+}
+
+function shareKey() {
+    try {
+        const kept = localStorage.getItem(SHARE_KEY_STORE);
+        if (kept) return kept;
+    } catch (e) { }
+    const key = (window.prompt('Paste the site\'s sharing key') || '').trim();
+    try { if (key) localStorage.setItem(SHARE_KEY_STORE, key); } catch (e) { }
+    return key;
+}
+
+function shareNote(text, url) {
+    if (!view.liveShare) return;
+    view.liveShare.textContent = text;
+    if (url) {
+        const a = el('a', null, `${location.host}${url}`);
+        a.href = url;
+        view.liveShare.append(document.createTextNode(' '), a);
+    }
+}
+
+// Anyone can then follow this game on the site. The match id comes from the feed, by the players in the recording: the
+// feed's game for one of them, which must have them all. It may have ended already, as a watcher can run far behind.
+async function startSharing() {
+    const mine = follow;
+    if (!mine || mine.sharing || mine.finding) return;
+    const key = shareKey();
+    if (!key) return;
+    const ids = game.players.filter(p => p.human && p.profileId).map(p => p.profileId);
+    if (!ids.length) { shareNote('This game has no players the site can look up, so it can\'t be shared.'); return; }
+    mine.finding = true;
+    shareNote('Finding this game…');
+    try {
+        const found = await (await fetch(`/api/spectate/player/${ids[0]}`)).json();
+        if (mine !== follow) return;
+        const seated = new Set(((found.game && found.game.players) || []).filter(p => p.kind === 'human').map(p => p.id));
+        if (!ids.every(id => seated.has(id))) { shareNote('The site doesn\'t know this game, so it can\'t be shared.'); return; }
+        mine.sharing = { id: found.game.id, key, sent: 0 };
+        mine.size = -1; // the next read sends everything so far
+        shareNote('Sending…');
+    } catch (e) {
+        shareNote('The game couldn\'t be looked up. Try again.');
+    } finally {
+        mine.finding = false;
+    }
+}
+
+const SHARE_ERRORS = {
+    key: 'That key isn\'t right.',
+    playing: 'This is a game you\'re playing, so it can\'t be shared.',
+    'wrong game': 'This recording isn\'t that game, so it wasn\'t shared.',
+    'unknown game': 'The site doesn\'t know this game any more, so it can\'t be shared.',
+    busy: 'Too many games are being shared right now.'
+};
+
+async function sendShare(mine, unsent, ended) {
+    const s = mine.sharing;
+    for (let at = 0; at < unsent.byteLength || (ended && at === 0); at += SHARE_CHUNK_BYTES) {
+        const part = unsent.slice(at, at + SHARE_CHUNK_BYTES);
+        const last = at + SHARE_CHUNK_BYTES >= unsent.byteLength;
+        const r = await fetch(`/api/live/${s.id}?at=${s.sent}${ended && last ? '&end=1' : ''}`, {
+            method: 'POST', headers: { 'X-Relay-Key': s.key, 'Content-Type': 'application/octet-stream' }, body: part
+        });
+        const answer = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            // Out of step: start again from what the server has
+            if (answer.error === 'offset' && Number.isSafeInteger(answer.size)) { s.sent = answer.size; mine.size = -1; return; }
+            mine.sharing = null;
+            if (answer.error === 'key') { try { localStorage.removeItem(SHARE_KEY_STORE); } catch (e) { } }
+            shareNote(SHARE_ERRORS[answer.error] || 'Sharing stopped: the server didn\'t accept it.');
+            return;
+        }
+        s.sent += part.byteLength;
+        if (answer.state === 'ok') shareNote('Shared. Anyone can follow it, at least 2 minutes behind, at', `/replay?live=${s.id}`);
     }
 }
 
@@ -1775,6 +1915,8 @@ window.addEventListener('pointercancel', endScrub);
 wireLoading();
 loadGameData();
 const startUp = new URLSearchParams(location.search);
-const matchId = startUp.get('match'), playerQuery = (startUp.get('player') || '').trim().slice(0, 40);
-if (/^\d{1,15}$/.test(matchId || '')) openMatch(matchId);
+const matchId = startUp.get('match'), liveId = startUp.get('live'), playerQuery = (startUp.get('player') || '').trim().slice(0, 40);
+if (/^\d{1,15}$/.test(liveId || '')) startWatching(liveId);
+else if (/^\d{1,15}$/.test(matchId || '')) openMatch(matchId);
 else if (playerQuery) { $('rvFindQ').value = playerQuery; findGames(playerQuery); }
+showSharedGames();

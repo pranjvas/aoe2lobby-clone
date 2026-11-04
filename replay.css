@@ -515,6 +515,17 @@
     margin-right: auto;
 }
 
+.rv-live-share {
+    flex-basis: 100%;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
+}
+
+.rv-live-share a {
+    color: var(--gold-primary);
+}
+
 .rv-play {
     width: 2.6rem;
     height: 2.6rem;

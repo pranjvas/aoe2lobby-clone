@@ -3,6 +3,9 @@ const https = require('https');
 const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
+const ReplayParse = require('./replay-parse.js');
 
 process.on('uncaughtException', (err) => { console.error('Uncaught Exception:', err); setTimeout(() => process.exit(1), 1000); });
 process.on('unhandledRejection', (err) => { console.error('Unhandled Rejection:', err); setTimeout(() => process.exit(1), 1000); });
@@ -802,6 +805,7 @@ async function serveSpectateMatch(res, id, byPlayer = false) {
         updatedAt: cache.body ? Math.floor(cache.snapAt / 1000) : null,
         stale: !spectateFresh(cache),
         game: found.game,
+        relay: relayOpen(found.game),
         result
     }));
 }
@@ -1055,6 +1059,165 @@ async function serveReplay(res, id) {
     }
     res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': body.length, 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' });
     res.end(body);
+}
+
+// --- Live relay: /api/live -----------------------------------------------------------------------------------
+// A game client watching a game writes a recording as it goes, and the follow page in that PC's browser can send it here,
+// so anyone can follow the game with no game of their own. Only the holder of the key can send. The game must be in
+// the feed, live or ended (a watcher can run long after the real game is over), and nothing is served until the
+// recording proves to be a watched game of those same players: a recording of a game someone is playing would show
+// their opponents' orders. Everything is also held back until it's at least RELAY_BEHIND_MS behind (counting the lobby's
+// own spectator delay), so players can't scout their own game here.
+const RELAY_KEY_PATH = path.join(os.homedir(), '.aoe2lobby-relay-key');
+const RELAY_BEHIND_MS = Number(process.env.RELAY_BEHIND_MS) || 120000;
+const RELAY_MAX_GAMES = 3;
+const RELAY_MAX_BYTES = 32 * 1024 * 1024;
+const RELAY_CHUNK_BYTES = 8 * 1024 * 1024;
+const RELAY_IDLE_MS = 5 * 60 * 1000;
+const RELAY_ENDED_KEEP_MS = 10 * 60 * 1000;
+const RELAY_BIG_READ_BYTES = 256 * 1024; // a viewer's first read: later ones are a few KB
+const RELAY_BIG_READS_PER_MINUTE = 60;
+const relays = new Map(); // match id -> { game, data, shown: [{ size, at }], behind, checked, ended, lastAt }
+let relayKeyHash = null;
+let relayReadWindow = { startedAt: 0, count: 0 };
+
+// Made on first use and kept outside the deployed folder, so a deploy doesn't replace it
+function relayKeyDigest() {
+    if (relayKeyHash) return relayKeyHash;
+    let key = '';
+    try { key = fs.readFileSync(RELAY_KEY_PATH, 'utf8').trim(); } catch (e) { }
+    if (!key) {
+        key = crypto.randomBytes(32).toString('hex');
+        fs.writeFileSync(RELAY_KEY_PATH, key + '\n', { mode: 0o600 });
+    }
+    relayKeyHash = crypto.createHash('sha256').update(key).digest();
+    return relayKeyHash;
+}
+
+function relayKeyMatches(given) {
+    if (typeof given !== 'string' || !given) return false;
+    return crypto.timingSafeEqual(crypto.createHash('sha256').update(given).digest(), relayKeyDigest());
+}
+
+function sweepRelays() {
+    for (const [id, r] of relays) if (Date.now() - r.lastAt > (r.ended ? RELAY_ENDED_KEEP_MS : RELAY_IDLE_MS)) relays.delete(id);
+}
+
+function readBody(req, max) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        let size = 0;
+        req.on('data', c => {
+            size += c.length;
+            if (size > max) { reject(new Error('too large')); req.destroy(); return; }
+            chunks.push(c);
+        });
+        req.on('end', () => resolve(Buffer.concat(chunks)));
+        req.on('error', reject);
+    });
+}
+
+// 'ok' once it's a watched game of the feed's players; 'wait' until the file can say; else why it's refused
+async function checkRelay(r) {
+    if (r.checked) return 'ok';
+    let model;
+    try {
+        model = await ReplayParse.parseFile(new Uint8Array(r.data), async (b, max) => new Uint8Array(zlib.inflateRawSync(b, { maxOutputLength: max })));
+    } catch (e) {
+        return 'wait';
+    }
+    if (model.file.watched === false) return 'playing';
+    const seated = new Set(r.game.players.filter(p => p.kind === 'human').map(p => p.id));
+    const humans = model.players.filter(p => p.human);
+    if (!humans.length || !humans.every(p => seated.has(p.profileId))) return 'wrong game';
+    if (model.file.watched === null) return 'wait';
+    r.behind = Math.max(0, RELAY_BEHIND_MS - model.settings.spectatorDelay * 1000);
+    r.checked = true;
+    return 'ok';
+}
+
+async function receiveRelay(req, res, id, at, ended) {
+    const answer = (status, payload) => {
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(payload));
+    };
+    if (!relayKeyMatches(req.headers['x-relay-key'])) return answer(401, { error: 'key' });
+    let body;
+    try {
+        body = await readBody(req, RELAY_CHUNK_BYTES);
+    } catch (e) {
+        return answer(413, { error: 'too large' });
+    }
+    sweepRelays();
+    let r = relays.get(id);
+    if (at === 0) {
+        const found = spectateGameById(await freshSpectate(), id);
+        if (!found.game) return answer(409, { error: 'unknown game' });
+        if (!r && relays.size >= RELAY_MAX_GAMES) return answer(429, { error: 'busy' });
+        r = { game: found.game, data: Buffer.alloc(0), shown: [], behind: RELAY_BEHIND_MS, checked: false, ended: false, lastAt: Date.now() };
+        relays.set(id, r);
+    }
+    if (!r) return answer(404, { error: 'none' });
+    if (at !== r.data.length) return answer(409, { error: 'offset', size: r.data.length });
+    if (at + body.length > RELAY_MAX_BYTES) return answer(413, { error: 'too large' });
+    r.data = Buffer.concat([r.data, body]);
+    r.shown.push({ size: r.data.length, at: Date.now() });
+    r.lastAt = Date.now();
+    if (ended) r.ended = true;
+    const state = await checkRelay(r);
+    if (state === 'playing' || state === 'wrong game') {
+        relays.delete(id);
+        return answer(403, { error: state });
+    }
+    answer(200, { size: r.data.length, state });
+}
+
+// Being shared now, for a game's page
+function relayOpen(game) {
+    const r = game ? relays.get(game.id) : null;
+    return !!(r && r.checked && !r.ended);
+}
+
+// What's old enough to show
+function relayVisible(r) {
+    if (!r.checked) return 0;
+    const before = Date.now() - r.behind;
+    let size = 0;
+    for (const s of r.shown) {
+        if (s.at > before && !r.ended) break;
+        size = s.size;
+    }
+    return size;
+}
+
+function serveRelay(res, id, from) {
+    sweepRelays();
+    const r = relays.get(id);
+    if (!r) {
+        res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ error: 'none' }));
+        return;
+    }
+    const visible = relayVisible(r);
+    if (visible - from > RELAY_BIG_READ_BYTES) {
+        if (Date.now() - relayReadWindow.startedAt > 60000) relayReadWindow = { startedAt: Date.now(), count: 0 };
+        if (++relayReadWindow.count > RELAY_BIG_READS_PER_MINUTE) {
+            res.writeHead(429, { 'Retry-After': '60', 'Cache-Control': 'no-store' });
+            res.end();
+            return;
+        }
+    }
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex', 'X-Live-Size': String(visible) });
+    res.end(r.data.subarray(Math.min(from, visible), visible));
+}
+
+function serveRelayList(res) {
+    sweepRelays();
+    const games = [...relays.entries()].filter(([, r]) => relayVisible(r) > 0 && !r.ended).map(([id, r]) => ({
+        id, map: r.game.map, players: r.game.players.filter(p => p.kind === 'human').map(p => p.name)
+    }));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ games }));
 }
 
 // A page served under a route of its own: /overlay/<matchId> and /overlay/player/<profileId> (the caster overlay,
@@ -1504,7 +1667,16 @@ function refreshLobbies() {
 async function handleRequest(req, res) {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
 
-    // Read-only site: anything but GET/HEAD is refused before routing (so it can't trigger a rebuild)
+    // Read-only site: anything but GET/HEAD is refused before routing (so it can't trigger a rebuild), apart from the
+    // keyed live relay
+    const pathname = req.url.split('?')[0];
+    const query = new URLSearchParams(req.url.split('?')[1] || '');
+    if (req.method === 'POST' && pathname.startsWith('/api/live/') && isMatchId(pathname.slice('/api/live/'.length))) {
+        const at = query.has('at') ? Number(query.get('at')) : -1;
+        if (!Number.isSafeInteger(at) || at < 0) { res.writeHead(400); res.end(); return; }
+        await receiveRelay(req, res, Number(pathname.slice('/api/live/'.length)), at, query.get('end') === '1');
+        return;
+    }
     if (req.method !== 'GET' && req.method !== 'HEAD') {
         res.writeHead(405, { Allow: 'GET, HEAD' });
         res.end();
@@ -1515,7 +1687,21 @@ async function handleRequest(req, res) {
     // "/api/spectate/<id>", "/api/spectate/player/<profileId>", and the pages "/spectate/<id>", "/overlay/<id>" and
     // "/overlay/player/<profileId>" with an optional trailing slash. Anything else under them is a 404, never a static file.
     // "/replay" is the replay viewer's page.
-    const pathname = req.url.split('?')[0];
+    if (pathname === '/api/live') {
+        serveRelayList(res);
+        return;
+    }
+    if (pathname.startsWith('/api/live/')) {
+        const id = pathname.slice('/api/live/'.length);
+        const from = Number(query.get('from') || 0);
+        if (!isMatchId(id) || !Number.isSafeInteger(from) || from < 0) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Not a match id' }));
+            return;
+        }
+        serveRelay(res, Number(id), from);
+        return;
+    }
     if (pathname === '/api/spectate') {
         await serveSpectateList(res);
         return;

@@ -86,6 +86,17 @@ async function serverChecks() {
         check('a search answer holds no replay addresses', !/https?:|matchurls|"sig/.test(found.body));
         check('games come newest first', list.games.every((g, i, a) => !i || a[i - 1].startTime >= g.startTime));
     }
+    const liveList = await get('/api/live');
+    check('the shared games list is JSON', liveList.status === 200 && Array.isArray(JSON.parse(liveList.body).games), liveList.status);
+    const noLive = await get('/api/live/999999999999999');
+    check('an unshared game has no live data', noLive.status === 404, noLive.status);
+    check('bad live ids are refused', (await get('/api/live/abc')).status === 404);
+    const noKey = await fetch(`${BASE}/api/live/999999999999999?at=0`, { method: 'POST', body: 'x' });
+    check('sending without the key is refused', noKey.status === 401, noKey.status);
+    const badKey = await fetch(`${BASE}/api/live/999999999999999?at=0`, { method: 'POST', body: 'x', headers: { 'X-Relay-Key': 'wrong' } });
+    check('sending with a wrong key is refused', badKey.status === 401, badKey.status);
+    const otherPost = await fetch(`${BASE}/api/spectate`, { method: 'POST', body: 'x' });
+    check('nothing else accepts POST', otherPost.status === 405, otherPost.status);
     const unknown = await get('/api/replay/999999999999999');
     check('an unknown game is refused', unknown.status === 404 && /"unknown"/.test(unknown.body), unknown.body.slice(0, 80));
     const games = JSON.parse((await get('/api/spectate/index')).body).games || [];

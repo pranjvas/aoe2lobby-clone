@@ -486,7 +486,7 @@ visitor having to download a file and drop it in, which is how aoe2insights work
   file: { game: 'VER 9.4', save: 68.9, build: 188329, complete: true, steps: 24968, watched: false },
   startedAt: 1793696458,                 // unix seconds, or null
   duration: 2909034,                     // game milliseconds (the in-game clock)
-  settings: { map, mapSize, dimension, rmsMapId, speed, population, infiniteResources, turbo, treaty, lobby, mod,
+  settings: { map, mapSize, dimension, rmsMapId, speed, population, infiniteResources, turbo, spectatorDelay, treaty, lobby, mod,
               rated, hiddenCivs },                // speed 'Normal' | 'Fast' ...
   // startingAge 'dark' ... 'postimperial', per player: a "Standard" start can differ between players and modes
   players: [{ number, name, profileId, civId, color, team, human, startingAge, start: { x, y }, rating }],
@@ -565,9 +565,10 @@ own PC is built, as [Live follow](#live-follow); the other routes aren't.
 - **Routes:**
   - Follow on your own PC: the page re-reads the growing file (File System Access API, Chrome and Edge). Only useful
     to someone with the game open. Built.
-  - A spectator PC: a PC or Windows server running the real game watches chosen games and uploads the recording, so
-    any visitor can follow in the browser with no game. One game per running copy; it needs a game licence and account,
-    and the game's terms must be checked before automating it.
+  - Share from the browser: built, as [Sharing a game live](#sharing-a-game-live). A PC watching a game, with the follow
+    page open, sends the recording to the server, and anyone can follow it with no game and nothing installed.
+  - A spectator PC running unattended: a server with the real game watching chosen games. One game per running copy;
+    it needs a game licence and account, and the game's terms must be checked before automating it.
   - Ask aoe2recs' operator for permission to use their live feed: top games only, and only what they show.
 - **Hard rule:** a recording of a game you're playing holds every player's orders with no delay, so a live view of it
   would be a cheat tool. Any live feature must refuse those games.
@@ -579,6 +580,31 @@ own PC is built, as [Live follow](#live-follow); the other routes aren't.
 - **Dropped:** an installed station program on a PC. The owner ruled out client software.
 - **Still impossible on a website:** unit positions, fights and kills need the game's engine. CaptureAge has them by
   running the real game on the same PC.
+
+### Sharing a game live
+
+The owner wanted live watching with no game open, and ruled out installing anything, so the follow page does the sending.
+A real game client still has to watch the game: that's the only thing that receives it.
+
+- **Sending:** in the follow view, **Share on the site** asks once for the sharing key (kept in the browser's local
+  storage as `aoe2RelayKey`), finds the game in the feed by its players, and sends the recording as it grows:
+  `POST /api/live/<matchId>?at=<offset>[&end=1]`, with the key in `X-Relay-Key`. It's the site's one write route.
+- **The key** is made by the server on first use, at `~/.aoe2lobby-relay-key` in the app user's home, outside the deployed
+  folder. Only its hash is held in memory. Read it with `ssh` on the server; it's never printed or logged.
+- **What the server checks:** the game is in the feed when sending starts, live or ended; the recording parses; it has no camera
+  records ([the lock](#live-follow)); and its human players are that game's. Anything else is refused and dropped, and
+  nothing is served until all of it holds.
+- **The delay:** everything is held until it's at least 2 minutes behind, counting the lobby's own spectator delay
+  (`max(0, 120 s - delay)`), so a player can't scout their own game here, even in a lobby with no delay.
+- **Watching:** `/replay?live=<id>` asks `GET /api/live/<id>?from=<bytes held>`, so a viewer downloads the recording
+  once and then about 1 KB a second, and parses it in the browser like a followed file. `GET /api/live` lists shared
+  games, on `/replay`, and a shared game's match page shows **Watch live here**.
+- **Limits:** 3 games, 32 MB each, 8 MB a request, all in memory. A game not updated for 5 minutes is dropped, and an ended
+  one is kept for 10 minutes.
+- **A watcher starts at 0:00** and runs at game speed, so one that joined late can be far behind, and to catch up it has
+  to be fast-forwarded in the game. In the real test the feed said the game had ended while the watcher was 21 game-minutes
+  in. That's why an ended game can still be shared: it's over, so there's nothing left to scout.
+- **The stored delay** is in seconds. Watched recordings here read 120 and 300; played ones read 0.
 
 ### Live follow
 
