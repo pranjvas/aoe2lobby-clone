@@ -13,7 +13,7 @@ Never use CaptureAge's code, formats (`.caderec`), keys or certificates, its loc
 authenticated Game API or relay. CaptureAge's rich live view comes from a locally running, signed-in game client
 streaming its own simulation; no public source carries live game state (positions, resources, kills). Every public
 live source carries metadata only. A recording is written while a game runs, but only on the PC of a real game client
-playing or watching it (see [Near-live](#near-live-not-built)).
+playing or watching it (see [Near-live](#near-live)).
 
 So spectating on the site has two halves:
 
@@ -69,7 +69,7 @@ page's **Download replay** link gives them. See [V2 design](#v2-design).
 ### Not feasible or not appropriate
 
 - **No public source:** live resources, population, army value, kills, fog, a live minimap or render, or live
-  scrubbing. [Near-live](#near-live-not-built) covers what a real game client watching a game could supply.
+  scrubbing. [Near-live](#near-live) covers what a real game client watching a game can supply.
 - **Fairness:** watching your own live game.
 - **Licensing:** the game's sprites and sounds, unless the Game Content Usage Rules clearly allow them.
 - **Auto-launching:** opening `aoe2de://` without a user gesture.
@@ -456,7 +456,8 @@ can replay the simulation itself. What the file does carry, and the viewer shows
 
 ```js
 {
-  file: { game: 'VER 9.4', save: 68.9, build: 188329, complete: true },   // complete: the body ran to its end
+  // complete: the body ran to its end. watched: true, false, or null with too few steps to tell (see Near-live)
+  file: { game: 'VER 9.4', save: 68.9, build: 188329, complete: true, steps: 24968, watched: false },
   startedAt: 1793696458,                 // unix seconds, or null
   duration: 2909034,                     // game milliseconds (the in-game clock)
   settings: { map, mapSize, dimension, rmsMapId, speed, population, infiniteResources, turbo, treaty, lobby, mod,
@@ -495,9 +496,10 @@ Facts worth keeping (each was measured on 745 replays; the byte layouts are in [
   beside them), and long lists stop at 100,000 rows, above the largest real one (88,005 market rows).
 - Infinite-resource games read a bank of 0 throughout, and a bank can dip below 0.
 
-### Near-live (not built)
+### Near-live
 
-Researched on 4 Nov 2026, after the first version of this plan called live stats impossible.
+Researched on 4 Nov 2026, after the first version of this plan called live stats impossible. Following a game on your
+own PC is built, as [Live follow](#live-follow); the other routes aren't.
 
 - **It exists elsewhere.** [aoe2recs.com](https://aoe2recs.com/), the Spectator Dashboard, shows games in progress
   with each player's current age, their top three units and the in-game chat, updating live, for about seven games at
@@ -510,18 +512,41 @@ Researched on 4 Nov 2026, after the first version of this plan called live stats
   150 ms, and it reads a file that stops mid-game.
 - **Proven on a running game (4 Nov 2026):** the file grew by about 1.3 KB a second with its last-write time current,
   and `replay-parse.js` read it while the game was writing it, in about 100 ms a read. Between reads 8 seconds apart the
-  game clock, the orders and the bank rows all moved on. Whether that game was played or watched wasn't recorded, so
-  a watched game's file growing the same way is still to be confirmed.
+  game clock, the orders and the bank rows all moved on. That game was one the account played, so a watched game's
+  file growing the same way is still to be confirmed.
 - **Routes:**
   - Follow on your own PC: the page re-reads the growing file (File System Access API, Chrome and Edge). Only useful
-    to someone with the game open.
+    to someone with the game open. Built.
   - A spectator PC: a PC or Windows server running the real game watches chosen games and uploads the recording, so
     any visitor can follow in the browser with no game. One game per running copy; it needs a game licence and account,
     and the game's terms must be checked before automating it.
   - Ask aoe2recs' operator for permission to use their live feed: top games only, and only what they show.
 - **Hard rule:** a recording of a game you're playing holds every player's orders with no delay, so a live view of it
-  would be a cheat tool. Any live feature must refuse those games. The file doesn't say so itself (`recordingPlayer`
-  reads 1 for a watcher), so it would have to compare the game clock with the live feed's start time.
+  would be a cheat tool. Any live feature must refuse those games.
 - **Still impossible on a website:** unit positions, fights and kills need the game's engine. CaptureAge has them by
   running the real game on the same PC.
+
+### Live follow
+
+- **Flow:** on `/replay`, in a browser with `showDirectoryPicker`, the visitor picks their savegame folder. The page
+  takes the newest `.aoe2record`, which must have been written within a minute, reads it every 6 seconds while it
+  grows, and re-parses it whole (about 100 ms). Nothing leaves the browser.
+- **The whole game is there.** A recording holds the game from its first second, so the view can run **From the
+  start** at any speed and catch up, and **Go live** returns to the newest moment. At the newest moment each read moves
+  the playhead along; anywhere else it stays put and says how far behind it is. The tab, chosen player, map position and
+  scroll position survive each read.
+- **The newest moment is the watcher's.** It trails the real game by the lobby's spectator delay, which this page
+  doesn't change.
+- **The lock.** A player's client writes a camera record at every step, the first within 124 ms; a watching client
+  writes none. So `file.watched` is false once a file has one camera record, true after 10 steps without any, and null
+  before that, because a read can land between a step and its record. Of 746 replays this refuses all 727 real games
+  the account played in real time and allows all 9 it watched. Three more are allowed: the account is seated in them,
+  but they have no camera records and were written faster than the game's speed (2.75 to 4.19 game seconds a second),
+  so nobody was playing them in real time. They look like a client catching up.
+- The lock is checked on every read, before anything reaches the page, and on the ordinary file drop too: an
+  unfinished file written in the last 5 minutes with camera records is refused. It is a rule of this page, not
+  security: the game's own players are protected by the game, and the page's code is public.
+- A read can fail when the game writes during it, so it retries, and gives up after three failed polls. A file with no
+  new data for 10 minutes ends the follow, and the closing record ends it at once. What's on screen then stays as a
+  replay of the game so far.
 

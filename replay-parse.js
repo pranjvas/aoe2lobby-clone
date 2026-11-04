@@ -1714,6 +1714,7 @@ const FAN_OUT = new Set(['delete', 'townBell', 'gate', 'backToWork', 'unknown140
 const CANCEL_REACH_MS = 10 * 60 * 1000;
 const MAX_STANDING_IDS = 512; // the longest action in 745 replays lists about 238
 const AGE_TECHS = { feudal: 101, castle: 102, imperial: 103 };
+const MIN_STEPS_TO_TELL = 10;
 const TREASON = 408; // Regicide's one tech that can be bought again at the same building
 // What the viewer loops over, far above any real game: [limit, largest of 745 replays]
 const LIMITS = { startObjects: 20000 /* 921 */, drawnGaia: 20000 /* 2,009 */, gaia: 1000000 /* 123,417 */, placed: 100000 /* 7,757 */, events: 2000000 /* 159,463 */, chat: 200000 };
@@ -2015,8 +2016,14 @@ async function parseFile(input, inflateRaw, onProgress = () => { }) {
     const stats = Object.fromEntries(seated.map(p => [p.number, []]));
     const chat = [];
     const commands = collectCommands(seats, humans, resourceIds);
+    // A player's client logs its camera at every step, from the first; a watching client logs none. That's what tells
+    // the two apart: the recording player reads 1 for a watcher, and the file name holds the same number. A read can
+    // land between a step and its camera record, so a file with only a few steps says neither (null).
+    let steps = 0, cameras = 0;
     const walk = ReplayStream.walkBody(bytes, bodyStart, {
         action: commands.action,
+        sync() { steps++; },
+        viewlock() { cameras++; },
         chat: (line, time) => chat.push({ chat: line, time }),
         checksum(block, time) {
             for (const row of block.rows) if (stats[row.player]) stats[row.player].push([time, row.resources, row.objectCount]);
@@ -2057,7 +2064,7 @@ async function parseFile(input, inflateRaw, onProgress = () => { }) {
     const allEvents = events.concat(ages).sort((a, b) => a.t - b.t);
     checkLimits(allEvents, startObjects, gaia, chatLines);
     return {
-        file: { game: head.game, save: head.save, build: head.build, complete: walk.end.reason === 'postgame' },
+        file: { game: head.game, save: head.save, build: head.build, complete: walk.end.reason === 'postgame', steps, watched: cameras ? false : steps >= MIN_STEPS_TO_TELL ? true : null },
         startedAt: head.timestamp || null,
         duration: walk.time,
         settings: {

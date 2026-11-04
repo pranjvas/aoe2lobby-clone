@@ -77,6 +77,25 @@
     background: var(--gold-dim);
 }
 
+.rv-follow {
+    margin-top: 1rem;
+    padding: 1rem 1.25rem;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    color: var(--text-secondary);
+    font-size: 0.92rem;
+}
+
+.rv-follow h3 {
+    color: var(--text-primary);
+    font-size: 1.05rem;
+    margin-bottom: 0.25rem;
+}
+
+.rv-follow p + p {
+    margin-top: 0.6rem;
+}
+
 .rv-status {
     margin-top: 1rem;
     min-height: 1.6em;
@@ -410,6 +429,34 @@
     bottom: 0.5rem;
     z-index: 5;
     background: rgba(13, 17, 23, 0.92);
+}
+
+.rv-live {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.75rem;
+    font-size: 0.85rem;
+}
+
+.rv-live-badge {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #fff;
+    background: #c62828;
+    border-radius: 4px;
+    padding: 0.1rem 0.45rem;
+}
+
+.rv-live-badge.rv-live-behind {
+    background: #4a5568;
+}
+
+.rv-live-note {
+    color: var(--text-secondary);
+    margin-right: auto;
 }
 
 .rv-play {

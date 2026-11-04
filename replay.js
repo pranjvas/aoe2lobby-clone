@@ -17,6 +17,13 @@ const ORDER_KINDS = new Set(['move', 'attackMove', 'patrol', 'attackGround', 'or
 const NOT_ARMY = new Set([13, 545]); // Fishing Ship, Transport Ship: Dock units, but not fighters
 const RESOURCE_MARKS = [['gold', 'Gold', '#e2bd3c'], ['stone', 'Stone', '#c3cad1'], ['forage', 'Forage', '#c45cc0'], ['fish', 'Fish', '#7fd3ff'], ['relic', 'Relic', '#ffffff']];
 const READ_TIMEOUT_MS = 60000;   // a real file takes under 3 s
+const FOLLOW_POLL_MS = 6000;     // how often a recording being followed is read again
+const FOLLOW_FRESH_MS = 60000;   // a recording written to within this is taken to be running
+const FOLLOW_IDLE_MS = 600000;   // a pause can be long; this long without new data, the game is over
+const OWN_GAME_FRESH_MS = 300000;
+// A recording holds every player's orders as they happen, so a live view of your own game would show you your
+// opponents'. The game hides that from its players, and so must this page.
+const OWN_GAME_MESSAGE = 'This is a game you\'re playing. A recording holds every player\'s orders, so it can only be opened once the game has ended.';
 // The longest list in 745 replays is 88,005 market rows; a forged file could ask for millions
 const LIST_MAX = 100000;
 const TABLE_ROWS_MAX = 5000;
@@ -27,6 +34,7 @@ let dataLoading = null;
 let game = null;                  // the parsed replay plus what the viewer derives from it
 let view = null;                  // the built page: elements, map, charts
 let currentLoad = null;           // the file being read: a newer one replaces it
+let follow = null;                // the running game being followed: { handle, size, changedAt, timer, failures, shown }
 const clockState = { t: 0, playing: false, speed: 8, lastFrame: 0, lastCards: 0, frame: 0 };
 
 // ------------------------------------------------------------------ small helpers
@@ -112,7 +120,7 @@ function parseInWorker(buffer, load) {
     return new Promise((resolve, reject) => {
         let worker;
         try {
-            worker = new Worker('/replay-worker.js?v=1');
+            worker = new Worker('/replay-worker.js?v=2');
         } catch (e) {
             reject(new Error('This browser can\'t run the replay reader.'));
             return;
@@ -136,6 +144,7 @@ async function openFile(file) {
     if (file.size > MAX_FILE_BYTES) { status('That file is too big to be a replay (over 64 MB).', true); return; }
     if (file.size < 64) { status('That file is too small to be a replay.', true); return; }
     // Only a file that will really be read replaces the one being read
+    stopFollowing();
     if (currentLoad && currentLoad.stop) currentLoad.stop();
     const load = currentLoad = { stop: null };
     stopPlaying();
@@ -146,6 +155,11 @@ async function openFile(file) {
         if (load !== currentLoad) return;
         const model = await parseInWorker(buffer, load);
         if (load !== currentLoad) return;
+        // A file that stops mid-game and was written just now is a game still running
+        if (!model.file.complete && model.file.watched === false && Date.now() - file.lastModified < OWN_GAME_FRESH_MS) {
+            status(OWN_GAME_MESSAGE, true);
+            return;
+        }
         showGame(model);
         status('');
     } catch (e) {
@@ -161,6 +175,10 @@ async function openFile(file) {
 
 function wireLoading() {
     $('rvPick').addEventListener('click', () => $('rvFile').click());
+    if (window.showDirectoryPicker) {
+        $('rvFollow').hidden = false;
+        $('rvFollowPick').addEventListener('click', pickFollowFolder);
+    }
     $('rvFile').addEventListener('change', e => openFile(e.target.files && e.target.files[0]));
     // A file can be dropped anywhere on the page
     let depth = 0;
@@ -312,7 +330,7 @@ function apmAt(p, t) {
 function showGame(model) {
     stopPlaying();
     game = derive(model);
-    clockState.t = 0;
+    clockState.t = follow ? game.duration : 0;
     const root = $('rvView');
     root.textContent = '';
     view = { cards: new Map(), charts: [], logs: [], tabs: {} };
@@ -340,7 +358,7 @@ function buildHead() {
     title.tabIndex = -1;
     const meta = [formatLabel(g)];
     if (s.mapSize) meta.push(s.mapSize);
-    meta.push(clock(g.duration));
+    meta.push(follow ? 'In progress' : clock(g.duration));
     if (g.startedAt) meta.push(new Date(g.startedAt * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
     if (s.speed && s.speed !== 'Normal') meta.push(`${s.speed} speed`);
     if (s.population) meta.push(`${s.population} pop`);
@@ -351,11 +369,12 @@ function buildHead() {
     if (s.lobby) notes.push(`Lobby: ${s.lobby}`);
     notes.push(`Game file ${g.file.game}, save ${g.file.save}${g.file.build ? `, build ${g.file.build}` : ''}`);
     left.append(el('p', 'rv-notes', notes.join(' · ')));
-    for (const w of g.warnings || []) left.append(el('p', 'rv-notes', w));
+    if (!follow) for (const w of g.warnings || []) left.append(el('p', 'rv-notes', w));
     if (gameData.failed) left.append(el('p', 'rv-notes', 'The game data couldn\'t be loaded: names show as ids, the map is one colour, and the villager, army and spent figures are wrong. Reload the page, or open the file again, to try again.'));
     const again = el('button', 'btn-view', 'Open another replay');
     again.type = 'button';
     again.addEventListener('click', () => {
+        stopFollowing();
         stopPlaying();
         $('rvLoad').hidden = false;
         $('rvView').hidden = true;
@@ -495,6 +514,12 @@ class MapView {
         }
         octx.putImageData(img, 0, 0);
         return off;
+    }
+
+    // Buildings placed since the last read of a game in progress
+    refresh() {
+        this.footprints = game.builds.map(e => this.footprint(e));
+        this.dirty = true;
     }
 
     footprint(e) {
@@ -836,26 +861,11 @@ function buildTimeline() {
     play.addEventListener('click', () => (clockState.playing ? stopPlaying() : startPlaying()));
     const time = el('div', 'rv-clock');
     const now = el('span', null, '0:00');
-    time.append(now, el('span', 'rv-clock-total', ` / ${clock(game.duration)}`));
+    const total = el('span', 'rv-clock-total', ` / ${clock(game.duration)}`);
+    time.append(now, total);
     const track = el('div', 'rv-track');
     const marks = el('div', 'rv-marks');
     marks.setAttribute('aria-hidden', 'true');
-    for (const p of game.players) {
-        for (const a of p.ages) {
-            const m = el('span', 'rv-mark');
-            m.style.left = `${(a.reached / game.duration) * 100}%`;
-            m.style.background = p.colorHex;
-            m.title = `${p.name}: ${ageLabel(a)} ${ageWhen(a)}`;
-            marks.append(m);
-        }
-        const r = game.per.get(p.number).resign;
-        if (r) {
-            const m = el('span', 'rv-mark rv-mark-resign');
-            m.style.left = `${(r.t / game.duration) * 100}%`;
-            m.style.background = p.colorHex;
-            marks.append(m);
-        }
-    }
     const scrub = el('input', 'rv-scrub');
     scrub.type = 'range';
     scrub.min = '0';
@@ -876,13 +886,67 @@ function buildTimeline() {
     }
     speed.addEventListener('change', () => { clockState.speed = Number(speed.value); });
     bar.append(play, time, track, speed);
-    Object.assign(view, { play, now, scrub });
+    Object.assign(view, { play, now, scrub, total, marks });
+    drawMarks();
+    if (follow) bar.append(buildLiveControls());
     return bar;
+}
+
+// The age-ups and resignations on the timeline, placed against the game's length so far
+function drawMarks() {
+    const marks = view.marks;
+    marks.textContent = '';
+    for (const p of game.players) {
+        for (const a of p.ages) {
+            const m = el('span', 'rv-mark');
+            m.style.left = `${(a.reached / game.duration) * 100}%`;
+            m.style.background = p.colorHex;
+            m.title = `${p.name}: ${ageLabel(a)} ${ageWhen(a)}`;
+            marks.append(m);
+        }
+        const r = game.per.get(p.number).resign;
+        if (r) {
+            const m = el('span', 'rv-mark rv-mark-resign');
+            m.style.left = `${(r.t / game.duration) * 100}%`;
+            m.style.background = p.colorHex;
+            marks.append(m);
+        }
+    }
+}
+
+function buildLiveControls() {
+    const row = el('div', 'rv-live');
+    const badge = el('span', 'rv-live-badge', 'LIVE');
+    const note = el('span', 'rv-live-note');
+    note.setAttribute('role', 'status');
+    const button = (text, act) => {
+        const b = el('button', 'btn-view rv-zoom-btn', text);
+        b.type = 'button';
+        b.addEventListener('click', act);
+        row.append(b);
+    };
+    row.append(badge, note);
+    button('From the start', () => { seek(0); startPlaying(); });
+    button('Go live', () => { stopPlaying(); seek(game.duration); });
+    button('Stop following', () => endFollowing('Stopped following. The game is shown up to here.'));
+    Object.assign(view, { liveRow: row, liveBadge: badge, liveNote: note });
+    return row;
+}
+
+// Where the playback is against the newest moment read
+function renderLive(t) {
+    if (!follow || !view.liveNote) return;
+    const behind = game.duration - t;
+    const live = behind < 1000;
+    view.liveBadge.classList.toggle('rv-live-behind', !live);
+    view.liveBadge.textContent = live ? 'LIVE' : 'REPLAY';
+    view.liveNote.textContent = live ? 'Following the game as it is recorded' : `${clock(behind)} behind the newest moment`;
 }
 
 function startPlaying() {
     if (!game) return;
-    if (clockState.t >= game.duration) clockState.t = 0;
+    // Play at the end of a replay starts it again; at the live edge there's just nothing to play yet
+    if (clockState.t >= game.duration && !follow) clockState.t = 0;
     clockState.playing = true;
     clockState.lastFrame = performance.now();
     view.play.textContent = '❚❚';
@@ -921,6 +985,7 @@ function renderAll(force) {
     if (!game || !view) return;
     const t = clockState.t;
     view.now.textContent = clock(t);
+    renderLive(t);
     // A held thumb stays under the pointer
     if (!view.scrubbing || !clockState.playing) view.scrub.value = String(Math.floor(t / 1000));
     view.scrub.setAttribute('aria-valuetext', clock(t));
@@ -1051,13 +1116,13 @@ function buildChartsTab(panel) {
         + 'to two minutes, about once a minute in a big game. Pick a player in a legend to pick them out; click a chart to '
         + 'jump there.'));
     const grid = el('div', 'rv-charts');
-    const series = key => game.players.map(p => ({ p, points: p.stats.map(r => [r[0], r[key]]) }));
-    if (!game.settings.infiniteResources) grid.append(lineChart({ title: 'Resources in the bank', sub: 'Food, wood, gold and stone together', series: series(1) }));
+    const series = key => () => game.players.map(p => ({ p, points: p.stats.map(r => [r[0], r[key]]) }));
+    if (!game.settings.infiniteResources) grid.append(lineChart({ title: 'Resources in the bank', sub: 'Food, wood, gold and stone together', seriesOf: series(1) }));
     grid.append(
-        lineChart({ title: 'Units & buildings', sub: 'Objects each player has (walls and foundations count)', series: series(2) }),
+        lineChart({ title: 'Units & buildings', sub: 'Objects each player has (walls and foundations count)', seriesOf: series(2) }),
         lineChart({
             title: 'Actions per minute', sub: 'Orders given in each game minute',
-            series: game.players.map(p => ({ p, points: p.apm.map((v, i) => [i * 60000 + 30000, v]) }))
+            seriesOf: () => game.players.map(p => ({ p, points: p.apm.map((v, i) => [i * 60000 + 30000, v]) }))
         })
     );
     panel.append(grid);
@@ -1074,7 +1139,7 @@ function niceStep(max, ticks) {
 // A line chart in SVG: one 2 px line per player, hairline grid, legend (click to pick one out), crosshair with a tooltip
 // listing every player, a playhead, click to seek, and a table of the same numbers. It draws at its real width, so
 // lines and text stay their size, and again when that changes (a hidden tab has no width until it's opened).
-function lineChart({ title, sub, series }) {
+function lineChart({ title, sub, seriesOf }) {
     const NS = 'http://www.w3.org/2000/svg';
     const H = 220;
     const box = el('figure', 'rv-chart');
@@ -1093,11 +1158,17 @@ function lineChart({ title, sub, series }) {
         svg.append(n);
         return n;
     };
-    const maxT = game.duration;
-    const maxV = series.reduce((m, s) => s.points.reduce((a, p) => Math.max(a, p[1]), m), 1);
-    const step = niceStep(maxV, 4), top = Math.ceil(maxV / step) * step;
-    // The times to snap to: every sample of any player
-    const times = [...new Set(series.flatMap(s => s.points.map(p => p[0])))].sort((a, b) => a - b);
+    let series, maxT, step, top, times;
+    const load = () => {
+        series = seriesOf();
+        maxT = game.duration;
+        const maxV = series.reduce((m, s) => s.points.reduce((a, p) => Math.max(a, p[1]), m), 1);
+        step = niceStep(maxV, 4);
+        top = Math.ceil(maxV / step) * step;
+        // The times to snap to: every sample of any player
+        times = [...new Set(series.flatMap(s => s.points.map(p => p[0])))].sort((a, b) => a - b);
+    };
+    load();
     const valueAt = (s, t) => { const i = lastAtOrBefore(s.points, t, p => p[0]); return i < 0 ? null : s.points[i][1]; };
     let W = 0, M = null, lines = [], playhead = null, cross = null, picked = null, playheadAt = 0;
     const x = t => M.l + (t / maxT) * (W - M.l - M.r);
@@ -1203,10 +1274,9 @@ function lineChart({ title, sub, series }) {
     // The same numbers as a table, built when first opened
     const table = el('details', 'rv-table-toggle');
     table.append(el('summary', null, 'Show as a table'));
-    table.addEventListener('toggle', () => {
-        if (!table.open || table.dataset.built) return;
-        table.dataset.built = '1';
-        const wrap = el('div', 'rv-table-wrap');
+    let tableWrap = null;
+    const buildTable = () => {
+        const wrap = tableWrap = el('div', 'rv-table-wrap');
         const tbl = el('table', 'rv-table');
         const head = el('tr');
         head.append(el('th', null, 'Time'));
@@ -1224,11 +1294,19 @@ function lineChart({ title, sub, series }) {
         wrap.append(tbl);
         wrap.style.maxHeight = '320px';
         table.append(wrap);
-    });
+    };
+    table.addEventListener('toggle', () => { if (table.open && !tableWrap) buildTable(); });
     box.append(table);
     const chart = {
         measure,
-        setPlayhead(t) { playheadAt = t; movePlayhead(); }
+        setPlayhead(t) { playheadAt = t; movePlayhead(); },
+        // New figures from a game in progress
+        refresh() {
+            load();
+            if (W) draw(W);
+            if (tableWrap) { tableWrap.remove(); tableWrap = null; }
+            if (table.open) buildTable();
+        }
     };
     view.charts.push(chart);
     return box;
@@ -1241,6 +1319,7 @@ function buildOrderTab(panel) {
         + 'Repeats in a row are grouped. Later orders are faded until the playback reaches them.'));
     const list = el('ol', 'rv-log');
     const show = number => {
+        view.orderPlayer = number;
         list.textContent = '';
         const items = buildOrderItems(number);
         for (const item of items.slice(0, LIST_MAX)) {
@@ -1255,8 +1334,9 @@ function buildOrderTab(panel) {
         if (!list.children.length) list.append(el('li', 'rv-empty', 'No orders.'));
         markLog(list, clockState.t);
     };
-    panel.append(playerPicker(show, game.players[0].number), list);
-    show(game.players[0].number);
+    const first = view.orderPlayer ?? game.players[0].number;
+    panel.append(playerPicker(show, first), list);
+    show(first);
     return { update: t => markLog(list, t) };
 }
 
@@ -1354,6 +1434,7 @@ function buildChatTab(panel) {
     const all = el('label', 'rv-layers');
     const box = el('input');
     box.type = 'checkbox';
+    box.checked = !!view.allChat;
     all.append(box, document.createTextNode('Show messages still to come'));
     const list = el('ol', 'rv-log');
     const lines = game.chat || [];
@@ -1377,7 +1458,7 @@ function buildChatTab(panel) {
         for (const li of list.children) if (li.dataset.t !== undefined) li.hidden = !box.checked && Number(li.dataset.t) > t;
         markLog(list, t);
     };
-    box.addEventListener('change', () => update(clockState.t));
+    box.addEventListener('change', () => { view.allChat = box.checked; update(clockState.t); });
     return { update };
 }
 
@@ -1420,6 +1501,146 @@ document.addEventListener('keydown', e => {
     if (e.target !== view.scrub && (/^(INPUT|SELECT|TEXTAREA|BUTTON|SUMMARY)$/.test(tag) || e.target.isContentEditable)) return;
     if (e.key === ' ') { e.preventDefault(); clockState.playing ? stopPlaying() : startPlaying(); }
 });
+
+// ------------------------------------------------------------------ following a game in progress
+// The game writes its recording as it goes. Reading it again every few seconds shows the game up to the newest moment
+// the game has received, and the whole game before that: a recording holds it from the first second, even when
+// the watcher joined late. Only the visitor's own browser ever sees the folder or the file.
+async function pickFollowFolder() {
+    let dir;
+    try {
+        dir = await window.showDirectoryPicker({ id: 'aoe2-savegame', mode: 'read' });
+    } catch (e) {
+        if (e.name !== 'AbortError') status('That folder couldn\'t be opened.', true);
+        return;
+    }
+    startFollowing(dir);
+}
+
+async function newestRecording(dir) {
+    let best = null;
+    for await (const entry of dir.values()) {
+        if (entry.kind !== 'file' || !/\.aoe2record$/i.test(entry.name)) continue;
+        const file = await entry.getFile();
+        if (!best || file.lastModified > best.file.lastModified) best = { handle: entry, file };
+    }
+    return best;
+}
+
+async function startFollowing(dir) {
+    stopFollowing();
+    stopPlaying();
+    status('Looking for a game being recorded…');
+    try {
+        await loadGameData();
+        const found = await newestRecording(dir);
+        if (!found || Date.now() - found.file.lastModified > FOLLOW_FRESH_MS) {
+            status('Nothing is being recorded in that folder right now. Start watching a game in Age of Empires II, then try again.', true);
+            return;
+        }
+        follow = { handle: found.handle, size: -1, changedAt: Date.now(), timer: 0, failures: 0 };
+        followStep();
+    } catch (e) {
+        status('That folder couldn\'t be read.', true);
+    }
+}
+
+// The file can change while it's being read, which a browser reports as an error: the next try gets it
+async function readRecording(handle) {
+    for (let tries = 0; ; tries++) {
+        const file = await handle.getFile();
+        try {
+            return { size: file.size, buffer: await file.arrayBuffer() };
+        } catch (e) {
+            if (tries >= 4) throw e;
+            await new Promise(resolve => setTimeout(resolve, 150));
+        }
+    }
+}
+
+async function followStep() {
+    const mine = follow;
+    if (!mine) return;
+    const load = currentLoad = { stop: null };
+    try {
+        const { size, buffer } = await readRecording(mine.handle);
+        if (mine !== follow) return;
+        if (size === mine.size) {
+            if (Date.now() - mine.changedAt > FOLLOW_IDLE_MS) endFollowing('No new data for 10 minutes, so the page stopped following.');
+            return;
+        }
+        mine.size = size;
+        mine.changedAt = Date.now();
+        const model = await parseInWorker(buffer, load);
+        if (mine !== follow) return;
+        mine.failures = 0;
+        // Checked on every read, before anything from the file reaches the page
+        if (model.file.watched === false && !model.file.complete) {
+            stopFollowing();
+            $('rvView').hidden = true;
+            $('rvLoad').hidden = false;
+            status(OWN_GAME_MESSAGE, true);
+            return;
+        }
+        if (model.file.watched === null) { status('Waiting for the game to start…'); return; }
+        if (mine.shown) updateGame(model);
+        else { mine.shown = true; showGame(model); status(''); }
+        if (model.file.complete) endFollowing('The game is over. This is the whole game.');
+    } catch (e) {
+        if (mine !== follow) return;
+        if (++mine.failures >= 3) {
+            stopFollowing();
+            status(e.message && e.name === 'Error' ? e.message : 'The recording couldn\'t be read any more.', true);
+        }
+    } finally {
+        if (load === currentLoad) currentLoad = null;
+        if (mine === follow) mine.timer = setTimeout(followStep, FOLLOW_POLL_MS);
+    }
+}
+
+// New figures, with the view as it is: the same tab, map position and playback
+function updateGame(model) {
+    const atEdge = clockState.t >= game.duration - 1000;
+    game = derive(model);
+    if (atEdge) clockState.t = game.duration;
+    view.scrub.max = String(Math.ceil(game.duration / 1000));
+    view.total.textContent = ` / ${clock(game.duration)}`;
+    drawMarks();
+    view.map.refresh();
+    for (const c of view.charts) c.refresh();
+    for (const tab of TABS) {
+        const v = view.tabs[tab.key];
+        if (tab.key === 'charts' || !v.built) continue;
+        const list = v.panel.querySelector('.rv-log'), top = list ? list.scrollTop : 0;
+        v.panel.textContent = '';
+        v.built = false;
+        delete v.update;
+        if (view.tabs.active !== tab.key) continue;
+        selectTab(tab.key);
+        const fresh = v.panel.querySelector('.rv-log');
+        if (fresh) fresh.scrollTop = top;
+    }
+    renderAll(true);
+}
+
+function stopFollowing() {
+    if (!follow) return;
+    clearTimeout(follow.timer);
+    follow = null;
+    if (currentLoad && currentLoad.stop) currentLoad.stop();
+    currentLoad = null;
+}
+
+// Leaves what's on screen as an ordinary replay of the game so far
+function endFollowing(message) {
+    stopFollowing();
+    if (!view || !view.liveRow) return;
+    view.liveRow.textContent = '';
+    view.liveRow.append(el('span', 'rv-live-note', message));
+    view.liveNote = null;
+    const head = document.querySelector('.rv-head');
+    if (head) head.replaceWith(buildHead());
+}
 
 const endScrub = () => { if (view) view.scrubbing = false; };
 window.addEventListener('pointerup', endScrub);

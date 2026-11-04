@@ -19,7 +19,7 @@
     <meta property="og:image" content="https://aoe2lobby.online/og-image.png">
     <meta name="twitter:card" content="summary_large_image">
     <link rel="stylesheet" href="/styles.css?v=27">
-    <link rel="stylesheet" href="/replay.css?v=1">
+    <link rel="stylesheet" href="/replay.css?v=2">
 </head>
 <body>
     <div class="bg-shape shape-1"></div>
@@ -46,6 +46,14 @@
                     <input type="file" id="rvFile" accept=".aoe2record,.zip,application/zip" hidden>
                     <p class="match-note">An <code>.aoe2record</code> file, or the ZIP from a match page's
                         <strong>Download replay</strong>. It's read in your browser and never uploaded.</p>
+                </div>
+                <!-- Shown where a page can read a folder: Chrome and Edge on a computer -->
+                <div id="rvFollow" class="rv-follow" hidden>
+                    <h3>Follow a game in progress</h3>
+                    <p>Watching a game in Age of Empires II? Pick your savegame folder and this page follows the game
+                        as it's recorded, with the whole game from its start to scrub through. It needs the game open
+                        on this computer, and only follows games you're watching, never one you're playing.</p>
+                    <p><button type="button" id="rvFollowPick" class="btn-view">Pick the savegame folder</button></p>
                 </div>
                 <p id="rvStatus" class="rv-status" role="status" aria-live="polite"></p>
                 <details class="rv-where">
@@ -74,7 +82,7 @@
         </main>
     </div>
 
-    <script src="/replay.js?v=1"></script>
+    <script src="/replay.js?v=2"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>

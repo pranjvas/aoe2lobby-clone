@@ -111,6 +111,7 @@ function modelProblems(m) {
     const expect = (ok, what) => { if (!ok) p.push(what); };
     expect(m.file && typeof m.file.save === 'number', 'file.save');
     expect(Number.isFinite(m.duration) && m.duration >= 0, 'duration');
+    expect(m.file && Number.isInteger(m.file.steps) && [true, false, null].includes(m.file.watched), 'file.steps and file.watched');
     expect(Array.isArray(m.players) && m.players.length >= 1 && m.players.length <= 8, 'players');
     const numbers = new Set();
     for (const pl of m.players || []) {
