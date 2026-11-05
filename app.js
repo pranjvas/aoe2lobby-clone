@@ -672,7 +672,7 @@ function renderPlayers(players) {
             <div class="card-header">
                 <div class="host-info">
                     <div class="host-name" style="display: flex; align-items: center; gap: 8px;">
-                        ${esc(p.name)}
+                        <span class="host-label">${esc(p.name)}</span>
                         <button type="button" data-action="copy-handle" data-handle="${esc(p.name)}" style="background: none; border: none; cursor: pointer; color: var(--text-secondary); padding: 0; display: flex;" title="Copy Handle">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                         </button>
@@ -801,7 +801,7 @@ function lobbyCardHtml(lobby) {
         <div class="card-header">
             <div class="host-info">
                 <div class="host-name">
-                    ${esc(lobby.host)}
+                    <span class="host-label">${esc(lobby.host)}</span>
                     ${lobby.elo ? `<span class="elo-badge">${esc(lobby.elo)}</span>` : ''}
                 </div>
                 <div class="game-title" title="${esc(lobby.title)}">${esc(lobby.title)}</div>
@@ -1221,7 +1221,7 @@ function spectateCardHtml(g) {
         <div class="card-header">
             <div class="host-info">
                 <div class="host-name">
-                    ${gid ? `<a class="match-link" href="/spectate/${gid}" title="Game details">${esc(g.map)}</a>` : esc(g.map)}
+                    <span class="host-label">${gid ? `<a class="match-link" href="/spectate/${gid}" title="Game details">${esc(g.map)}</a>` : esc(g.map)}</span>
                     ${avg != null ? `<span class="elo-badge">${avg}</span>` : ''}
                 </div>
                 <div class="game-title" title="${esc(g.title)}">${esc(g.title)}</div>

@@ -401,17 +401,28 @@ select:focus, select:hover {
     opacity: 1;
 }
 
+/* A name too long to sit beside the status badge moves the badge to its own line, instead of pushing it off the card */
 .card-header {
     padding: 1.25rem 1.25rem 0.5rem;
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: flex-start;
+    gap: 0.5rem;
 }
 
 .host-info {
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
+    flex: 1 1 min-content;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.card-header .server-badge {
+    flex: none;
+    white-space: nowrap;
 }
 
 .host-name {
@@ -420,8 +431,15 @@ select:focus, select:hover {
     font-weight: 600;
     color: #fff;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem;
+    overflow-wrap: break-word;
+}
+
+/* Lets one unbroken name wider than the card break at the card edge */
+.host-label {
+    min-width: 0;
 }
 
 .elo-badge {
@@ -841,7 +859,12 @@ select:focus, select:hover {
     height: 100%;
     display: flex;
     flex-direction: column;
+    flex-wrap: nowrap;
     justify-content: center;
+}
+
+.lobby-grid.list-layout .host-info {
+    flex: none;
 }
 
 .lobby-grid.list-layout .card-body {
