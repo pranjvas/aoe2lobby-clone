@@ -901,11 +901,8 @@ function renderLobbies(filteredLobbies) {
 
         if (existingNodes.has(id) && existingNodes.get(id).dataset.details !== lobbyDetailsKey(lobby)) {
             const node = existingNodes.get(id);
-            // A rebuilt card keeps its player list's scroll (and so a civ popover opened on a player lower down)
-            const listTop = node.querySelector('.player-list')?.scrollTop || 0;
             node.innerHTML = lobbyCardHtml(lobby);
             node.dataset.details = lobbyDetailsKey(lobby);
-            if (listTop) { const list = node.querySelector('.player-list'); if (list) list.scrollTop = listTop; }
         } else if (existingNodes.has(id)) {
             const node = existingNodes.get(id);
             const countText = node.querySelector('.players-count-text');
@@ -1954,13 +1951,6 @@ document.addEventListener('click', (e) => {
     closeCivPopover(false);
 });
 window.addEventListener('resize', () => reanchorCivPopover());
-// A scrolling box (a lobby card's player list) moves its chips under a popover placed in page coordinates: follow
-// them, once a frame. The page's own scroll needs nothing, as the popover scrolls with it.
-let civScrollFrame = 0;
-document.addEventListener('scroll', (e) => {
-    if (e.target === document || !civPopover || civPopover.hidden || civPopover.contains(e.target) || civScrollFrame) return;
-    civScrollFrame = requestAnimationFrame(() => { civScrollFrame = 0; reanchorCivPopover(); });
-}, { capture: true, passive: true });
 
 // ---------------------------------------------------------------- Followed players (kept in this browser only)
 // The star next to a player follows them. While the site is open in a tab, it checks the games in progress every
