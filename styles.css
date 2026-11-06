@@ -986,6 +986,47 @@ input.filter-active {
     color: var(--gold-primary);
 }
 
+/* Copy a player's name. The ::after adds to the clickable area without taking space in the row, and stops short of its neighbours */
+.copy-handle {
+    position: relative;
+    display: inline-flex;
+    flex: none;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.copy-handle svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.copy-handle::after {
+    content: '';
+    position: absolute;
+    inset: -5px;
+    border-radius: 6px;
+}
+
+.copy-handle:hover {
+    color: var(--gold-primary);
+}
+
+.copy-handle:hover::after {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+@media (pointer: coarse) {
+    .copy-handle::after {
+        inset: -7px -5px;
+    }
+}
+
 /* Per-player profile links: AoE2Insights, official AoE stats (Xbox icon), Steam */
 .player-links {
     display: inline-flex;
@@ -1640,6 +1681,7 @@ button.civ-chip {
     border-color: rgba(212, 175, 55, 0.55);
 }
 .civ-chip-info:focus-visible,
+.copy-handle:focus-visible,
 .follow-btn:focus-visible,
 .follow-remove:focus-visible,
 .toast a:focus-visible,
