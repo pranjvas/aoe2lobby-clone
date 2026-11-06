@@ -36,9 +36,15 @@ const FALLBACK_SCHEMA = {
     },
     starting_age: { 0: "Standard", 1: "Dark Age", 2: "Feudal Age", 3: "Castle Age", 4: "Imperial Age", 5: "Post-Imperial Age" },
     resources: { 0: "Standard", 1: "Low", 2: "Medium", 3: "High", 4: "Ultra High", 5: "Infinite", 6: "Random" },
-    // Civs newer than the live schema's table arrive as their raw game id negated, and the live table never labels them.
-    // The same names as NEW_CIVS in server.js (the Spectate views); keep the two in sync.
-    civilization: { "-56": "Thracians", "-57": "Puru", "-61": "Saxons", "-62": "Varangians", "-63": "Danes" }
+    // Civs newer than the live schema's table, which never labels them. The two feeds use different ids for the same civ: lobby
+    // slots send the four-digit ids, and the spectate feed sends the two-digit ones. Both sets are here, and in NEW_CIVS in
+    // server.js; keep the two in sync. The lobby ids aren't documented: each was checked against a finished game in match
+    // history, so add one only once it has been seen. Don't work it out from the others: the steps of 10 they follow would give
+    // Mapuche -1580, and the feed sends 75.
+    civilization: {
+        "-56": "Thracians", "-57": "Puru", "-61": "Saxons", "-62": "Varangians", "-63": "Danes",
+        "-1540": "Macedonians", "-1600": "Saxons", "-1610": "Varangians", "-1620": "Danes"
+    }
 };
 let liveSchema = null;
 
@@ -51,6 +57,20 @@ function label(field, value, unknown = "Unknown") {
     const fallback = FALLBACK_SCHEMA[field];
     if (fallback && Object.hasOwn(fallback, key)) return fallback[key];
     return unknown;
+}
+
+// A slot's civ. An id neither table labels is logged once, so the tables can be updated by hand, and shown as "Unknown civ" like
+// the Spectate views. A slot with no civ stays null, and so does any id before the live schema arrives, when it can't be read.
+const loggedUnknownCivs = new Set();
+function civLabel(value) {
+    const civ = label('civilization', value, null);
+    if (civ || (typeof value !== 'string' && typeof value !== 'number') || !liveSchema?.civilization) return civ;
+    const key = String(value);
+    if (!loggedUnknownCivs.has(key) && loggedUnknownCivs.size < 100) {
+        loggedUnknownCivs.add(key);
+        console.log(`Lobby: civ id ${JSON.stringify(key.slice(0, 20))} has no label, shown as "Unknown civ" (add it to FALLBACK_SCHEMA.civilization and NEW_CIVS)`);
+    }
+    return 'Unknown civ';
 }
 
 // Feed ids are positive integers (numbers, or digit strings as object keys); anything else is dropped
@@ -215,7 +235,7 @@ function dumpData() {
                 if (profileId === hostProfileId) hostName = slot.name;
 
                 const steamProfile = typeof slot.steam_profile === 'string' && slot.steam_profile ? slot.steam_profile : null;
-                const civ = label('civilization', slot.civilization, null); // e.g. Franks, or Random / Custom / Hidden before the game starts
+                const civ = civLabel(slot.civilization); // e.g. Franks, or Random / Custom / Hidden before the game starts
                 const stats = playerStats(profileId);
 
                 scrapedPlayers[String(profileId)] = { profileId, name: slot.name, steamProfile, civ, stats };

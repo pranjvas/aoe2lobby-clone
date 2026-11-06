@@ -132,13 +132,21 @@ visitor's savegame folder. See [V2 design](#v2-design).
   `-62` Varangians, `-63` Danes (25 of 25 consistent over two snapshots), and `-57` Puru (seen once, an AI slot in
   518428009, with no conflicting evidence), and `-56` Thracians (two AI slots, in 518465237 and 518464315, matched by
   player colour; every other slot of both games matched too). Never read them as
-  `abs(id)`, because the schema's 57 and 61-63 are Return of Rome civs. scraper.js labels lobby players with the
-  same table, so the lobby list names these civs too.
+  `abs(id)`, because the schema's 57 and 61-63 are Return of Rome civs.
   The schema's `15` "Aztec" is shown as "Aztecs", and its Return of Rome internal names `58` "OldPersians", `62`
   "OldRomans" and `66` "LacViet" as "Persians", "Romans" and "Lac Viet" (in the lobby list too).
-  - Any other unlabelled id shows as `Unknown civ` and is logged once, so the table can be updated by hand.
+  - Any other unlabelled id, in either feed, shows as `Unknown civ` and is logged once, so the tables can be updated by
+    hand. `qa/lobby-civ-check.js` looks for them in the lobby feed.
   - A live aoe2companion lookup fallback, in the style of `resolveMapNames`, is a follow-up if new civs ever appear
     without a schema update.
+- **Lobby civ ids:** lobby slots use other ids for these civs: `-1540` Macedonians, `-1600` Saxons, `-1610` Varangians,
+  `-1620` Danes (none of the spectate ids above were seen in 617 lobby player-matches). Each one was checked against a
+  finished game: the lobby id read 17 to 96 s before the start, then match history's `civilization_id` (55, 61, 62, 63 in
+  `getAvailableLeaderboards`' `races`). A player can still change civ after the last reading, so a single join proves
+  little. `-(1000 + 10 x replay civ id)` fits these four but not Mapuche, which is `75`, so don't code it: lobby ids for
+  Thracians and Puru are unknown until seen. scraper.js labels these, and server.js only keeps the same table.
+  - `metaData` key `1` in `findAdvertisements` slots holds the replay civ id, but also the real pick in hidden-civ
+    lobbies, which the lobby feed masks. Don't show it for a lobby the feed marks `hide_civilizations`.
 - **Player colours (1-8):** `#405BFF` Blue, `#FF0000` Red, `#00FF00` Green, `#FFFF00` Yellow, `#00FFFF` Teal,
   `#FF57B3` Pink, `#797979` Grey, `#FF9600` Orange (aoe2companion's `colorHex`).
 
