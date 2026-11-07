@@ -217,6 +217,17 @@ function playerLinksHtml(p) {
     return `<span class="player-links">${html}</span>`;
 }
 
+// A player's shown ladder has no games (displayGames and displayWR are set by parseRelicLobby)
+function noGamesShown(p) {
+    return !Number(p.displayGames) && (!p.displayWR || p.displayWR === '0%' || p.displayWR === '0.0%');
+}
+// No games to show yet because the server is still fetching the player's stats, so nothing about them is known
+function statsLoading(p) {
+    return p.statsPending === true && noGamesShown(p);
+}
+// Plain text only, so the browser serialises it back unchanged and the poll's innerHTML comparison can match it
+const STATS_SPINNER = '<span class="spinner-inline" role="img" aria-label="Loading player stats" title="Loading player stats"></span>';
+
 function parseRelicLobby(match) {
     let title = (typeof match.title === 'string' && match.title) ? match.title : "Age of Empires II Game";
     try { title = decodeURIComponent(escape(title)); } catch(e) {}
@@ -296,11 +307,7 @@ function parseRelicLobby(match) {
             let statsHtml = `${esc(p.displayGames)} Games, ${esc(wr)} WR`;
 
             // No games on this ladder: either the server is still fetching the profile, or the player hasn't played it
-            if (!Number(p.displayGames) && (!p.displayWR || p.displayWR === '0%' || p.displayWR === '0.0%')) {
-                statsHtml = p.statsPending === true
-                    ? `<div class="spinner-inline" title="Loading player stats..."></div>`
-                    : 'No games on this ladder';
-            }
+            if (noGamesShown(p)) statsHtml = p.statsPending === true ? STATS_SPINNER : 'No games on this ladder';
 
             return `
             <div class="player-item" style="display: flex; align-items: center; justify-content: space-between;">
@@ -671,6 +678,7 @@ function renderPlayers(players) {
     }
 
     players.forEach(p => {
+        const loading = statsLoading(p);
         const div = document.createElement('div');
         div.className = 'lobby-card'; // Reuse the card styling for consistency
         div.style.animation = "fadeIn 0.5s ease-out";
@@ -680,7 +688,7 @@ function renderPlayers(players) {
                     <div class="host-name" style="display: flex; align-items: center; gap: 8px;">
                         <span class="host-label">${esc(p.name)}</span>
                         ${copyHandleHtml(p.name)}
-                        ${p.displayElo != null ? `<span class="elo-badge">${esc(p.displayElo)}</span>` : '<span class="elo-badge" style="background: rgba(138, 155, 178, 0.2); color: var(--text-secondary); border-color: transparent;">Unranked</span>'}
+                        ${p.displayElo != null ? `<span class="elo-badge">${esc(p.displayElo)}</span>` : loading ? STATS_SPINNER : '<span class="elo-badge" style="background: rgba(138, 155, 178, 0.2); color: var(--text-secondary); border-color: transparent;">Unranked</span>'}
                     </div>
                     <div class="game-title" style="font-size: 0.8em; color: var(--text-secondary);">In lobby: ${esc(p.lobbyTitle)}${p.civ ? ` · Civ: ${esc(p.civ)}` : ''}</div>
                     ${playerLinksHtml(p)}
@@ -691,11 +699,11 @@ function renderPlayers(players) {
                 <div class="game-details">
                     <div class="detail-row">
                         <span class="detail-icon">&#x1F3C6;</span>
-                        Win Rate: ${esc(p.displayWR ? (String(p.displayWR).endsWith('%') ? p.displayWR : p.displayWR + '%') : 'N/A')}
+                        Win Rate: ${loading ? STATS_SPINNER : esc(p.displayWR ? (String(p.displayWR).endsWith('%') ? p.displayWR : p.displayWR + '%') : 'N/A')}
                     </div>
                     <div class="detail-row">
                         <span class="detail-icon">&#x1F4CA;</span>
-                        Total Games: ${esc(p.displayGames || '0')}
+                        Total Games: ${loading ? STATS_SPINNER : esc(p.displayGames || '0')}
                     </div>
                     <div class="detail-row">
                         <span class="detail-icon">&#x1F5FA;</span>

@@ -42,18 +42,27 @@ function collectAoe2lobby() {
     const theirById = {};
     for (const m of Object.values(matches)) theirById[String(m.matchid)] = m;
 
-    // What our "Auto" mode is meant to show: the lobby's ladder, else the ladder with the most games
-    const intendedAuto = (pid, theirs, ladder) => {
-        const own = elo[ladder]?.[pid];
-        if (own) return own.rating;
-        let best = null;
+    // The server merges aoe2lobby.com's ratings with Relic's profile per ladder (server.js mergedStats): a ladder
+    // aoe2lobby.com lacks, or where Relic shows more games, comes from Relic. Relic isn't read here, so its records are
+    // taken from our own allStats, only where they hold more games than aoe2lobby.com's (or it has none)
+    const mergedLadders = (pid, ourStats) => {
+        const out = {};
         for (const t of ELO_TYPES) {
-            const st = elo[t]?.[pid];
-            if (st && (!best || st.games > best.games)) best = st;
+            const theirs = elo[t]?.[pid], ours = ourStats?.[t];
+            out[t] = (ours && (!theirs || ours.games > theirs.games)) ? { ...ours, fromRelic: true } : theirs || null;
         }
-        return best ? best.rating : null;
+        return out;
     };
-    let vsUnranked = 0, vsAuto = 0, defaultViewMismatch = 0;
+    // What our "Auto" mode is meant to show: the lobby's ladder, else the ladder with the most games
+    const intendedAuto = (pid, ladder, ourStats) => {
+        const all = mergedLadders(pid, ourStats);
+        let best = all[ladder];
+        if (!best) {
+            for (const t of ELO_TYPES) if (all[t] && (!best || all[t].games > best.games)) best = all[t];
+        }
+        return best ? { rating: best.rating, fromRelic: !!best.fromRelic } : { rating: null, fromRelic: false };
+    };
+    let vsUnranked = 0, vsAuto = 0, defaultViewMismatch = 0, autoFromRelic = 0;
     let compared = 0, mismatched = 0, missingLobby = 0;
     const samples = [];
     for (const m of ours.matches) {
@@ -75,7 +84,9 @@ function collectAoe2lobby() {
             const ourMatchType = m.matchType;
             const ladder = ourMatchType === 'Random Map' ? rmType : ourMatchType === 'Empire Wars' ? ewType : '0';
             const expectedType = ladder;
-            const expected = intendedAuto(pid, theirs, ladder);
+            const intended = intendedAuto(pid, ladder, p.allStats);
+            const expected = intended.rating;
+            if (intended.fromRelic) autoFromRelic++;
             if (String(p.elo) !== String(theirElo['0'])) vsUnranked++;
             // What the site shows by default (Elo Type = Unranked) comes from allStats['0']
             const ourDefault = p.allStats?.['0']?.rating ?? null;
@@ -94,6 +105,6 @@ function collectAoe2lobby() {
             }
         }
     }
-    console.log(`compared ${compared} players | differs from aoe2lobby.com Unranked (their default): ${vsUnranked} | Auto rule mismatches: ${vsAuto} | default (Unranked) view mismatches: ${defaultViewMismatch} | our lobbies not on aoe2lobby.com: ${missingLobby}`);
+    console.log(`compared ${compared} players | differs from aoe2lobby.com Unranked (their default): ${vsUnranked} | Auto rule mismatches: ${vsAuto} (Auto value from Relic, not a mismatch: ${autoFromRelic}) | default (Unranked) view mismatches: ${defaultViewMismatch} | our lobbies not on aoe2lobby.com: ${missingLobby}`);
     for (const s of samples) console.log(JSON.stringify(s));
 })().catch(e => { console.error(e); process.exit(1); });

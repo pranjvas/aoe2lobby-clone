@@ -33,6 +33,16 @@ const profileCache = new Map(); // profile_id -> { alias, rating, totalGames, to
 const PROFILE_REFRESH_MS = 6 * 60 * 60 * 1000; // cached profiles this old are refetched, in the background only
 const PROFILE_FORGET_MS = 24 * 60 * 60 * 1000; // profiles not seen in any lobby for this long are dropped
 const pendingProfileIds = new Set(); // profile ids with a GetPersonalStat request in flight
+// Players' Unranked ratings come only from aoe2lobby.com, whose feed scraper.js snapshots every 15 s: a joining player's
+// arrive within about 20 s (0-21 s, median 10, for 193 joins watched on the live site). Until then, or this long into
+// the player's stay in lobbies, their stats show a spinner instead of "No games on this ladder".
+const RATINGS_WAIT_MS = 45000;
+// For players aoe2lobby.com doesn't list yet, the stay is timed by our own builds, which run only while someone polls
+// (every 10 s per open page): a player unseen for STAY_GAP_MS starts a new stay
+const STAY_GAP_MS = 30000;
+const PLAYER_SEEN_FORGET_MS = 10 * 60 * 1000;
+const playerSeen = new Map(); // profile id -> { first, last }: our builds' view of the player's current stay
+const lastRatings = new Map(); // profile id -> the last ratings aoe2lobby.com sent, kept while playerSeen has the player
 const activeMatches = new Map(); // Keep track of matches to simulate "Playing" state
 
 // Scraped files (written by scraper.js) older than this are ignored: the scraper rewrites them every ~15 s while it has live data
@@ -1279,7 +1289,12 @@ function readScrapedJson(file) {
 // (civ is a label scraper.js took from the lobby feed's schema: named the way the spectate view names it)
 function scrapedLobbyPlayer(p) {
     const civ = str(p.civ);
-    return { name: str(p.name), profileId: profileIdOf(p.profileId), civ: civLabel(civ), civRor: ROR_SHARED_LABELS.has(civ), steamProfile: str(p.steamProfile), stats: cleanStats(p.stats) };
+    // When the scraper first listed the player in their current stay in lobbies (ms); markPendingStats times its wait from it
+    const since = num(p.inLobbySince);
+    return {
+        name: str(p.name), profileId: profileIdOf(p.profileId), civ: civLabel(civ), civRor: ROR_SHARED_LABELS.has(civ), steamProfile: str(p.steamProfile), stats: cleanStats(p.stats),
+        since: since !== null && since > 0 ? since : null
+    };
 }
 
 // scraped_lobbies_v2.json is keyed by aoe2lobby.com's match id, the same id Relic uses. Parsed once per build;
@@ -1361,11 +1376,85 @@ function hostFirst(players, hostId) {
     return players;
 }
 
-// A player known only from aoe2lobby.com (scraped-only lobby, or a Relic lobby without slot info)
-function playerFromScraped(p, scrapedPlayers, ladder) {
+// The ladders the site shows (the Elo Type filter's options). Relic's profile also has Deathmatch, console and Return
+// of Rome ladders; kept out, the Auto view's most-played fallback (pickStat) can't show one of those ratings unlabelled.
+const SITE_LADDERS = ['0', '3', '4', '13', '14'];
+
+// A player's ladders from both sources. Relic's profile has the ranked ladders only (never 0, Unranked), and
+// aoe2lobby.com's set can lack ladders Relic has. Where both have a ladder, the one with more games is the newer
+// record (games only go up), so an hours-old cached profile never hides a new game.
+function mergedStats(scraped, cached) {
+    let relic = null;
+    if (cached && typeof cached === 'object') {
+        for (const ladder of SITE_LADDERS) {
+            if (Object.hasOwn(cached, ladder)) (relic ||= {})[ladder] = cached[ladder];
+        }
+    }
+    if (!scraped || !relic) return scraped || relic;
+    const out = relic;
+    for (const ladder of Object.keys(scraped)) {
+        if (!out[ladder] || scraped[ladder].games >= out[ladder].games) out[ladder] = scraped[ladder];
+    }
+    return out;
+}
+
+// aoe2lobby.com's ratings for a player: the latest snapshot's, else the last ones it sent, since a snapshot now and
+// then lacks a player's ratings for a few seconds (seen for 4 of 253 joining players) and the stats would flick back
+// to "No games on this ladder". Ratings only change after a game, so the last ones stay right while the player waits.
+function ratingsFor(id, scrapedPlayers) {
+    if (!isProfileId(id)) return null;
+    const stats = scrapedPlayers.get(id)?.stats;
+    if (stats) lastRatings.set(id, stats);
+    return stats || lastRatings.get(id) || null;
+}
+
+// Sets statsPending on every player of the built lobby list, and asks Relic for players it hasn't answered for.
+// Pending (a spinner, not "No games on this ladder") lasts until both sources have had their say: Relic, asked on
+// first sight, and aoe2lobby.com, the only source of Unranked ratings (the default view), which reaches us through
+// scraper.js some seconds after a player joins: the first lobby read after the join often has no ratings for them.
+// A player aoe2lobby.com still hasn't rated RATINGS_WAIT_MS into their stay in lobbies is taken to have none. The stay
+// is timed by scraper.js (inLobbySince), which runs whether or not anyone is on the site; for a player its feed
+// doesn't list yet, by our own builds. With no fresh scraped files (scrapedFresh false) no ratings can come, so
+// nothing waits for them. requested: ids this build already asked Relic for, not asked twice if that just failed.
+// Runs after the lobbies are built, so ratingsFor has already seen every player.
+function markPendingStats(lobbies, now, scrapedPlayers, scrapedFresh, requested) {
+    const askRelic = [];
+    for (const lobby of lobbies) {
+        for (const p of lobby.players) {
+            if (!isProfileId(p.id)) { p.statsPending = false; continue; }
+            let seen = playerSeen.get(p.id);
+            if (!seen || now - seen.last > STAY_GAP_MS) playerSeen.set(p.id, seen = { first: now, last: now });
+            seen.last = now;
+            const cached = profileCache.get(p.id);
+            const relicDue = !cached;
+            const stayStart = scrapedPlayers.get(p.id)?.since ?? seen.first;
+            const ratingsDue = scrapedFresh && !lastRatings.has(p.id) && now - stayStart < RATINGS_WAIT_MS;
+            p.statsPending = relicDue || ratingsDue;
+            // Also refresh old profiles: those of players only aoe2lobby.com lists get no other refresh
+            if ((relicDue || now - cached.fetchedAt > PROFILE_REFRESH_MS) && !requested.has(p.id)) askRelic.push(p.id);
+        }
+    }
+    for (const [id, seen] of playerSeen) {
+        if (now - seen.last > PLAYER_SEEN_FORGET_MS) { playerSeen.delete(id); lastRatings.delete(id); }
+    }
+    // Every player ratingsFor sees reaches the loop above, so this drops nothing today; it keeps the map bounded if
+    // a later change calls ratingsFor for a player who isn't listed
+    for (const id of lastRatings.keys()) if (!playerSeen.has(id)) lastRatings.delete(id);
+    // In the background, like the other non-host players; fetchProfilesBatch also skips ids with a request in flight
+    const ids = [...new Set(askRelic)];
+    for (let i = 0; i < ids.length; i += 200) {
+        fetchProfilesBatch(ids.slice(i, i + 200)).catch(e => console.error(e));
+    }
+}
+
+// A player known only from aoe2lobby.com (scraped-only lobby, or a Relic lobby without slot info). statsPending is
+// set afterwards, by markPendingStats.
+function playerFromScraped(p, scrapedPlayers, ladder, now) {
     const sp = p.profileId ? scrapedPlayers.get(p.profileId) : undefined;
+    const cached = p.profileId ? profileCache.get(p.profileId) : undefined;
+    if (cached) cached.lastSeen = now;
     const player = { id: p.profileId || 0, name: p.name || 'Unknown', team: 0, elo: null, totalGames: 0, totalWins: 0, winRate: "0.0%", steamProfile: p.steamProfile || sp?.steamProfile || null, civ: p.civ || null, civRor: !!(p.civ && p.civRor), statsPending: false };
-    applyStat(player, sp?.stats || p.stats, ladder);
+    applyStat(player, mergedStats(ratingsFor(p.profileId, scrapedPlayers) || p.stats, cached?.stats), ladder);
     return player;
 }
 
@@ -1515,7 +1604,7 @@ async function buildLobbiesBody() {
             return {
                 id: p.id, name, team: p.team, elo: cached ? cached.rating : null,
                 totalGames: cached?.totalGames || 0, totalWins: cached?.totalWins || 0, winRate: cached?.winRate ? String(cached.winRate).replace(/%?$/, '%') : "0.0%",
-                steamProfile, civ, civRor: !!(civFrom && civFrom.civRor), statsPending: isProfileId(p.id) && !cached
+                steamProfile, civ, civRor: !!(civFrom && civFrom.civRor), statsPending: false // set by markPendingStats
             };
         });
         hostFirst(parsedPlayers, hostId);
@@ -1575,13 +1664,11 @@ async function buildLobbiesBody() {
         const targetMode = ladderFor(matchType, finalMapName, slotsTotal);
 
         parsedPlayers.forEach(p => {
-            const s = isProfileId(p.id) ? scrapedPlayers.get(p.id)?.stats : null;
-            const cachedStats = profileCache.get(p.id)?.stats;
-            applyStat(p, s || (cachedStats && Object.keys(cachedStats).length ? cachedStats : null), targetMode);
+            applyStat(p, mergedStats(ratingsFor(p.id, scrapedPlayers), profileCache.get(p.id)?.stats), targetMode);
         });
         // Relic gave no slot info: show aoe2lobby.com's players for this lobby instead
         if (parsedPlayers.length === 0 && sm) {
-            parsedPlayers.push(...hostFirst(sm.players.map(p => playerFromScraped(p, scrapedPlayers, targetMode)), sm.hostProfileId));
+            parsedPlayers.push(...hostFirst(sm.players.map(p => playerFromScraped(p, scrapedPlayers, targetMode, now)), sm.hostProfileId));
         }
 
         return {
@@ -1627,7 +1714,7 @@ async function buildLobbiesBody() {
         const s = lobby.settings;
         const map = mapDisplayName(lobby.map);
         const ladder = ladderFor(s.Mode, map, lobby.slotsTotal);
-        const parsedPlayers = hostFirst(lobby.players.map(p => playerFromScraped(p, scrapedPlayers, ladder)), lobby.hostProfileId);
+        const parsedPlayers = hostFirst(lobby.players.map(p => playerFromScraped(p, scrapedPlayers, ladder, now)), lobby.hostProfileId);
 
         allMatchesArray.push({
             id,
@@ -1653,6 +1740,7 @@ async function buildLobbiesBody() {
         });
     }
 
+    markPendingStats(allMatchesArray, now, scrapedPlayers, scrapedLobbiesRaw !== null, new Set([...missingIds, ...staleIds]));
     return JSON.stringify({ matches: allMatchesArray });
 }
 

@@ -111,6 +111,20 @@ function mergeElo(update) {
     return merged;
 }
 
+// When each player's current stay in lobbies began: the first snapshot that listed them in any lobby slot, kept while
+// they move between lobbies. Missing from the snapshots for over PRESENCE_GAP_MS starts a new stay. Written as
+// inLobbySince: server.js waits RATINGS_WAIT_MS from it for a joining player's ratings before showing "No games on
+// this ladder", and this clock runs every SNAPSHOT_MS whether or not anyone is on the site.
+const PRESENCE_GAP_MS = 45000;
+const presence = new Map(); // profileId -> { since, last }
+
+function stayStart(profileId, now) {
+    let stay = presence.get(profileId);
+    if (!stay || now - stay.last > PRESENCE_GAP_MS) presence.set(profileId, stay = { since: now, last: now });
+    stay.last = now;
+    return stay.since;
+}
+
 // Only the ladders this player has data on
 function playerStats(profileId) {
     const all = lobbyEloUpdate[profileId];
@@ -214,6 +228,10 @@ function dumpData() {
     for (const [profileId, seenAt] of eloSeenAt) {
         if (now - seenAt > ELO_KEEP_MS) { eloSeenAt.delete(profileId); delete lobbyEloUpdate[profileId]; }
     }
+    // Stays that have ended: stayStart would start a new one anyway, so this only keeps the map small
+    for (const [profileId, stay] of presence) {
+        if (now - stay.last > PRESENCE_GAP_MS) presence.delete(profileId);
+    }
 
     for (const key of Object.keys(lobbyMatchAll)) {
       // One malformed lobby is skipped, never the whole write
@@ -237,9 +255,10 @@ function dumpData() {
                 const steamProfile = typeof slot.steam_profile === 'string' && slot.steam_profile ? slot.steam_profile : null;
                 const civ = civLabel(slot.civilization); // e.g. Franks, or Random / Custom / Hidden before the game starts
                 const stats = playerStats(profileId);
+                const inLobbySince = stayStart(String(profileId), now);
 
-                scrapedPlayers[String(profileId)] = { profileId, name: slot.name, steamProfile, civ, stats };
-                players.push({ name: slot.name, profileId, civ, steamProfile, stats });
+                scrapedPlayers[String(profileId)] = { profileId, name: slot.name, steamProfile, civ, stats, inLobbySince };
+                players.push({ name: slot.name, profileId, civ, steamProfile, stats, inLobbySince });
             }
         }
 
