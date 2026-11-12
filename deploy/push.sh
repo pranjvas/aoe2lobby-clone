@@ -2,7 +2,7 @@
 # Ship the committed HEAD to the VPS and reload the app. Run from the repo root (Git Bash works):
 #   bash deploy/push.sh
 # Only HEAD is shipped, so the script refuses to run while a deployed file has uncommitted changes
-# (ALLOW_DIRTY=1 overrides). Scraped data and map_names.json on the server are kept.
+# (ALLOW_DIRTY=1 overrides). Scraped data, map_names.json and the map history (map_history.sqlite) on the server are kept.
 # Needs pm2 running under systemd on the server (pm2-aoe2.service, see DEPLOY.md).
 set -euo pipefail
 
@@ -13,7 +13,7 @@ SSH_OPTS=(-i "$KEY" -o ServerAliveInterval=15 -o ServerAliveCountMax=8 -o Connec
 # Only what the server runs (the repo also tracks old debugging scripts that are never deployed).
 # deploy/setup.sh copies the same list on a fresh server: keep the two in sync.
 FILES=(
-  package.json package-lock.json ecosystem.config.js server.js scraper.js
+  package.json package-lock.json ecosystem.config.js server.js scraper.js map-history.js
   index.html app.js styles.css overlay.html overlay.js overlay.css civ-info.json fonts
   replay.html replay.js replay.css replay-parse.js replay-worker.js replay-data.json
   favicon.png favicon-32.png apple-touch-icon.png icon-192.png icon-512.png og-image.png
@@ -57,7 +57,7 @@ INSTALL='
   tar -xzf /root/aoe2lobby-release.tar.gz -C /root/aoe2lobby
   cd /root/aoe2lobby
   { test -f server.js && test -f package.json; } || { echo "Release is incomplete" >&2; exit 3; }
-  { node --check server.js && node --check scraper.js && node --check app.js && node --check overlay.js && node --check replay.js && node --check replay-parse.js && node --check replay-worker.js; } || exit 3
+  { node --check server.js && node --check scraper.js && node --check map-history.js && node --check app.js && node --check overlay.js && node --check replay.js && node --check replay-parse.js && node --check replay-worker.js; } || exit 3
   # caddy validate opens the access log as root: create it as caddy first, or Caddy could not write it
   [ -e /var/log/caddy/access.log ] || install -o caddy -g caddy -m 600 /dev/null /var/log/caddy/access.log
   caddy validate --adapter caddyfile --config /root/aoe2lobby/deploy/Caddyfile || exit 3
@@ -66,6 +66,7 @@ INSTALL='
   NEED_NPM=0; cmp -s package-lock.json /root/aoe2lobby-installed.lock || NEED_NPM=1
   rsync -a --delete --exclude /node_modules/ --exclude "/scraped_*_v2.json" --exclude "/scraped_*_v2.json.*.tmp" \
     --exclude /scraped_maps.json --exclude /map_names.json --exclude "/map_names.json.*.tmp" --exclude /deploy/ \
+    --exclude "/map_history.sqlite*" --exclude "/scraped_map_players_v2.json.imported" \
     /root/aoe2lobby/ /opt/aoe2lobby/
   chown -R aoe2:aoe2 /opt/aoe2lobby
   install -o root -g root -m 644 /root/aoe2lobby/deploy/Caddyfile /etc/caddy/Caddyfile

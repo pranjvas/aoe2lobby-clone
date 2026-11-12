@@ -1759,78 +1759,78 @@ function refreshLobbies() {
     return lobbiesLoading;
 }
 
-// --- Map regulars (the Maps view): which players keep showing up in each map's lobbies ------------------------------
-// scraper.js counts them (recordMapLobby) into scraped_map_players_v2.json. Feed map names are grouped by the name the
-// lobby cards show (mapDisplayName: a Steam mod map's number becomes its name). Counting history stays valid when the
-// scraper is down, so unlike the lobby files this one is used however old it is.
-const MAP_PLAYERS_PATH = path.join(__dirname, 'scraped_map_players_v2.json');
+// --- Map history (the Maps view): which players keep showing up in each map's lobbies ----------------------------------
+// scraper.js counts them into a SQLite file (map-history.js), kept for good; this side only reads it. Feed map names are
+// grouped by the name the lobby cards show (mapDisplayName: a Steam mod map's number becomes its name). Answers are
+// kept MAP_CACHE_MS: the counts change once per 15 s snapshot.
+const { MapHistoryReader } = require('./map-history');
+const mapHistory = new MapHistoryReader();
 const MAP_LIST_MAX = 300; // maps in the picker, most lobbies first
 const MAP_PLAYERS_MAX = 300; // players per map, most appearances first (the page sorts these other ways)
-let mapPlayersCache = { mtimeMs: -1, data: null };
+const MAP_CACHE_MS = 30000;
+let mapListCache = { at: 0, list: null, names: null, since: null };
+const mapPlayersCache = new Map(); // display name -> { at, body }
 
-function readMapPlayers() {
-    let mtimeMs;
-    try { mtimeMs = fs.statSync(MAP_PLAYERS_PATH).mtimeMs; } catch (e) { return null; }
-    if (mtimeMs === mapPlayersCache.mtimeMs) return mapPlayersCache.data;
-    let d;
-    try { d = JSON.parse(fs.readFileSync(MAP_PLAYERS_PATH, 'utf8')); } catch (e) { console.error('Error reading map regulars:', e.message); return mapPlayersCache.data; }
-    if (!d || d.version !== 1 || !Array.isArray(d.maps)) return null;
-    const info = new Map();
-    for (const p of Array.isArray(d.players) ? d.players : []) {
-        if (!Array.isArray(p)) continue;
-        const id = profileIdOf(p[0]);
-        if (id) info.set(id, { name: str(p[1]) || `Player ${id}`, steamProfile: str(p[2]), lastSeen: num(p[3], 0), stats: cleanStats(p[4]) });
-    }
-    const maps = new Map(); // display name -> { name, lobbies, last, players: Map<id, { count, lastSeen }> }
-    for (const m of d.maps) {
-        if (!Array.isArray(m) || (typeof m[0] !== 'string' && typeof m[0] !== 'number') || !Array.isArray(m[3])) continue;
-        const name = mapDisplayName(String(m[0]));
+// [{ name, lobbies, players, stored: [stored names] }], most lobbies first, and display name -> that entry
+function mapList() {
+    if (mapListCache.list && Date.now() - mapListCache.at < MAP_CACHE_MS) return mapListCache;
+    const byName = new Map();
+    for (const row of mapHistory.maps()) {
+        const name = mapDisplayName(String(row.name));
         if (GENERIC_MAPS.includes(name.toLowerCase())) continue;
-        let entry = maps.get(name);
-        if (!entry) maps.set(name, entry = { name, lobbies: 0, last: 0, players: new Map() });
-        entry.lobbies += num(m[1], 0);
-        entry.last = Math.max(entry.last, num(m[2], 0));
-        for (const p of m[3]) {
-            if (!Array.isArray(p)) continue;
-            const id = profileIdOf(p[0]);
-            if (!id || !info.has(id)) continue;
-            const rec = entry.players.get(id) || { count: 0, lastSeen: 0 };
-            rec.count += num(p[1], 0);
-            rec.lastSeen = Math.max(rec.lastSeen, num(p[2], 0));
-            entry.players.set(id, rec);
-        }
+        let entry = byName.get(name);
+        if (!entry) byName.set(name, entry = { name, lobbies: 0, players: 0, last: 0, stored: [] });
+        entry.lobbies += Number(row.lobbies) || 0;
+        entry.players += Number(row.players) || 0; // a player on two stored names of one map counts twice here only
+        entry.last = Math.max(entry.last, Number(row.last) || 0);
+        entry.stored.push(String(row.name));
     }
-    const list = [...maps.values()].filter(m => m.players.size > 0).sort((a, b) => b.lobbies - a.lobbies || b.last - a.last);
-    const data = { since: num(d.since), savedAt: num(d.savedAt), maps: new Map(list.map(m => [m.name, m])), info };
-    mapPlayersCache = { mtimeMs, data };
-    return data;
+    const list = [...byName.values()].filter(m => m.players > 0).sort((a, b) => b.lobbies - a.lobbies || b.last - a.last);
+    mapListCache = { at: Date.now(), list, names: byName, since: mapHistory.since() };
+    mapPlayersCache.clear();
+    return mapListCache;
+}
+
+function answerJson(res, status, body) {
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(typeof body === 'string' ? body : JSON.stringify(body));
 }
 
 function serveMapList(res) {
-    const data = readMapPlayers();
-    const maps = data ? [...data.maps.values()].slice(0, MAP_LIST_MAX).map(m => ({ name: m.name, lobbies: m.lobbies, players: m.players.size })) : [];
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ since: data?.since ?? null, savedAt: data?.savedAt ?? null, maps }));
+    try {
+        const { list, since } = mapList();
+        answerJson(res, 200, { since, maps: list.slice(0, MAP_LIST_MAX).map(m => ({ name: m.name, lobbies: m.lobbies, players: m.players })) });
+    } catch (e) {
+        console.error('Map history: list failed:', e.message);
+        answerJson(res, 503, { error: 'map history unavailable' });
+    }
 }
 
 function serveMapPlayers(res, mapName) {
     const name = String(mapName || '');
-    if (!name || name.length > 120) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'bad map' }));
-        return;
-    }
-    const data = readMapPlayers();
-    const entry = data?.maps.get(name);
-    const players = entry ? [...entry.players].sort((a, b) => b[1].count - a[1].count || b[1].lastSeen - a[1].lastSeen)
-        .slice(0, MAP_PLAYERS_MAX)
-        .map(([id, rec]) => {
-            const p = data.info.get(id);
+    if (!name || name.length > 120) return answerJson(res, 400, { error: 'bad map' });
+    try {
+        const { names, since } = mapList();
+        const entry = names.get(name);
+        const kept = mapPlayersCache.get(name);
+        if (kept && Date.now() - kept.at < MAP_CACHE_MS) return answerJson(res, 200, kept.body);
+        const players = (entry ? mapHistory.players(entry.stored, MAP_PLAYERS_MAX) : []).map(row => {
+            const id = profileIdOf(Number(row.id));
+            let stats = null;
+            try { stats = cleanStats(JSON.parse(row.stats || 'null')); } catch (e) { }
             // Ratings as last seen in a lobby, with Relic's ranked ladders where we have the player's profile
-            return { id, name: p.name, steamProfile: p.steamProfile, count: rec.count, lastSeen: rec.lastSeen, allStats: mergedStats(p.stats, profileCache.get(id)?.stats) };
-        }) : [];
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ map: name, since: data?.since ?? null, savedAt: data?.savedAt ?? null, lobbies: entry ? entry.lobbies : 0, players }));
+            return {
+                id, name: str(row.name) || `Player ${id}`, steamProfile: str(row.steam), count: Number(row.count) || 0,
+                lastSeen: Number(row.lastSeen) || 0, allStats: mergedStats(stats, profileCache.get(id)?.stats)
+            };
+        }).filter(p => p.id);
+        const body = JSON.stringify({ map: name, since, lobbies: entry ? entry.lobbies : 0, players });
+        if (entry) mapPlayersCache.set(name, { at: Date.now(), body });
+        answerJson(res, 200, body);
+    } catch (e) {
+        console.error('Map history: players failed:', e.message);
+        answerJson(res, 503, { error: 'map history unavailable' });
+    }
 }
 
 async function handleRequest(req, res) {

@@ -11,7 +11,7 @@ SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # The runtime files deploy/push.sh ships (keep the two lists in sync); deploy/ itself stays in $SRC_DIR
 FILES=(
-  package.json package-lock.json ecosystem.config.js server.js scraper.js
+  package.json package-lock.json ecosystem.config.js server.js scraper.js map-history.js
   index.html app.js styles.css overlay.html overlay.js overlay.css civ-info.json fonts
   replay.html replay.js replay.css replay-parse.js replay-worker.js replay-data.json
   favicon.png favicon-32.png apple-touch-icon.png icon-192.png icon-512.png og-image.png
