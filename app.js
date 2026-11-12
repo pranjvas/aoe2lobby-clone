@@ -554,6 +554,10 @@ function setupEventListeners() {
     }
 
     // Layout Toggles
+    // Every view's grid (Maps too), so no view is left as one squeezed row in list view
+    const setGridLayout = (list) => {
+        for (const v of Object.values(VIEWS)) document.getElementById(v.grid).classList.toggle('list-layout', list);
+    };
     const layoutGridBtn = document.getElementById('layoutGridBtn');
     const layoutListBtn = document.getElementById('layoutListBtn');
 
@@ -565,9 +569,7 @@ function setupEventListeners() {
         layoutListBtn.style.background = 'transparent';
         layoutListBtn.style.border = '1px solid transparent';
         layoutListBtn.style.color = 'var(--text-secondary)';
-        lobbyGrid.classList.remove('list-layout');
-        playerGrid.classList.remove('list-layout');
-        spectateGrid.classList.remove('list-layout');
+        setGridLayout(false);
         showView(state.currentView);
     });
 
@@ -579,9 +581,7 @@ function setupEventListeners() {
         layoutGridBtn.style.background = 'transparent';
         layoutGridBtn.style.border = '1px solid transparent';
         layoutGridBtn.style.color = 'var(--text-secondary)';
-        lobbyGrid.classList.add('list-layout');
-        playerGrid.classList.add('list-layout');
-        spectateGrid.classList.add('list-layout');
+        setGridLayout(true);
         showView(state.currentView);
     });
 

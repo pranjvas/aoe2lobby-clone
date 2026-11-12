@@ -339,16 +339,15 @@ select:focus, select:hover {
     font-size: 0.95rem;
 }
 
-/* Narrow screens: the title, view toggles, layout toggles and count wrap onto rows instead of overflowing the page
+/* When there is no room (phones, or a long title like Map Players on a mid-width window), the title, view toggles,
+   layout toggles and count wrap onto rows instead of overflowing the page
    (the header's inline styles set no flex-wrap, so these apply without !important) */
-@media (max-width: 768px) {
-    .lobbies-header,
-    .lobbies-header > div {
-        flex-wrap: wrap;
-    }
-    .lobbies-header {
-        gap: 12px;
-    }
+.lobbies-header,
+.lobbies-header > div {
+    flex-wrap: wrap;
+}
+.lobbies-header {
+    gap: 12px;
 }
 
 .lobbies-stats span {
@@ -891,68 +890,71 @@ select:focus, select:hover {
     gap: 1rem;
 }
 
-.lobby-grid.list-layout .lobby-card {
-    display: grid;
-    grid-template-columns: 3fr 5fr 2fr;
-    grid-template-rows: auto auto;
-    grid-template-areas: 
-        "header body footer"
-        "players players players";
-    align-items: center;
-}
+/* Rows of three columns need room; on narrower screens list view stacks each card as in grid view, one per row */
+@media (min-width: 769px) {
+    .lobby-grid.list-layout .lobby-card {
+        display: grid;
+        grid-template-columns: 3fr 5fr 2fr;
+        grid-template-rows: auto auto;
+        grid-template-areas:
+            "header body footer"
+            "players players players";
+        align-items: center;
+    }
 
-.lobby-grid.list-layout .card-header {
-    grid-area: header;
-    border-bottom: none;
-    border-right: 1px solid var(--border-color);
-    padding: 1rem;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    flex-wrap: nowrap;
-    justify-content: center;
-}
+    .lobby-grid.list-layout .card-header {
+        grid-area: header;
+        border-bottom: none;
+        border-right: 1px solid var(--border-color);
+        padding: 1rem;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        flex-wrap: nowrap;
+        justify-content: center;
+    }
 
-.lobby-grid.list-layout .host-info {
-    flex: none;
-}
+    .lobby-grid.list-layout .host-info {
+        flex: none;
+    }
 
-.lobby-grid.list-layout .card-body {
-    grid-area: body;
-    display: flex;
-    align-items: center;
-    gap: 1.5rem;
-    padding: 1rem;
-}
+    .lobby-grid.list-layout .card-body {
+        grid-area: body;
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+        padding: 1rem;
+    }
 
-.lobby-grid.list-layout .card-footer {
-    grid-area: footer;
-    border-top: none;
-    border-left: 1px solid var(--border-color);
-    padding: 1rem;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    gap: 1rem;
-}
+    .lobby-grid.list-layout .card-footer {
+        grid-area: footer;
+        border-top: none;
+        border-left: 1px solid var(--border-color);
+        padding: 1rem;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 1rem;
+    }
 
-.lobby-grid.list-layout .player-list {
-    grid-area: players;
-}
+    .lobby-grid.list-layout .player-list {
+        grid-area: players;
+    }
 
-.lobby-grid.list-layout .map-icon-wrapper {
-    margin-bottom: 0;
-    width: 60px;
-    height: 40px;
-}
-.lobby-grid.list-layout .game-details {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-}
-.lobby-grid.list-layout .tags-row {
-    margin-top: 0.5rem;
+    .lobby-grid.list-layout .map-icon-wrapper {
+        margin-bottom: 0;
+        width: 60px;
+        height: 40px;
+    }
+    .lobby-grid.list-layout .game-details {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+    }
+    .lobby-grid.list-layout .tags-row {
+        margin-top: 0.5rem;
+    }
 }
 
 /* Tagline under the logo (part of the h1 so the heading says what the page is) */
