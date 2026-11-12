@@ -20,6 +20,7 @@ const defaultState = {
     playerSort: 'elo-desc',
     playerSearch: '',
     mapsMap: '', // the Maps view's map; '' = the one with the most lobbies
+    mapsRecent: [], // the maps this visitor last chose there, latest first (listed above the A-Z list)
     mapsSort: 'count',
     mapsSearch: '',
     eloType: '0' // Unranked, the same default rating aoe2lobby.com shows
@@ -37,6 +38,8 @@ for (const key of Object.keys(defaultState)) {
 // 'auto' used to be the default; move those visitors to the new default once
 if (storedState.eloType === 'auto' && !storedState.eloDefaultV2) storedState.eloType = '0';
 const state = { ...defaultState, ...storedState, eloDefaultV2: true };
+const MAPS_RECENT_MAX = 5;
+state.mapsRecent = [...new Set(Array.isArray(state.mapsRecent) ? state.mapsRecent.filter(m => typeof m === 'string' && m) : [])].slice(0, MAPS_RECENT_MAX);
 
 // Filters that narrow the lobby list: [state key, DOM select id or null, label]
 const LOBBY_FILTERS = [
@@ -509,6 +512,8 @@ function setupEventListeners() {
     });
     document.getElementById('mapsMap').addEventListener('change', (e) => {
         state.mapsMap = e.target.value;
+        state.mapsRecent = [state.mapsMap, ...state.mapsRecent.filter(m => m !== state.mapsMap)].slice(0, MAPS_RECENT_MAX);
+        fillMapSelect(); // the choice moves to the top of Recent
         saveState();
         fetchMapPlayers(state.mapsMap);
     });
@@ -1102,8 +1107,9 @@ async function fetchMaps() {
             .map(m => ({ name: m.name, lobbies: intIn(m.lobbies, 0, Number.MAX_SAFE_INTEGER) ?? 0, players: intIn(m.players, 0, Number.MAX_SAFE_INTEGER) ?? 0 }));
         mapsSince = intIn(data.since, 1, Number.MAX_SAFE_INTEGER);
         mapListState = 'ready';
-        // A remembered map the list no longer has falls back to the busiest one
-        if (!mapList.some(m => m.name === state.mapsMap)) state.mapsMap = mapList[0]?.name || '';
+        // A remembered map the list no longer has falls back to the latest recent pick it still has, else the busiest map
+        const listed = name => mapList.some(m => m.name === name);
+        if (!listed(state.mapsMap)) state.mapsMap = state.mapsRecent.find(listed) || mapList[0]?.name || '';
         fillMapSelect();
         if (state.mapsMap) await fetchMapPlayers(state.mapsMap, true);
         else { mapPlayers = []; mapPlayersFor = null; }
@@ -1117,11 +1123,19 @@ async function fetchMaps() {
     }
 }
 
+const mapNameOrder = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
+
+// The maps this visitor chose last (latest first), then every other map A-Z
 function fillMapSelect() {
     const select = document.getElementById('mapsMap');
-    select.innerHTML = mapList.length
-        ? mapList.map(m => `<option value="${esc(m.name)}">${esc(m.name)} (${m.lobbies} ${m.lobbies === 1 ? 'lobby' : 'lobbies'})</option>`).join('')
-        : '<option value="">No maps yet</option>';
+    const option = m => `<option value="${esc(m.name)}">${esc(m.name)} (${m.lobbies} ${m.lobbies === 1 ? 'lobby' : 'lobbies'})</option>`;
+    const byName = new Map(mapList.map(m => [m.name, m]));
+    const recent = state.mapsRecent.map(name => byName.get(name)).filter(Boolean);
+    const rest = mapList.filter(m => !recent.includes(m)).sort((a, b) => mapNameOrder.compare(a.name, b.name));
+    if (!mapList.length) select.innerHTML = '<option value="">No maps yet</option>';
+    else if (!recent.length) select.innerHTML = rest.map(option).join('');
+    else select.innerHTML = `<optgroup label="Recent">${recent.map(option).join('')}</optgroup>` +
+        (rest.length ? `<optgroup label="All maps (A&ndash;Z)">${rest.map(option).join('')}</optgroup>` : '');
     select.value = state.mapsMap;
 }
 
