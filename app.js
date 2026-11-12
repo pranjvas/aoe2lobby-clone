@@ -1123,7 +1123,13 @@ async function fetchMaps() {
     }
 }
 
-const mapNameOrder = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
+const mapNameCollator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
+// A-Z by the name's first letter or digit ("[LT]Shou..." under L); names with neither ("?", "####") last
+function compareMapNames(a, b) {
+    const ka = a.replace(/^[^\p{L}\p{N}]+/u, ''), kb = b.replace(/^[^\p{L}\p{N}]+/u, '');
+    if (!ka !== !kb) return ka ? -1 : 1;
+    return mapNameCollator.compare(ka, kb) || mapNameCollator.compare(a, b);
+}
 
 // The maps this visitor chose last (latest first), then every other map A-Z
 function fillMapSelect() {
@@ -1131,7 +1137,7 @@ function fillMapSelect() {
     const option = m => `<option value="${esc(m.name)}">${esc(m.name)} (${m.lobbies} ${m.lobbies === 1 ? 'lobby' : 'lobbies'})</option>`;
     const byName = new Map(mapList.map(m => [m.name, m]));
     const recent = state.mapsRecent.map(name => byName.get(name)).filter(Boolean);
-    const rest = mapList.filter(m => !recent.includes(m)).sort((a, b) => mapNameOrder.compare(a.name, b.name));
+    const rest = mapList.filter(m => !recent.includes(m)).sort((a, b) => compareMapNames(a.name, b.name));
     if (!mapList.length) select.innerHTML = '<option value="">No maps yet</option>';
     else if (!recent.length) select.innerHTML = rest.map(option).join('');
     else select.innerHTML = `<optgroup label="Recent">${recent.map(option).join('')}</optgroup>` +
