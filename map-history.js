@@ -203,18 +203,28 @@ class MapHistoryReader {
         return this.mapsStmt.all();
     }
 
-    // The players of these stored map names (one shown map can be several), most appearances first
-    players(names, limit) {
+    // A statement per number of map names (one shown map can be several stored names)
+    stmtFor(kind, names, sql) {
+        const key = kind + names.length;
+        let stmt = this.byCount.get(key);
+        if (!stmt) this.byCount.set(key, stmt = this.db.prepare(sql(names.map(() => '?').join(', '))));
+        return stmt;
+    }
+
+    // The players of these stored map names, most appearances first: all of them, or the first `limit`
+    players(names, limit = -1) {
         if (!this.open() || !names.length) return [];
-        let stmt = this.byCount.get(names.length);
-        if (!stmt) {
-            stmt = this.db.prepare(`SELECT mp.player AS id, SUM(mp.n) AS count, MAX(mp.last) AS lastSeen, p.name, p.steam, p.stats
-                FROM map_players mp JOIN players p ON p.id = mp.player
-                WHERE mp.map IN (${names.map(() => '?').join(', ')})
-                GROUP BY mp.player ORDER BY count DESC, lastSeen DESC LIMIT ?`);
-            this.byCount.set(names.length, stmt);
-        }
-        return stmt.all(...names, limit);
+        return this.stmtFor('players', names, list => `SELECT mp.player AS id, SUM(mp.n) AS count, MAX(mp.last) AS lastSeen, p.name, p.steam, p.stats
+            FROM map_players mp JOIN players p ON p.id = mp.player
+            WHERE mp.map IN (${list})
+            GROUP BY mp.player ORDER BY count DESC, lastSeen DESC LIMIT ?`).all(...names, limit);
+    }
+
+    // How many different players these stored map names have (a player on two of them counts once)
+    playerCount(names) {
+        if (!this.open() || !names.length) return 0;
+        const row = this.stmtFor('count', names, list => `SELECT COUNT(DISTINCT player) AS n FROM map_players WHERE map IN (${list})`).get(...names);
+        return Number(row?.n) || 0;
     }
 
     close() {
@@ -224,4 +234,49 @@ class MapHistoryReader {
     }
 }
 
-module.exports = { MapHistoryWriter, MapHistoryReader, mapKey, DB_PATH };
+// --- One page of a map's players, as the Maps view asks for it (server.js) ----------------------------------------------
+const MAP_SORTS = ['count', 'active', 'recent', 'elo', 'wr', 'games'];
+const MAP_LADDERS = ['auto', '0', '3', '4', '13', '14']; // the Elo Type choices
+const WR_MIN_GAMES = 10; // the win rate sort puts players with fewer games on the ladder after the rest
+
+// A player's numbers on one ladder ('auto': the one they have played most), worked out as app.js does for its cards
+function ladderStat(allStats, ladder) {
+    if (!allStats || typeof allStats !== 'object') return null;
+    let stat = null;
+    if (ladder !== 'auto') stat = Object.hasOwn(allStats, ladder) ? allStats[ladder] : null;
+    else for (const key of Object.keys(allStats)) if (allStats[key] && (!stat || allStats[key].games > stat.games)) stat = allStats[key];
+    if (!stat || typeof stat !== 'object') return null;
+    const num = v => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    return { rating: num(stat.rating), games: num(stat.games) ?? 0, winp: num(stat.winp) };
+}
+
+const winRate = x => (x.s && x.s.games >= WR_MIN_GAMES ? x.s.winp ?? -1 : -1);
+const COMPARE = {
+    count: (a, b) => b.p.count - a.p.count || b.p.lastSeen - a.p.lastSeen,
+    active: (a, b) => b.active - a.active || b.p.count - a.p.count || b.p.lastSeen - a.p.lastSeen,
+    recent: (a, b) => b.p.lastSeen - a.p.lastSeen || b.p.count - a.p.count,
+    elo: (a, b) => (b.s?.rating ?? -1) - (a.s?.rating ?? -1) || b.p.count - a.p.count,
+    wr: (a, b) => winRate(b) - winRate(a) || (b.s?.games ?? 0) - (a.s?.games ?? 0) || b.p.count - a.p.count,
+    games: (a, b) => (b.s?.games ?? 0) - (a.s?.games ?? 0) || b.p.count - a.p.count
+};
+
+// players: [{ id, name, count, lastSeen, allStats }]; isActive(id): in a lobby now. Returns a sorted copy; ties go by
+// id, so the order is the same on every call and pages never overlap
+function sortMapPlayers(players, sort, ladder, isActive = () => false) {
+    const compare = COMPARE[sort] || COMPARE.count;
+    return players
+        .map(p => ({ p, s: sort === 'elo' || sort === 'wr' || sort === 'games' ? ladderStat(p.allStats, ladder) : null, active: sort === 'active' && isActive(p.id) ? 1 : 0 }))
+        .sort((a, b) => compare(a, b) || a.p.id - b.p.id)
+        .map(x => x.p);
+}
+
+// sorted (from sortMapPlayers), narrowed to names containing q (lower case), then `limit` of them from `offset`
+function mapPlayersPage(sorted, q, offset, limit) {
+    const matching = q ? sorted.filter(p => String(p.name).toLowerCase().includes(q)) : sorted;
+    return { matched: matching.length, players: matching.slice(offset, offset + limit) };
+}
+
+module.exports = {
+    MapHistoryWriter, MapHistoryReader, mapKey, DB_PATH,
+    MAP_SORTS, MAP_LADDERS, ladderStat, sortMapPlayers, mapPlayersPage
+};

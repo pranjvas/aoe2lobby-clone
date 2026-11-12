@@ -221,7 +221,7 @@ body {
 
 .search-container {
     flex: 1 1 100%;
-    min-width: 300px;
+    min-width: min(300px, 100%); /* a phone's filter panel is narrower than 300px inside */
     position: relative;
     display: flex;
     align-items: center;
@@ -491,6 +491,12 @@ select:focus, select:hover {
 
 .maps-note:empty {
     display: none;
+}
+
+/* A new sort or search on the Maps view: the cards shown until its players arrive */
+#mapsGrid.maps-updating {
+    opacity: 0.55;
+    transition: opacity 0.15s;
 }
 
 .game-title {

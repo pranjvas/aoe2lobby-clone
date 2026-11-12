@@ -29,6 +29,7 @@ const RELIC_API = 'https://aoe-api.worldsedgelink.com/community'; // aoe-api.rel
 const LOBBIES_CACHE_MS = 4000;
 let lobbiesCache = { at: 0, body: null };
 let lobbiesLoading = null, lobbiesFailUntil = 0, lobbiesFailures = 0;
+let lobbyPlayers = { at: 0, ids: new Set() }; // who was in a lobby at the last build (the Maps view's "Active now" sort)
 const profileCache = new Map(); // profile_id -> { alias, rating, totalGames, totalWins, winRate, stats, steamProfile, fetchedAt, lastSeen }
 const PROFILE_REFRESH_MS = 6 * 60 * 60 * 1000; // cached profiles this old are refetched, in the background only
 const PROFILE_FORGET_MS = 24 * 60 * 60 * 1000; // profiles not seen in any lobby for this long are dropped
@@ -1741,6 +1742,9 @@ async function buildLobbiesBody() {
     }
 
     markPendingStats(allMatchesArray, now, scrapedPlayers, scrapedLobbiesRaw !== null, new Set([...missingIds, ...staleIds]));
+    const ids = new Set();
+    for (const lobby of allMatchesArray) for (const p of lobby.players) if (isProfileId(p.id)) ids.add(p.id);
+    lobbyPlayers = { at: now, ids };
     return JSON.stringify({ matches: allMatchesArray });
 }
 
@@ -1762,14 +1766,16 @@ function refreshLobbies() {
 // --- Map history (the Maps view): which players keep showing up in each map's lobbies ----------------------------------
 // scraper.js counts them into a SQLite file (map-history.js), kept for good; this side only reads it. Feed map names are
 // grouped by the name the lobby cards show (mapDisplayName: a Steam mod map's number becomes its name). Answers are
-// kept MAP_CACHE_MS: the counts change once per 15 s snapshot.
-const { MapHistoryReader } = require('./map-history');
+// kept MAP_CACHE_MS: the counts change once per 15 s snapshot. Every player is listed: the page asks for them a page at a
+// time, sorted and searched here (a busy map has thousands).
+const { MapHistoryReader, MAP_SORTS, MAP_LADDERS, sortMapPlayers, mapPlayersPage } = require('./map-history');
 const mapHistory = new MapHistoryReader();
-const MAP_LIST_MAX = 300; // maps in the picker, most lobbies first
-const MAP_PLAYERS_MAX = 300; // players per map, most appearances first (the page sorts these other ways)
+const MAP_LIST_MAX = 1000; // maps in the picker, most lobbies first
+const MAP_PAGE_MAX = 1000; // players per request (the page asks for 60 at a time, and up to what it shows to refresh)
+const MAP_PAGE_OLD = 300; // a request without `limit` (an app.js from before paging): its 300 most frequent players
 const MAP_CACHE_MS = 30000;
 let mapListCache = { at: 0, list: null, names: null, since: null };
-const mapPlayersCache = new Map(); // display name -> { at, body }
+const mapPlayersCache = new Map(); // display name -> { at, entry, players, sorted: Map(`${sort}|${ladder}` -> players) }
 
 // [{ name, lobbies, players, stored: [stored names] }], most lobbies first, and display name -> that entry
 function mapList() {
@@ -1781,10 +1787,12 @@ function mapList() {
         let entry = byName.get(name);
         if (!entry) byName.set(name, entry = { name, lobbies: 0, players: 0, last: 0, stored: [] });
         entry.lobbies += Number(row.lobbies) || 0;
-        entry.players += Number(row.players) || 0; // a player on two stored names of one map counts twice here only
+        entry.players += Number(row.players) || 0;
         entry.last = Math.max(entry.last, Number(row.last) || 0);
         entry.stored.push(String(row.name));
     }
+    // A map stored under two names (a mod map's number and its name): count a player on both once
+    for (const entry of byName.values()) if (entry.stored.length > 1) entry.players = mapHistory.playerCount(entry.stored);
     const list = [...byName.values()].filter(m => m.players > 0).sort((a, b) => b.lobbies - a.lobbies || b.last - a.last);
     mapListCache = { at: Date.now(), list, names: byName, since: mapHistory.since() };
     mapPlayersCache.clear();
@@ -1806,27 +1814,52 @@ function serveMapList(res) {
     }
 }
 
-function serveMapPlayers(res, mapName) {
-    const name = String(mapName || '');
+// Every player of a shown map, kept MAP_CACHE_MS (with the sorted orders asked for meanwhile); null for an unknown map
+function mapPlayersOf(name) {
+    const entry = mapList().names.get(name); // first: a new list empties mapPlayersCache, so both stay in step
+    if (!entry) return null;
+    const now = Date.now();
+    let kept = mapPlayersCache.get(name);
+    if (kept && now - kept.at < MAP_CACHE_MS) return kept;
+    for (const [key, old] of mapPlayersCache) if (now - old.at >= MAP_CACHE_MS) mapPlayersCache.delete(key);
+    const players = mapHistory.players(entry.stored).map(row => {
+        const id = profileIdOf(Number(row.id));
+        let stats = null;
+        try { stats = cleanStats(JSON.parse(row.stats || 'null')); } catch (e) { }
+        // Ratings as last seen in a lobby, with Relic's ranked ladders where we have the player's profile
+        return {
+            id, name: str(row.name) || `Player ${id}`, steamProfile: str(row.steam), count: Number(row.count) || 0,
+            lastSeen: Number(row.lastSeen) || 0, allStats: mergedStats(stats, profileCache.get(id)?.stats)
+        };
+    }).filter(p => p.id);
+    kept = { at: now, entry, players, sorted: new Map() };
+    mapPlayersCache.set(name, kept);
+    return kept;
+}
+
+// ?map=&sort=&ladder=&q=&offset=&limit=: one page of the map's players, sorted, narrowed to names containing q
+function serveMapPlayers(res, query) {
+    const name = String(query.get('map') || '');
     if (!name || name.length > 120) return answerJson(res, 400, { error: 'bad map' });
+    const sort = MAP_SORTS.includes(query.get('sort')) ? query.get('sort') : 'count';
+    const ladder = MAP_LADDERS.includes(query.get('ladder')) ? query.get('ladder') : '0';
+    const q = String(query.get('q') || '').slice(0, 64).toLowerCase();
+    const whole = (v, min, max, fallback) => { const n = Number(v); return v !== null && Number.isSafeInteger(n) && n >= min && n <= max ? n : fallback; };
+    const offset = whole(query.get('offset'), 0, Number.MAX_SAFE_INTEGER, 0);
+    const limit = whole(query.get('limit'), 1, MAP_PAGE_MAX, query.has('limit') ? 60 : MAP_PAGE_OLD);
     try {
-        const { names, since } = mapList();
-        const entry = names.get(name);
-        const kept = mapPlayersCache.get(name);
-        if (kept && Date.now() - kept.at < MAP_CACHE_MS) return answerJson(res, 200, kept.body);
-        const players = (entry ? mapHistory.players(entry.stored, MAP_PLAYERS_MAX) : []).map(row => {
-            const id = profileIdOf(Number(row.id));
-            let stats = null;
-            try { stats = cleanStats(JSON.parse(row.stats || 'null')); } catch (e) { }
-            // Ratings as last seen in a lobby, with Relic's ranked ladders where we have the player's profile
-            return {
-                id, name: str(row.name) || `Player ${id}`, steamProfile: str(row.steam), count: Number(row.count) || 0,
-                lastSeen: Number(row.lastSeen) || 0, allStats: mergedStats(stats, profileCache.get(id)?.stats)
-            };
-        }).filter(p => p.id);
-        const body = JSON.stringify({ map: name, since, lobbies: entry ? entry.lobbies : 0, players });
-        if (entry) mapPlayersCache.set(name, { at: Date.now(), body });
-        answerJson(res, 200, body);
+        const { since } = mapList();
+        const kept = mapPlayersOf(name);
+        if (!kept) return answerJson(res, 200, { map: name, since, lobbies: 0, total: 0, matched: 0, offset, players: [] });
+        const order = `${sort}|${ladder}`;
+        let sorted = kept.sorted.get(order);
+        if (!sorted) {
+            // A lobby list older than 2 min (nobody on the site) says nothing about who is in a lobby now
+            const live = Date.now() - lobbyPlayers.at < 2 * 60 * 1000 ? lobbyPlayers.ids : new Set();
+            kept.sorted.set(order, sorted = sortMapPlayers(kept.players, sort, ladder, id => live.has(id)));
+        }
+        const page = mapPlayersPage(sorted, q, offset, limit);
+        answerJson(res, 200, { map: name, since, lobbies: kept.entry.lobbies, total: kept.players.length, matched: page.matched, offset, players: page.players });
     } catch (e) {
         console.error('Map history: players failed:', e.message);
         answerJson(res, 503, { error: 'map history unavailable' });
@@ -1905,7 +1938,7 @@ async function handleRequest(req, res) {
         return;
     }
     if (pathname === '/api/maps/players') {
-        serveMapPlayers(res, query.get('map'));
+        serveMapPlayers(res, query);
         return;
     }
     if (pathname === '/api/player-games') {

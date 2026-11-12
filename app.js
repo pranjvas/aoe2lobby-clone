@@ -163,6 +163,7 @@ document.addEventListener('click', (e) => {
         case 'steam-friend': if (addSteamFriend(e, el.dataset.steamId) === false) e.preventDefault(); break;
         case 'clear-filters': clearLobbyFilters(); break;
         case 'show-more-spectate': showMoreSpectate(); break;
+        case 'show-more-map-players': fetchMapPlayers(true); break;
         case 'copy-match-link': copyMatchLink(el); break;
         case 'open-view': rememberView(el.dataset.view); break; // a link to '/': the home page then opens this view
         case 'civ-info': toggleCivPopover(el); break;
@@ -499,23 +500,27 @@ function setupEventListeners() {
     // Maps filters
     const mapsSearch = document.getElementById('mapsSearch');
     mapsSearch.value = state.mapsSearch;
+    // The server searches and sorts a map's players (it has them all): ask it once typing pauses
     mapsSearch.addEventListener('input', (e) => {
         state.mapsSearch = e.target.value.toLowerCase();
-        applyFiltersAndRender();
+        saveState();
+        clearTimeout(mapsSearchTimer);
+        mapsSearchTimer = setTimeout(() => fetchMapPlayers(), 250);
     });
     const mapsSort = document.getElementById('mapsSort');
     mapsSort.value = state.mapsSort;
     if (mapsSort.value !== state.mapsSort) mapsSort.value = state.mapsSort = defaultState.mapsSort; // a sort this page no longer has
     mapsSort.addEventListener('change', (e) => {
         state.mapsSort = e.target.value;
-        applyFiltersAndRender();
+        saveState();
+        fetchMapPlayers();
     });
     document.getElementById('mapsMap').addEventListener('change', (e) => {
         state.mapsMap = e.target.value;
         state.mapsRecent = [state.mapsMap, ...state.mapsRecent.filter(m => m !== state.mapsMap)].slice(0, MAPS_RECENT_MAX);
         fillMapSelect(); // the choice moves to the top of Recent
         saveState();
-        fetchMapPlayers(state.mapsMap);
+        fetchMapPlayers();
     });
     const mapsElo = document.getElementById('mapsEloType');
     mapsElo.value = state.eloType;
@@ -525,6 +530,7 @@ function setupEventListeners() {
         document.getElementById('spectateEloType').value = state.eloType;
         if (state.rawMatches) lobbies = parseLobbies(state.rawMatches); // lobby cards follow Elo Type too
         applyFiltersAndRender();
+        fetchMapPlayers(); // the Elo, win rate and games sorts are by this ladder
     });
 
     // Spectate filters
@@ -637,8 +643,8 @@ function applyFiltersAndRender() {
         itemCount.textContent = games.length;
         renderSpectate(games);
     } else if (state.currentView === 'maps') {
-        const players = filterMapPlayers();
-        itemCount.textContent = players.length;
+        const players = shownMapPlayers();
+        itemCount.textContent = (mapPlayersMap === state.mapsMap ? mapPlayersMatched : 0).toLocaleString();
         renderMaps(players);
     } else {
         const aggregatedPlayers = aggregatePlayers();
@@ -1086,16 +1092,22 @@ function showView(view) {
 
 // ---------------------------------------------------------------- Maps: the players who keep showing up in a map's lobbies
 // The server counts, per map, how many of its lobbies each player has been in (scraper.js, from aoe2lobby.com's feed).
-const MAPS_REFRESH_MS = 60000; // the counts are saved at most once a minute
-const MAPS_WR_MIN_GAMES = 10; // win rate sorts players with fewer games on the ladder after the rest
+// It sorts and searches a map's players and sends them a page at a time: a busy map has thousands.
+const MAPS_REFRESH_MS = 60000; // the server's counts change about once a minute
+const MAP_PLAYERS_PAGE = 60; // players per Show more
+const MAP_PLAYERS_MAX = 1000; // the most the server sends at once (a refresh asks for all the cards shown)
 let mapList = []; // [{ name, lobbies, players }], most lobbies first
 let mapListState = 'loading'; // 'loading' | 'ready' | 'error'
 let mapsSince = null; // ms: when counting started
-let mapPlayers = []; // the chosen map's players, most appearances first
-let mapPlayersFor = null; // the map mapPlayers belongs to
-let mapPlayersLoading = false;
+let mapPlayers = []; // the players loaded so far, in the server's order for mapPlayersKey
+let mapPlayersMap = null; // the map they belong to
+let mapPlayersKey = null; // the query they answer: map, sort, Elo Type and search (mapPlayersQuery)
+let mapPlayersMatched = 0; // how many players that query has in all
+let mapPlayersError = false; // the chosen map's players could not be loaded
+let mapPlayersPending = null; // the request in flight: 'load' (another map), 'update' (new sort or search), 'more', 'refresh'
 let mapPlayersRequest = 0;
 let mapsTimer = null;
+let mapsSearchTimer = null;
 
 async function fetchMaps() {
     clearTimeout(mapsTimer);
@@ -1111,8 +1123,8 @@ async function fetchMaps() {
         const listed = name => mapList.some(m => m.name === name);
         if (!listed(state.mapsMap)) state.mapsMap = state.mapsRecent.find(listed) || mapList[0]?.name || '';
         fillMapSelect();
-        if (state.mapsMap) await fetchMapPlayers(state.mapsMap, true);
-        else { mapPlayers = []; mapPlayersFor = null; }
+        if (state.mapsMap) await fetchMapPlayers();
+        else { mapPlayers = []; mapPlayersMap = mapPlayersKey = null; mapPlayersMatched = 0; }
     } catch (e) {
         console.warn('Could not load the map list:', e);
         if (mapListState === 'loading') mapListState = 'error';
@@ -1134,7 +1146,7 @@ function compareMapNames(a, b) {
 // The maps this visitor chose last (latest first), then every other map A-Z
 function fillMapSelect() {
     const select = document.getElementById('mapsMap');
-    const option = m => `<option value="${esc(m.name)}">${esc(m.name)} (${m.lobbies} ${m.lobbies === 1 ? 'lobby' : 'lobbies'})</option>`;
+    const option = m => `<option value="${esc(m.name)}">${esc(m.name)} (${m.players.toLocaleString()} ${m.players === 1 ? 'player' : 'players'})</option>`;
     const byName = new Map(mapList.map(m => [m.name, m]));
     const recent = state.mapsRecent.map(name => byName.get(name)).filter(Boolean);
     const rest = mapList.filter(m => !recent.includes(m)).sort((a, b) => compareMapNames(a.name, b.name));
@@ -1145,31 +1157,60 @@ function fillMapSelect() {
     select.value = state.mapsMap;
 }
 
-// quiet: a refresh of the map already shown, so no loading state in between
-async function fetchMapPlayers(map, quiet = false) {
+// What the Maps view shows: the chosen map's players, sorted, on the Elo Type ladder and searched as chosen
+function mapPlayersQuery() {
+    const params = { map: state.mapsMap, sort: state.mapsSort, ladder: state.eloType, q: state.mapsSearch };
+    return { ...params, key: JSON.stringify(params) };
+}
+
+// more: the next page. Otherwise a new query loads from the top, and the query already shown is loaded again as far as
+// Show more has gone (the minute's refresh)
+async function fetchMapPlayers(more = false) {
+    const query = mapPlayersQuery();
+    if (!query.map) return;
+    const same = query.key === mapPlayersKey && !mapPlayersError;
+    if (more && (!same || mapPlayersPending)) return;
+    const kind = more ? 'more' : same ? 'refresh' : mapPlayersMap === query.map && !mapPlayersError ? 'update' : 'load';
+    if (kind === 'refresh' && mapPlayersPending) return; // what's in flight answers this query, or replaces it
+    const offset = kind === 'more' ? mapPlayers.length : 0;
+    const limit = kind === 'refresh' ? Math.min(MAP_PLAYERS_MAX, Math.max(MAP_PLAYERS_PAGE, mapPlayers.length)) : MAP_PLAYERS_PAGE;
     const request = ++mapPlayersRequest;
-    if (!quiet || mapPlayersFor !== map) {
-        mapPlayersLoading = true;
-        if (state.currentView === 'maps') applyFiltersAndRender();
-    }
+    mapPlayersPending = kind;
+    if (kind !== 'refresh' && state.currentView === 'maps') applyFiltersAndRender();
     try {
-        const response = await fetch('/api/maps/players?map=' + encodeURIComponent(map));
+        const params = new URLSearchParams({ map: query.map, sort: query.sort, ladder: query.ladder, q: query.q, offset, limit });
+        const response = await fetch('/api/maps/players?' + params);
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const data = await response.json();
-        if (request !== mapPlayersRequest) return; // another map was chosen meanwhile
-        mapPlayers = (Array.isArray(data.players) ? data.players : []).filter(p => p && intIn(p.id, 1, Number.MAX_SAFE_INTEGER))
+        if (request !== mapPlayersRequest) return; // a newer request replaced this one
+        const players = (Array.isArray(data.players) ? data.players : []).filter(p => p && intIn(p.id, 1, Number.MAX_SAFE_INTEGER))
             .map(p => ({
                 id: p.id, name: typeof p.name === 'string' ? p.name : String(p.id),
                 steamProfile: typeof p.steamProfile === 'string' ? p.steamProfile : null,
                 count: intIn(p.count, 0, Number.MAX_SAFE_INTEGER) ?? 0, lastSeen: intIn(p.lastSeen, 0, Number.MAX_SAFE_INTEGER) ?? 0,
                 allStats: p.allStats && typeof p.allStats === 'object' ? p.allStats : null
             }));
-        mapPlayersFor = map;
+        if (kind === 'more') {
+            // Counts can move a player up between pages: never show anyone twice
+            const shown = new Set(mapPlayers.map(p => p.id));
+            mapPlayers = mapPlayers.concat(players.filter(p => !shown.has(p.id)));
+        } else mapPlayers = players;
+        mapPlayersMatched = Math.max(intIn(data.matched, 0, Number.MAX_SAFE_INTEGER) ?? 0, mapPlayers.length);
+        mapPlayersMap = query.map;
+        mapPlayersKey = query.key;
+        mapPlayersError = false;
     } catch (e) {
-        console.warn('Could not load the players of ' + map + ':', e);
-        if (request === mapPlayersRequest && mapPlayersFor !== map) { mapPlayers = []; mapPlayersFor = map; }
+        console.warn('Could not load the players of ' + query.map + ':', e);
+        // A failed refresh, sort or search keeps the cards shown (the next refresh tries again); a new map has none
+        if (request === mapPlayersRequest && kind === 'load') {
+            mapPlayers = [];
+            mapPlayersMap = query.map;
+            mapPlayersKey = null;
+            mapPlayersMatched = 0;
+            mapPlayersError = true;
+        }
     } finally {
-        if (request === mapPlayersRequest) mapPlayersLoading = false;
+        if (request === mapPlayersRequest) mapPlayersPending = null;
     }
     if (request === mapPlayersRequest && state.currentView === 'maps') applyFiltersAndRender();
 }
@@ -1185,28 +1226,13 @@ function mapPlayerStat(p) {
     return { rating: finiteOrNull(stat.rating), games: finiteOrNull(stat.games) ?? 0, winp: finiteOrNull(stat.winp) };
 }
 
-const MAP_SORTS = {
-    count: (a, b) => b.count - a.count || b.lastSeen - a.lastSeen,
-    active: (a, b) => Number(!!b.lobby) - Number(!!a.lobby) || b.count - a.count || b.lastSeen - a.lastSeen,
-    recent: (a, b) => b.lastSeen - a.lastSeen || b.count - a.count,
-    elo: (a, b) => (b.stat?.rating ?? -1) - (a.stat?.rating ?? -1) || b.count - a.count,
-    wr: (a, b) => {
-        const wr = x => (x.stat && x.stat.games >= MAPS_WR_MIN_GAMES ? x.stat.winp ?? -1 : -1);
-        return wr(b) - wr(a) || (b.stat?.games ?? 0) - (a.stat?.games ?? 0) || b.count - a.count;
-    },
-    games: (a, b) => (b.stat?.games ?? 0) - (a.stat?.games ?? 0) || b.count - a.count
-};
-
-function filterMapPlayers() {
-    if (mapPlayersFor !== state.mapsMap) return [];
-    // Which of them are in a lobby right now (any map), from the lobby list this page already polls
+// The players loaded so far, in the server's order (it sorts and searches), with their numbers on the Elo Type ladder
+// and the lobby they're in now (any map, from the lobby list this page already polls)
+function shownMapPlayers() {
+    if (mapPlayersMap !== state.mapsMap) return [];
     const inLobby = new Map();
     for (const lobby of lobbies) for (const p of lobby.rawPlayers || []) if (p.id && !inLobby.has(Number(p.id))) inLobby.set(Number(p.id), lobby);
-    const q = state.mapsSearch;
-    return mapPlayers
-        .filter(p => !q || p.name.toLowerCase().includes(q))
-        .map(p => ({ ...p, stat: mapPlayerStat(p), lobby: inLobby.get(p.id) || null }))
-        .sort(MAP_SORTS[state.mapsSort] || MAP_SORTS.count);
+    return mapPlayers.map(p => ({ ...p, stat: mapPlayerStat(p), lobby: inLobby.get(p.id) || null }));
 }
 
 function seenAgoText(ms) {
@@ -1223,8 +1249,12 @@ function renderMaps(players) {
     const map = state.mapsMap;
     const entry = mapList.find(m => m.name === map);
     note.textContent = mapsSince
-        ? `Counting since ${new Date(mapsSince).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}${entry ? ` · ${entry.lobbies} ${map} ${entry.lobbies === 1 ? 'lobby' : 'lobbies'} seen` : ''}. A player counts once per lobby.`
+        ? `Counting since ${new Date(mapsSince).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}${entry ? ` · ${entry.lobbies.toLocaleString()} ${map} ${entry.lobbies === 1 ? 'lobby' : 'lobbies'} seen` : ''}. A player counts once per lobby.`
         : '';
+    // A new sort or search keeps the cards shown, dimmed, until its players arrive
+    const updating = mapPlayersPending === 'update' && mapPlayersMap === map;
+    mapsGrid.classList.toggle('maps-updating', updating);
+    mapsGrid.setAttribute('aria-busy', String(updating || mapPlayersPending === 'load'));
     const loader = (text) => `<div class="loader-container"><div class="spinner"></div><p>${text}</p></div>`;
     if (mapListState === 'loading') { mapsGrid.innerHTML = loader('Loading maps...'); return; }
     if (mapListState === 'error') { mapsGrid.innerHTML = '<div class="empty-state"><h3>Maps could not be loaded</h3><p>Trying again in a minute.</p></div>'; return; }
@@ -1232,7 +1262,11 @@ function renderMaps(players) {
         mapsGrid.innerHTML = '<div class="empty-state"><h3>No map history yet</h3><p>Players appear here once they have been in a lobby, so this fills up over the first few hours.</p></div>';
         return;
     }
-    if (mapPlayersLoading || mapPlayersFor !== map) { mapsGrid.innerHTML = loader('Loading players...'); return; }
+    if (mapPlayersMap !== map || mapPlayersPending === 'load') { mapsGrid.innerHTML = loader('Loading players...'); return; }
+    if (mapPlayersError) {
+        mapsGrid.innerHTML = `<div class="empty-state"><h3>Players could not be loaded</h3><p>Trying again in a minute.</p></div>`;
+        return;
+    }
     if (!players.length) {
         mapsGrid.innerHTML = state.mapsSearch
             ? `<div class="empty-state"><h3>No players match your search</h3><p>Nobody named <strong>${esc(state.mapsSearch)}</strong> has been in ${esc(map)} lobbies.</p></div>`
@@ -1277,7 +1311,9 @@ function renderMaps(players) {
             </div>
             ${joinable ? `<div class="card-footer"><a href="aoe2de://0/${esc(lobby.id)}" class="btn-join" style="margin-left: auto;">Join Lobby</a></div>` : ''}
         </div>`;
-    }).join('');
+    }).join('') + (mapPlayersMatched > players.length
+        ? `<div class="spectate-more"><button type="button" class="clear-filters-btn" data-action="show-more-map-players"${mapPlayersPending ? ' disabled' : ''}>${mapPlayersPending === 'more' ? 'Loading&hellip;' : `Show more (${(mapPlayersMatched - players.length).toLocaleString()} more)`}</button></div>`
+        : '');
 }
 
 // ---------------------------------------------------------------- Spectate: games in progress
