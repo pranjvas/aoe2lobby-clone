@@ -1759,6 +1759,80 @@ function refreshLobbies() {
     return lobbiesLoading;
 }
 
+// --- Map regulars (the Maps view): which players keep showing up in each map's lobbies ------------------------------
+// scraper.js counts them (recordMapLobby) into scraped_map_players_v2.json. Feed map names are grouped by the name the
+// lobby cards show (mapDisplayName: a Steam mod map's number becomes its name). Counting history stays valid when the
+// scraper is down, so unlike the lobby files this one is used however old it is.
+const MAP_PLAYERS_PATH = path.join(__dirname, 'scraped_map_players_v2.json');
+const MAP_LIST_MAX = 300; // maps in the picker, most lobbies first
+const MAP_PLAYERS_MAX = 300; // players per map, most appearances first (the page sorts these other ways)
+let mapPlayersCache = { mtimeMs: -1, data: null };
+
+function readMapPlayers() {
+    let mtimeMs;
+    try { mtimeMs = fs.statSync(MAP_PLAYERS_PATH).mtimeMs; } catch (e) { return null; }
+    if (mtimeMs === mapPlayersCache.mtimeMs) return mapPlayersCache.data;
+    let d;
+    try { d = JSON.parse(fs.readFileSync(MAP_PLAYERS_PATH, 'utf8')); } catch (e) { console.error('Error reading map regulars:', e.message); return mapPlayersCache.data; }
+    if (!d || d.version !== 1 || !Array.isArray(d.maps)) return null;
+    const info = new Map();
+    for (const p of Array.isArray(d.players) ? d.players : []) {
+        if (!Array.isArray(p)) continue;
+        const id = profileIdOf(p[0]);
+        if (id) info.set(id, { name: str(p[1]) || `Player ${id}`, steamProfile: str(p[2]), lastSeen: num(p[3], 0), stats: cleanStats(p[4]) });
+    }
+    const maps = new Map(); // display name -> { name, lobbies, last, players: Map<id, { count, lastSeen }> }
+    for (const m of d.maps) {
+        if (!Array.isArray(m) || (typeof m[0] !== 'string' && typeof m[0] !== 'number') || !Array.isArray(m[3])) continue;
+        const name = mapDisplayName(String(m[0]));
+        if (GENERIC_MAPS.includes(name.toLowerCase())) continue;
+        let entry = maps.get(name);
+        if (!entry) maps.set(name, entry = { name, lobbies: 0, last: 0, players: new Map() });
+        entry.lobbies += num(m[1], 0);
+        entry.last = Math.max(entry.last, num(m[2], 0));
+        for (const p of m[3]) {
+            if (!Array.isArray(p)) continue;
+            const id = profileIdOf(p[0]);
+            if (!id || !info.has(id)) continue;
+            const rec = entry.players.get(id) || { count: 0, lastSeen: 0 };
+            rec.count += num(p[1], 0);
+            rec.lastSeen = Math.max(rec.lastSeen, num(p[2], 0));
+            entry.players.set(id, rec);
+        }
+    }
+    const list = [...maps.values()].filter(m => m.players.size > 0).sort((a, b) => b.lobbies - a.lobbies || b.last - a.last);
+    const data = { since: num(d.since), savedAt: num(d.savedAt), maps: new Map(list.map(m => [m.name, m])), info };
+    mapPlayersCache = { mtimeMs, data };
+    return data;
+}
+
+function serveMapList(res) {
+    const data = readMapPlayers();
+    const maps = data ? [...data.maps.values()].slice(0, MAP_LIST_MAX).map(m => ({ name: m.name, lobbies: m.lobbies, players: m.players.size })) : [];
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ since: data?.since ?? null, savedAt: data?.savedAt ?? null, maps }));
+}
+
+function serveMapPlayers(res, mapName) {
+    const name = String(mapName || '');
+    if (!name || name.length > 120) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'bad map' }));
+        return;
+    }
+    const data = readMapPlayers();
+    const entry = data?.maps.get(name);
+    const players = entry ? [...entry.players].sort((a, b) => b[1].count - a[1].count || b[1].lastSeen - a[1].lastSeen)
+        .slice(0, MAP_PLAYERS_MAX)
+        .map(([id, rec]) => {
+            const p = data.info.get(id);
+            // Ratings as last seen in a lobby, with Relic's ranked ladders where we have the player's profile
+            return { id, name: p.name, steamProfile: p.steamProfile, count: rec.count, lastSeen: rec.lastSeen, allStats: mergedStats(p.stats, profileCache.get(id)?.stats) };
+        }) : [];
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ map: name, since: data?.since ?? null, savedAt: data?.savedAt ?? null, lobbies: entry ? entry.lobbies : 0, players }));
+}
+
 async function handleRequest(req, res) {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
 
@@ -1824,6 +1898,14 @@ async function handleRequest(req, res) {
             return;
         }
         await serveHtmlPage(res, 'overlay.html', true);
+        return;
+    }
+    if (pathname === '/api/maps') {
+        serveMapList(res);
+        return;
+    }
+    if (pathname === '/api/maps/players') {
+        serveMapPlayers(res, query.get('map'));
         return;
     }
     if (pathname === '/api/player-games') {

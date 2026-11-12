@@ -54,7 +54,7 @@
     </script>
 
     <!-- Styles (fonts are self-hosted from /fonts, see styles.css) -->
-    <link rel="stylesheet" href="/styles.css?v=30">
+    <link rel="stylesheet" href="/styles.css?v=31">
 </head>
 <body>
     <!-- Background Elements -->
@@ -189,6 +189,7 @@
                         <button id="viewLobbiesBtn" class="btn" style="padding: 6px 16px; border-radius: 6px; font-size: 0.9em; background: rgba(88, 101, 242, 0.2); border: 1px solid var(--accent); color: white;">Lobbies</button>
                         <button id="viewPlayersBtn" class="btn" style="padding: 6px 16px; border-radius: 6px; font-size: 0.9em; background: transparent; border: 1px solid transparent; color: #8a9bb2;">Players</button>
                         <button id="viewSpectateBtn" class="btn" style="padding: 6px 16px; border-radius: 6px; font-size: 0.9em; background: transparent; border: 1px solid transparent; color: #8a9bb2;">Spectate</button>
+                        <button id="viewMapsBtn" class="btn" style="padding: 6px 16px; border-radius: 6px; font-size: 0.9em; background: transparent; border: 1px solid transparent; color: #8a9bb2;" title="Players who keep showing up in a map's lobbies">Maps</button>
                     </div>
                 </div>
                 <div style="display: flex; gap: 20px; align-items: center;">
@@ -232,6 +233,49 @@
             <!-- Player Grid -->
             <section class="lobby-grid" id="playerGrid" style="display: none;">
                 <!-- Players will be injected here by app.js -->
+            </section>
+
+            <!-- Maps: the players who keep showing up in a map's lobbies (hidden until the Maps view is chosen) -->
+            <section class="filters-section glass-panel" id="mapsFilters" style="display: none; margin-bottom: 20px;">
+                <div class="search-container">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="search-icon"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    <input type="text" id="mapsSearch" placeholder="Search players on this map..." aria-label="Search players on this map">
+                </div>
+                <div class="filter-controls">
+                    <div class="filter-group">
+                        <label for="mapsMap">Map</label>
+                        <select id="mapsMap">
+                            <option value="">Loading maps&hellip;</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="mapsSort">Sort Players By</label>
+                        <select id="mapsSort">
+                            <option value="count">Most appearances</option>
+                            <option value="active">Active now first</option>
+                            <option value="recent">Recently seen</option>
+                            <option value="elo">Elo (Highest First)</option>
+                            <option value="wr">Win Rate (Highest First)</option>
+                            <option value="games">Total Games Played</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="mapsEloType">Elo Type</label>
+                        <select id="mapsEloType">
+                            <option value="auto">Auto (Most Played)</option>
+                            <option value="0">Unranked</option>
+                            <option value="3">RM 1v1</option>
+                            <option value="4">RM Team</option>
+                            <option value="13">EW 1v1</option>
+                            <option value="14">EW Team</option>
+                        </select>
+                    </div>
+                </div>
+                <p class="maps-note" id="mapsNote"></p>
+            </section>
+
+            <section class="lobby-grid" id="mapsGrid" style="display: none;">
+                <!-- A map's regular players are injected here by app.js -->
             </section>
 
             <!-- Spectate: games in progress (hidden until the Spectate view is chosen) -->
@@ -355,7 +399,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/app.js?v=38"></script>
+    <script src="/app.js?v=39"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>

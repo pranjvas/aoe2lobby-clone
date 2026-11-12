@@ -452,6 +452,47 @@ select:focus, select:hover {
     border: 1px solid var(--gold-dim);
 }
 
+.elo-badge.elo-badge-none {
+    background: rgba(138, 155, 178, 0.2);
+    color: var(--text-secondary);
+    border-color: transparent;
+}
+
+/* Maps view: a map's regular players */
+.map-rank {
+    flex: none;
+    color: var(--text-secondary);
+    font-size: 0.85em;
+    font-variant-numeric: tabular-nums;
+}
+
+.map-player-card .host-label {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.map-ladder {
+    color: var(--text-secondary);
+    font-size: 0.85em;
+}
+
+.map-active-badge {
+    background: rgba(46, 160, 67, 0.2);
+    color: #2ea043;
+    border-color: #2ea043;
+}
+
+.maps-note {
+    width: 100%;
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.85em;
+}
+
+.maps-note:empty {
+    display: none;
+}
+
 .game-title {
     color: var(--text-secondary);
     font-size: 0.9rem;

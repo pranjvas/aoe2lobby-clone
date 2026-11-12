@@ -125,6 +125,105 @@ function stayStart(profileId, now) {
     return stay.since;
 }
 
+// --- Map regulars (the Maps view): how many of each map's lobbies each player has been in -------------------------
+// A player counts once per lobby (match id + map, so a host changing the map counts again). Kept in
+// MAP_PLAYERS_PATH, which server.js reads; it matches scraped_*_v2.json, so deploys keep it. Map names are the
+// feed's own (numbers are Steam mod maps, named by server.js); generic names say nothing about the map and are skipped.
+const MAP_PLAYERS_PATH = path.join(__dirname, 'scraped_map_players_v2.json');
+const MAP_GENERIC = new Set(['unknown map', 'my map', 'custom map', '']);
+const MAP_LIVE_KEEP_MS = 2 * 60 * 1000; // a lobby gone from the feed this long has closed; a shorter gap isn't counted twice
+const MAP_KEEP_MS = 30 * 24 * 60 * 60 * 1000; // a player (or map) not seen for this long is dropped, unless a regular
+const MAP_KEEP_COUNT = 3; // players seen in this many of a map's lobbies are kept however long ago
+const MAP_MAX_PLAYERS = 2000; // per map, most appearances first
+const MAP_MAX_MAPS = 1000; // most lobbies first
+const MAP_SAVE_MS = 60000;
+const mapCounts = new Map(); // map name -> { lobbies, last, players: Map<profileId, { n, last }> }
+const mapPlayerInfo = new Map(); // profileId -> { name, steam, stats, last }: as last seen in any lobby
+const mapLive = new Map(); // `${matchId}|${map}` -> { last, players: Set<profileId> }: lobbies already counted
+let mapSince = Date.now(), mapDirty = false, mapSavedAt = 0;
+
+// The file is arrays, never objects keyed by feed text, so a map called "__proto__" is just a name
+function loadMapPlayers() {
+    let d;
+    try { d = JSON.parse(fs.readFileSync(MAP_PLAYERS_PATH, 'utf8')); } catch (e) { return; } // first run: start counting now
+    if (!d || d.version !== 1) return;
+    if (Number.isSafeInteger(d.since) && d.since > 0) mapSince = d.since;
+    for (const m of Array.isArray(d.maps) ? d.maps : []) {
+        if (!Array.isArray(m) || typeof m[0] !== 'string' || !Array.isArray(m[3])) continue;
+        const players = new Map();
+        for (const p of m[3]) if (Array.isArray(p) && typeof p[0] === 'string') players.set(p[0], { n: Number(p[1]) || 0, last: Number(p[2]) || 0 });
+        mapCounts.set(m[0], { lobbies: Number(m[1]) || 0, last: Number(m[2]) || 0, players });
+    }
+    for (const p of Array.isArray(d.players) ? d.players : []) {
+        if (Array.isArray(p) && typeof p[0] === 'string') mapPlayerInfo.set(p[0], { name: String(p[1] ?? ''), steam: p[2] || null, last: Number(p[3]) || 0, stats: p[4] && typeof p[4] === 'object' ? p[4] : null });
+    }
+    // Lobbies counted before a restart, so a restart doesn't count them again
+    for (const l of Array.isArray(d.live) ? d.live : []) {
+        if (Array.isArray(l) && typeof l[0] === 'string' && Array.isArray(l[2])) mapLive.set(l[0], { last: Number(l[1]) || 0, players: new Set(l[2].map(String)) });
+    }
+    console.log(`Map regulars: ${mapCounts.size} maps, ${mapPlayerInfo.size} players, counting since ${new Date(mapSince).toISOString()}`);
+}
+
+// Ratings worth keeping for the Maps view: the four numbers it shows, per ladder
+function slimStats(stats) {
+    const out = {};
+    for (const ladder of Object.keys(stats || {})) {
+        const s = stats[ladder];
+        if (!s || typeof s !== 'object') continue;
+        out[ladder] = { rating: s.rating, games: s.games, wins: s.wins, winp: s.winp };
+    }
+    return Object.keys(out).length ? out : null;
+}
+
+function recordMapLobby(matchId, mapName, players, now) {
+    if (typeof mapName === 'number') mapName = String(mapName);
+    if (typeof mapName !== 'string') return;
+    const map = mapName.trim().slice(0, 120);
+    if (MAP_GENERIC.has(map.toLowerCase())) return;
+    let entry = mapCounts.get(map);
+    if (!entry) mapCounts.set(map, entry = { lobbies: 0, last: now, players: new Map() });
+    entry.last = now;
+    const key = `${matchId}|${map}`;
+    let live = mapLive.get(key);
+    if (!live) { mapLive.set(key, live = { last: now, players: new Set() }); entry.lobbies++; }
+    live.last = now;
+    for (const p of players) {
+        const id = String(p.profileId);
+        let rec = entry.players.get(id);
+        if (!rec) entry.players.set(id, rec = { n: 0, last: now });
+        if (!live.players.has(id)) { live.players.add(id); rec.n++; }
+        rec.last = now;
+        const prev = mapPlayerInfo.get(id);
+        mapPlayerInfo.set(id, { name: p.name, steam: p.steamProfile || prev?.steam || null, stats: slimStats(p.stats) || prev?.stats || null, last: now });
+    }
+    mapDirty = true;
+}
+
+// After each snapshot: forget closed lobbies, and save at most every MAP_SAVE_MS (or now, at shutdown)
+function finishMapSnapshot(now, force = false) {
+    for (const [key, live] of mapLive) if (now - live.last > MAP_LIVE_KEEP_MS) mapLive.delete(key);
+    if (!mapDirty || (!force && now - mapSavedAt < MAP_SAVE_MS)) return;
+    const maps = [];
+    const keep = new Set();
+    const byLobbies = [...mapCounts].sort((a, b) => b[1].lobbies - a[1].lobbies);
+    for (const [name, entry] of byLobbies) {
+        let players = [...entry.players].filter(([, r]) => r.n >= MAP_KEEP_COUNT || now - r.last <= MAP_KEEP_MS);
+        players.sort((a, b) => b[1].n - a[1].n || b[1].last - a[1].last);
+        players = players.slice(0, MAP_MAX_PLAYERS);
+        if (!players.length || maps.length >= MAP_MAX_MAPS) { mapCounts.delete(name); continue; }
+        entry.players = new Map(players);
+        for (const [id] of players) keep.add(id);
+        maps.push([name, entry.lobbies, entry.last, players.map(([id, r]) => [id, r.n, r.last])]);
+    }
+    for (const id of mapPlayerInfo.keys()) if (!keep.has(id)) mapPlayerInfo.delete(id);
+    const players = [...mapPlayerInfo].map(([id, p]) => [id, p.name, p.steam, p.last, p.stats]);
+    const live = [...mapLive].map(([key, l]) => [key, l.last, [...l.players]]);
+    if (writeJsonAtomic(MAP_PLAYERS_PATH, { version: 1, since: mapSince, savedAt: now, maps, players, live })) {
+        mapDirty = false;
+        mapSavedAt = now;
+    }
+}
+
 // Only the ladders this player has data on
 function playerStats(profileId) {
     const all = lobbyEloUpdate[profileId];
@@ -268,6 +367,7 @@ function dumpData() {
             hostProfileId = players[0].profileId;
         }
         if (hostName === 'UNKNOWN') continue;
+        recordMapLobby(String(matchId), lobby.map_name, players, now);
 
         scrapedLobbies[String(matchId)] = {
             matchId: String(matchId),
@@ -300,6 +400,7 @@ function dumpData() {
 
     const savedLobbies = writeJsonAtomic(OUTPUT_PATH, scrapedLobbies);
     const savedPlayers = writeJsonAtomic(PLAYERS_PATH, scrapedPlayers);
+    finishMapSnapshot(now);
     // Log only when the counts change, to keep pm2 logs small
     const summary = `${Object.keys(scrapedLobbies).length} lobbies and ${Object.keys(scrapedPlayers).length} players`;
     if (savedLobbies && savedPlayers && summary !== lastSavedSummary) {
@@ -318,6 +419,15 @@ setInterval(() => {
     }
 }, 10000);
 
+// pm2 stop/reload sends SIGINT: save the map counts first, so up to a minute of them isn't lost
+for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, () => {
+        try { finishMapSnapshot(Date.now(), true); } catch (e) { console.error('Failed to save map regulars:', e.message); }
+        process.exit(0);
+    });
+}
+
 console.log(`Starting aoe2lobby.com lobby scraper (direct WebSocket snapshot every ${SNAPSHOT_MS / 1000} s)...`);
+loadMapPlayers();
 snapshotTick();
 setInterval(snapshotTick, SNAPSHOT_MS);
