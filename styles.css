@@ -350,6 +350,20 @@ select:focus, select:hover {
     gap: 12px;
 }
 
+/* The four view buttons: narrower on phones so they fit the page; on the smallest screens they wrap rather than stick out */
+.view-toggles {
+    flex-wrap: wrap;
+    max-width: 100%;
+}
+.view-toggles .btn {
+    padding: 6px 16px;
+}
+@media (max-width: 480px) {
+    .view-toggles .btn {
+        padding: 6px 10px;
+    }
+}
+
 .lobbies-stats span {
     color: var(--gold-primary);
     font-weight: 600;
@@ -560,6 +574,7 @@ select:focus, select:hover {
     flex-direction: column;
     justify-content: center;
     gap: 0.4rem;
+    min-width: 0; /* a long map name with no spaces wraps instead of widening the card past its edge */
 }
 
 .detail-row {
@@ -568,6 +583,7 @@ select:focus, select:hover {
     gap: 0.5rem;
     font-size: 0.9rem;
     color: var(--text-primary);
+    overflow-wrap: anywhere;
 }
 
 .detail-icon {
