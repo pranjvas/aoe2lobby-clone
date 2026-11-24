@@ -11,7 +11,7 @@ Internet -> Caddy (80/443, auto HTTPS) -> server.js (127.0.0.1:3002, API + front
 ```
 
 `server.js` serves both `/api/lobbies` and the frontend (only the whitelisted runtime files: `index.html`,
-`app.js`, `styles.css`, `fonts/`, favicons and icons, `robots.txt`, `sitemap.xml`, ...), so `fe_server.js`
+`app.js`, `styles.css`, `fonts/`, favicons and icons, `robots.txt`, ...) and the pages it builds (`/maps/`, the sitemap), so `fe_server.js`
 and `cloudflared.exe` are no longer used. Fonts are self-hosted; no requests go to Google Fonts.
 
 The deployed file list is `FILES` in `deploy/push.sh` (and the same list in `deploy/setup.sh`). A new runtime

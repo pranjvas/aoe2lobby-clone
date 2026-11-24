@@ -13,11 +13,11 @@ SSH_OPTS=(-i "$KEY" -o ServerAliveInterval=15 -o ServerAliveCountMax=8 -o Connec
 # Only what the server runs (the repo also tracks old debugging scripts that are never deployed).
 # deploy/setup.sh copies the same list on a fresh server: keep the two in sync.
 FILES=(
-  package.json package-lock.json ecosystem.config.js server.js scraper.js map-history.js
+  package.json package-lock.json ecosystem.config.js server.js scraper.js map-history.js map-pages.js
   index.html app.js styles.css overlay.html overlay.js overlay.css civ-info.json fonts
   replay.html replay.js replay.css replay-parse.js replay-worker.js replay-data.json
   favicon.png favicon-32.png apple-touch-icon.png icon-192.png icon-512.png og-image.png
-  site.webmanifest robots.txt sitemap.xml 7e7c007e5148f7d5a2953120e8410d70.txt
+  site.webmanifest robots.txt 7e7c007e5148f7d5a2953120e8410d70.txt
   deploy
 )
 

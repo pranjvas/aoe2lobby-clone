@@ -54,7 +54,7 @@
     </script>
 
     <!-- Styles (fonts are self-hosted from /fonts, see styles.css) -->
-    <link rel="stylesheet" href="/styles.css?v=35">
+    <link rel="stylesheet" href="/styles.css?v=36">
 </head>
 <body>
     <!-- Background Elements -->
@@ -350,6 +350,9 @@
                 <h2>Find Age of Empires II: DE lobbies faster</h2>
                 <p>AoE2Lobby.online lists every open Age of Empires II: Definitive Edition multiplayer lobby as it happens, with each player's ELO, games played and win rate. Filter by game mode, map, minimum ELO, mods, treaty length, starting age and starting resources to skip the games you don't want, like Dark Age starts or low-resource lobbies, then join straight from your browser.</p>
 
+                <h2>Who plays which map</h2>
+                <p>The <strong>Maps</strong> tab lists the players who keep joining a map's lobbies, with their ratings and win rates, and shows who is in a lobby now. Each busy map has a page of its own<!-- popular-maps -->; <a href="/maps/">see every map</a>.</p>
+
                 <h2>Frequently asked questions</h2>
                 <details>
                     <summary>How do I join a lobby?</summary>
@@ -381,6 +384,10 @@
                     <p>Yes. Set <strong>Start Age</strong> to "Feudal or later" and <strong>Resources</strong> to "Medium or more". Treaty length, starting age and resources are also shown on every lobby card.</p>
                 </details>
                 <details>
+                    <summary>Who plays a map the most?</summary>
+                    <p>Open <strong>Maps</strong> and pick a map. It lists every player seen in that map's lobbies since 12 November 2026, the most frequent first, with their rating, games and win rate, and marks who is in a lobby now. You can sort by rating, win rate, games, who was seen most recently or who is in a lobby now, and search by name. A player counts once per lobby. Every map also has a page of its own with its regular players and the lobbies open on it now: see <a href="/maps/">every map</a>.</p>
+                </details>
+                <details>
                     <summary>How often is the list updated?</summary>
                     <p>Lobbies and player ratings refresh automatically every few seconds. You don't need to reload the page.</p>
                 </details>
@@ -391,7 +398,7 @@
                 <details>
                     <summary>Privacy and contact</summary>
                     <p>AoE2Lobby.online has no accounts and sets no cookies. What it stores in your browser stays there: your filter and view choices (<code>aoe2State</code>), the players you follow (<code>aoe2Follows</code>) and your caster tools settings (<code>aoe2Caster</code>) in local storage, so they are still set on your next visit, and the games a tab has already alerted you about (<code>aoe2Alerted</code>, in session storage, gone when the tab closes). Clearing this site's data removes them all. Your follows are never sent to the server: the page fetches the list of games in progress and looks for the players you follow itself. Desktop notifications appear only after you allow them in your browser. A replay file you drop into the replay viewer, or a savegame folder you let it read to follow a game, is read in your browser and never sent anywhere. <strong>Watch this game</strong> asks our server to fetch that game's official replay, which it keeps in memory for up to 30 minutes, so people opening the same game share one download. A player search sends the name you type to the game's public match history, and the answer is kept in memory for a minute. A game shared live is held in memory while it runs and for 10 minutes after. Visits are counted with Cloudflare Web Analytics, which is cookieless.</p>
-                    <p>Player names, ratings and Steam links come from the sources above: the game's public lobby service and aoe2lobby.com. Results and rating changes of finished games come from the game's public match history (aoe2companion.com is only used to look up map names). The server keeps player profiles in memory for up to a day after a player was last seen in a lobby, plus a file with the current lobby list that is overwritten every few seconds. Games in progress, and games that ended in the last 2 hours, are also kept in memory, with their players' names, countries, Steam links, ratings and results, and each one's match page shows them for that time. Its access logs keep visitors' IP addresses masked (the last part removed) for 30 days.</p>
+                    <p>Player names, ratings and Steam links come from the sources above: the game's public lobby service and aoe2lobby.com. Results and rating changes of finished games come from the game's public match history (aoe2companion.com is only used to look up map names). The server keeps player profiles in memory for up to a day after a player was last seen in a lobby, plus a file with the current lobby list that is overwritten every few seconds. For the <strong>Maps</strong> tab and the map pages, it also keeps a database of which players were seen in each map's lobbies, how many times and when last, with each player's name, Steam link and ratings as last seen. That database is kept with no time limit. Games in progress, and games that ended in the last 2 hours, are also kept in memory, with their players' names, countries, Steam links, ratings and results, and each one's match page shows them for that time. Its access logs keep visitors' IP addresses masked (the last part removed) for 30 days.</p>
                     <p>Contact details, including how to ask for something to be removed, will be added here.</p>
                 </details>
             </section>
@@ -399,7 +406,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/app.js?v=43"></script>
+    <script src="/app.js?v=44"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>

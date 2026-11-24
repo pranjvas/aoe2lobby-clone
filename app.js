@@ -40,6 +40,13 @@ if (storedState.eloType === 'auto' && !storedState.eloDefaultV2) storedState.elo
 const state = { ...defaultState, ...storedState, eloDefaultV2: true };
 const MAPS_RECENT_MAX = 5;
 state.mapsRecent = [...new Set(Array.isArray(state.mapsRecent) ? state.mapsRecent.filter(m => typeof m === 'string' && m) : [])].slice(0, MAPS_RECENT_MAX);
+// A map page's link (/?map=<name>) opens the Maps tab on that map; the address goes back to plain "/"
+const linkedMap = location.pathname === '/' ? new URLSearchParams(location.search).get('map') : null;
+if (linkedMap && linkedMap.length <= 120) {
+    state.currentView = 'maps';
+    state.mapsMap = linkedMap;
+    history.replaceState(null, '', '/' + location.hash);
+}
 
 // Filters that narrow the lobby list: [state key, DOM select id or null, label]
 const LOBBY_FILTERS = [
@@ -1096,7 +1103,7 @@ function showView(view) {
 const MAPS_REFRESH_MS = 60000; // the server's counts change about once a minute
 const MAP_PLAYERS_PAGE = 60; // players per Show more
 const MAP_PLAYERS_MAX = 1000; // the most the server sends at once (a refresh asks for all the cards shown)
-let mapList = []; // [{ name, lobbies, players }], most lobbies first
+let mapList = []; // [{ name, lobbies, players, page }], most lobbies first
 let mapListState = 'loading'; // 'loading' | 'ready' | 'error'
 let mapsSince = null; // ms: when counting started
 let mapPlayers = []; // the players loaded so far, in the server's order for mapPlayersKey
@@ -1116,7 +1123,10 @@ async function fetchMaps() {
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const data = await response.json();
         mapList = (Array.isArray(data.maps) ? data.maps : []).filter(m => m && typeof m.name === 'string' && m.name)
-            .map(m => ({ name: m.name, lobbies: intIn(m.lobbies, 0, Number.MAX_SAFE_INTEGER) ?? 0, players: intIn(m.players, 0, Number.MAX_SAFE_INTEGER) ?? 0 }));
+            .map(m => ({
+                name: m.name, lobbies: intIn(m.lobbies, 0, Number.MAX_SAFE_INTEGER) ?? 0, players: intIn(m.players, 0, Number.MAX_SAFE_INTEGER) ?? 0,
+                page: typeof m.page === 'string' && /^\/maps\/[^/?#\s]+$/.test(m.page) ? m.page : null // the map's own page
+            }));
         mapsSince = intIn(data.since, 1, Number.MAX_SAFE_INTEGER);
         mapListState = 'ready';
         // A remembered map the list no longer has falls back to the latest recent pick it still has, else the busiest map
@@ -1248,8 +1258,9 @@ function renderMaps(players) {
     const note = document.getElementById('mapsNote');
     const map = state.mapsMap;
     const entry = mapList.find(m => m.name === map);
-    note.textContent = mapsSince
-        ? `Counting since ${new Date(mapsSince).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}${entry ? ` · ${entry.lobbies.toLocaleString()} ${map} ${entry.lobbies === 1 ? 'lobby' : 'lobbies'} seen` : ''}. A player counts once per lobby.`
+    const pageLink = entry?.page ? ` <a class="maps-page-link" href="${esc(entry.page)}">This map's page</a>` : '';
+    note.innerHTML = mapsSince
+        ? `Counting since ${new Date(mapsSince).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}${entry ? ` · ${entry.lobbies.toLocaleString()} ${esc(map)} ${entry.lobbies === 1 ? 'lobby' : 'lobbies'} seen` : ''}. A player counts once per lobby.${pageLink}`
         : '';
     // A new sort or search keeps the cards shown, dimmed, until its players arrive
     const updating = mapPlayersPending === 'update' && mapPlayersMap === map;

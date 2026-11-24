@@ -1957,3 +1957,232 @@ button.civ-chip {
     .caster-sides { grid-template-columns: minmax(0, 1fr); }
     .toasts { right: 16px; left: 16px; width: auto; }
 }
+
+/* Map pages (/maps/ and /maps/<map>, built by map-pages.js): the site's header as a link home, panels of text and tables */
+.nav-home {
+    color: inherit;
+    text-decoration: none;
+}
+
+.nav-logo .nav-brand {
+    font-family: var(--font-heading);
+    font-size: 1.8rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    line-height: 1.2;
+}
+
+.nav-logo .nav-brand > span {
+    color: var(--gold-primary);
+}
+
+.nav-logo .nav-brand .nav-tagline {
+    display: block;
+    font-family: var(--font-body, inherit);
+    font-size: 0.8rem;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    color: var(--text-secondary);
+}
+
+.seo-page {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    padding-bottom: 2rem;
+}
+
+.seo-breadcrumbs {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.seo-breadcrumbs a,
+.seo-panel a,
+.seo-footer a,
+.maps-page-link {
+    color: var(--gold-primary);
+}
+
+.seo-panel {
+    padding: 1.5rem 1.75rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    min-width: 0;
+}
+
+.seo-panel > * + * {
+    margin-top: 0.75rem;
+}
+
+.seo-panel h1 {
+    font-family: var(--font-heading);
+    color: var(--text-primary);
+    font-size: 1.6rem;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+}
+
+.seo-panel h2 {
+    font-family: var(--font-heading);
+    color: var(--text-primary);
+    font-size: 1.2rem;
+    overflow-wrap: anywhere;
+}
+
+.seo-lead {
+    font-size: 1.05rem;
+}
+
+.seo-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
+}
+
+.seo-stats strong {
+    color: var(--text-primary);
+}
+
+.seo-button {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    border: 1px solid var(--gold-primary);
+    background: var(--gold-dim);
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.seo-table-wrap {
+    overflow-x: auto;
+}
+
+.seo-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+}
+
+.seo-table th,
+.seo-table td {
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid var(--border-color);
+    text-align: left;
+    vertical-align: top;
+}
+
+.seo-table th {
+    color: var(--text-primary);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.seo-table td.seo-num,
+.seo-table th.seo-num {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.seo-table td.seo-date {
+    white-space: nowrap;
+}
+
+.seo-table td small {
+    color: var(--text-secondary);
+    font-size: 0.78em;
+}
+
+.seo-table td.seo-player,
+.seo-table td a {
+    overflow-wrap: anywhere;
+}
+
+.seo-table tbody tr:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.seo-lobbies {
+    list-style: none;
+}
+
+.seo-lobbies li {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border-color);
+    overflow-wrap: anywhere;
+}
+
+.seo-lobby-title {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.seo-lobby-facts {
+    font-size: 0.9rem;
+}
+
+.seo-tag,
+.seo-join {
+    display: inline-block;
+    margin-left: 0.25rem;
+    padding: 0 0.5rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    border: 1px solid var(--border-color);
+}
+
+.seo-join {
+    border-color: var(--gold-primary);
+    text-decoration: none;
+}
+
+.seo-note {
+    font-size: 0.85rem;
+}
+
+.seo-links {
+    overflow-wrap: anywhere;
+}
+
+.seo-footer {
+    padding: 1.5rem 0 2.5rem;
+    border-top: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    line-height: 1.6;
+}
+
+.maps-page-link {
+    margin-left: 0.25rem;
+    white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+    .seo-panel {
+        padding: 1.25rem 1rem;
+    }
+    .seo-panel h1 {
+        font-size: 1.3rem;
+    }
+    .nav-logo .nav-brand {
+        font-size: 1.5rem;
+    }
+}
+
+/* Phones: a map page's player table keeps names whole; Games and Last seen give way, the ladder goes under the rating */
+@media (max-width: 600px) {
+    .seo-table th,
+    .seo-table td {
+        padding: 0.4rem 0.35rem;
+    }
+    .seo-table td.seo-player {
+        min-width: 7.5rem;
+    }
+    .seo-table td small {
+        display: block;
+    }
+    .seo-players th:nth-child(5), .seo-players td:nth-child(5),
+    .seo-players th:nth-child(7), .seo-players td:nth-child(7) {
+        display: none;
+    }
+}

@@ -19,7 +19,7 @@ const PUBLIC_FILES = new Set([
     '/index.html', '/app.js', '/styles.css', '/overlay.js', '/overlay.css', '/civ-info.json', '/favicon.png',
     '/replay.js', '/replay.css', '/replay-parse.js', '/replay-worker.js', '/replay-data.json', // the replay viewer (/replay)
     '/favicon-32.png', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/og-image.png', '/site.webmanifest',
-    '/robots.txt', '/sitemap.xml',
+    '/robots.txt', // the sitemap is built by serveSitemap
     '/fonts/cinzel-variable.woff2', '/fonts/outfit-variable.woff2', '/fonts/cinzel-ext.woff2', '/fonts/outfit-ext.woff2', '/fonts/OFL.txt', // self-hosted fonts
     '/7e7c007e5148f7d5a2953120e8410d70.txt' // IndexNow key (lets Bing/Yandex accept our URL submissions)
 ]);
@@ -1777,24 +1777,38 @@ const MAP_CACHE_MS = 30000;
 let mapListCache = { at: 0, list: null, names: null, since: null };
 const mapPlayersCache = new Map(); // display name -> { at, entry, players, sorted: Map(`${sort}|${ladder}` -> players) }
 
-// [{ name, lobbies, players, stored: [stored names] }], most lobbies first, and display name -> that entry
+// [{ name, lobbies, players, stored: [stored names] }], most lobbies first, and display name -> that entry. Names that
+// differ only in case ("Highland" and "highland") are one map, shown as the spelling most of its lobbies used; every
+// spelling finds it.
 function mapList() {
     if (mapListCache.list && Date.now() - mapListCache.at < MAP_CACHE_MS) return mapListCache;
-    const byName = new Map();
+    const byKey = new Map(), spellings = new Map(); // lower-case name -> entry; entry -> Map(spelling -> lobbies)
     for (const row of mapHistory.maps()) {
         const name = mapDisplayName(String(row.name));
-        if (GENERIC_MAPS.includes(name.toLowerCase())) continue;
-        let entry = byName.get(name);
-        if (!entry) byName.set(name, entry = { name, lobbies: 0, players: 0, last: 0, stored: [] });
-        entry.lobbies += Number(row.lobbies) || 0;
+        const key = name.toLowerCase();
+        if (GENERIC_MAPS.includes(key)) continue;
+        let entry = byKey.get(key);
+        if (!entry) {
+            byKey.set(key, entry = { name, lobbies: 0, players: 0, last: 0, stored: [] });
+            spellings.set(entry, new Map());
+        }
+        const lobbies = Number(row.lobbies) || 0;
+        entry.lobbies += lobbies;
         entry.players += Number(row.players) || 0;
         entry.last = Math.max(entry.last, Number(row.last) || 0);
         entry.stored.push(String(row.name));
+        spellings.get(entry).set(name, (spellings.get(entry).get(name) || 0) + lobbies);
     }
-    // A map stored under two names (a mod map's number and its name): count a player on both once
-    for (const entry of byName.values()) if (entry.stored.length > 1) entry.players = mapHistory.playerCount(entry.stored);
-    const list = [...byName.values()].filter(m => m.players > 0).sort((a, b) => b.lobbies - a.lobbies || b.last - a.last);
-    mapListCache = { at: Date.now(), list, names: byName, since: mapHistory.since() };
+    const names = new Map();
+    for (const entry of byKey.values()) {
+        const byLobbies = [...spellings.get(entry)].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+        entry.name = byLobbies[0][0];
+        for (const [spelling] of byLobbies) names.set(spelling, entry);
+        // A map stored under two names (a mod map's number and its name, or two spellings): count a player on both once
+        if (entry.stored.length > 1) entry.players = mapHistory.playerCount(entry.stored);
+    }
+    const list = [...byKey.values()].filter(m => m.players > 0).sort((a, b) => b.lobbies - a.lobbies || b.last - a.last);
+    mapListCache = { at: Date.now(), list, names, since: mapHistory.since() };
     mapPlayersCache.clear();
     return mapListCache;
 }
@@ -1806,8 +1820,14 @@ function answerJson(res, status, body) {
 
 function serveMapList(res) {
     try {
-        const { list, since } = mapList();
-        answerJson(res, 200, { since, maps: list.slice(0, MAP_LIST_MAX).map(m => ({ name: m.name, lobbies: m.lobbies, players: m.players })) });
+        const { maps: { list, since }, slugOf } = mapSlugs();
+        answerJson(res, 200, {
+            since,
+            maps: list.slice(0, MAP_LIST_MAX).map(m => ({
+                name: m.name, lobbies: m.lobbies, players: m.players,
+                page: slugOf.has(m.name) ? MapPages.mapPath(slugOf.get(m.name)) : undefined
+            }))
+        });
     } catch (e) {
         console.error('Map history: list failed:', e.message);
         answerJson(res, 503, { error: 'map history unavailable' });
@@ -1822,19 +1842,22 @@ function mapPlayersOf(name) {
     let kept = mapPlayersCache.get(name);
     if (kept && now - kept.at < MAP_CACHE_MS) return kept;
     for (const [key, old] of mapPlayersCache) if (now - old.at >= MAP_CACHE_MS) mapPlayersCache.delete(key);
-    const players = mapHistory.players(entry.stored).map(row => {
-        const id = profileIdOf(Number(row.id));
-        let stats = null;
-        try { stats = cleanStats(JSON.parse(row.stats || 'null')); } catch (e) { }
-        // Ratings as last seen in a lobby, with Relic's ranked ladders where we have the player's profile
-        return {
-            id, name: str(row.name) || `Player ${id}`, steamProfile: str(row.steam), count: Number(row.count) || 0,
-            lastSeen: Number(row.lastSeen) || 0, allStats: mergedStats(stats, profileCache.get(id)?.stats)
-        };
-    }).filter(p => p.id);
+    const players = mapHistory.players(entry.stored).map(mapPlayerFromRow).filter(p => p.id);
     kept = { at: now, entry, players, sorted: new Map() };
     mapPlayersCache.set(name, kept);
     return kept;
+}
+
+// A map history row as the Maps view's player: ratings as last seen in a lobby, with Relic's ranked ladders where we
+// have the player's profile
+function mapPlayerFromRow(row) {
+    const id = profileIdOf(Number(row.id));
+    let stats = null;
+    try { stats = cleanStats(JSON.parse(row.stats || 'null')); } catch (e) { }
+    return {
+        id, name: str(row.name) || `Player ${id}`, steamProfile: str(row.steam), count: Number(row.count) || 0,
+        lastSeen: Number(row.lastSeen) || 0, allStats: mergedStats(stats, profileCache.get(id)?.stats)
+    };
 }
 
 // ?map=&sort=&ladder=&q=&offset=&limit=: one page of the map's players, sorted, narrowed to names containing q
@@ -1864,6 +1887,142 @@ function serveMapPlayers(res, query) {
         console.error('Map history: players failed:', e.message);
         answerJson(res, 503, { error: 'map history unavailable' });
     }
+}
+
+// --- Map pages (map-pages.js): /maps/, /maps/<slug>, the sitemap, and the home page's links to busy maps -------------
+// Server-rendered, so search engines read them without the site's script. Each answer is kept PAGE_CACHE_MS.
+const MapPages = require('./map-pages');
+const PAGE_CACHE_MS = 2 * 60 * 1000;
+const PAGE_CACHE_MAX = 2000;
+const pageCache = new Map(); // key -> { at, status, body, type }
+let slugsCache = { at: -1, bySlug: new Map(), slugOf: new Map() };
+let homeLinks = { at: 0, html: '' };
+// The stylesheet as index.html links it (with its ?v=), so the pages get the same cached file
+let stylesHref = '/styles.css';
+try { stylesHref = (/\/styles\.css\?v=\d+/.exec(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8')) || [stylesHref])[0]; } catch (e) { }
+
+// The map list with each map's page address (slug), rebuilt with the list
+function mapSlugs() {
+    const maps = mapList();
+    if (slugsCache.at !== maps.at) slugsCache = { at: maps.at, ...MapPages.slugIndex(maps.list) };
+    return { maps, bySlug: slugsCache.bySlug, slugOf: slugsCache.slugOf };
+}
+
+// The lobby list as the home page last got it, rebuilt first when it is over a minute old (nobody on the site)
+let lobbyListParsed = { at: -1, list: [] };
+async function currentLobbyList() {
+    if (Date.now() - lobbiesCache.at > 60000) {
+        const pending = refreshLobbies();
+        if (pending) await Promise.race([pending, new Promise(resolve => setTimeout(resolve, 5000).unref())]);
+    }
+    if (lobbyListParsed.at !== lobbiesCache.at) {
+        let list = [];
+        try { list = JSON.parse(lobbiesCache.body || '{}').matches || []; } catch (e) { }
+        lobbyListParsed = { at: lobbiesCache.at, list: Array.isArray(list) ? list : [] };
+    }
+    return lobbyListParsed;
+}
+
+function redirect(res, location) {
+    res.writeHead(301, { Location: location, 'Cache-Control': 'public, max-age=3600' });
+    res.end();
+}
+
+// Serves build()'s { status, body, type } from the cache, building it when missing or older than PAGE_CACHE_MS
+async function sendCached(res, key, build) {
+    const now = Date.now();
+    let kept = pageCache.get(key);
+    if (!kept || now - kept.at >= PAGE_CACHE_MS) {
+        for (const [k, old] of pageCache) if (now - old.at >= PAGE_CACHE_MS) pageCache.delete(k);
+        kept = { at: now, ...(await build()) };
+        if (pageCache.size < PAGE_CACHE_MAX) pageCache.set(key, kept);
+    }
+    res.writeHead(kept.status, { 'Content-Type': kept.type || 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=120' });
+    res.end(kept.body);
+}
+
+function mapPageUnavailable(res, e) {
+    console.error('Map pages failed:', e.message);
+    res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '60' });
+    res.end('Map history unavailable, try again in a minute.');
+}
+
+async function serveMapsIndex(res) {
+    try {
+        await sendCached(res, 'maps-index', () => {
+            const { maps, slugOf } = mapSlugs();
+            return { status: 200, body: MapPages.renderMapsIndex({ list: maps.list, slugOf, since: maps.since, stylesHref }) };
+        });
+    } catch (e) { mapPageUnavailable(res, e); }
+}
+
+// raw: the path after /maps/, still percent-encoded
+async function serveMapPage(res, raw) {
+    let slug = '';
+    try { slug = decodeURIComponent(raw); } catch (e) { }
+    let found;
+    try { found = mapSlugs(); } catch (e) { return mapPageUnavailable(res, e); }
+    const map = found.bySlug.get(slug);
+    if (!map) {
+        // Another way of writing a map's address (capitals, spaces, a trailing slash) goes to the map's own
+        const canonical = MapPages.mapSlug(slug);
+        if (canonical && canonical !== slug && found.bySlug.has(canonical)) return redirect(res, MapPages.mapPath(canonical));
+        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8', 'X-Robots-Tag': 'noindex' });
+        res.end(MapPages.renderNotFound({ stylesHref }));
+        return;
+    }
+    try {
+        await sendCached(res, 'map:' + slug, async () => {
+            const { at, list } = await currentLobbyList();
+            // The map list may have been rebuilt meanwhile (new entries): take the map, its rank and the links from one list
+            const { maps, bySlug, slugOf } = mapSlugs();
+            const entry = bySlug.get(slug) || map;
+            const key = entry.name.toLowerCase();
+            const lobbies = list.filter(l => !l.isPlaying && typeof l.map === 'string' && l.map.toLowerCase() === key);
+            const players = mapHistory.players(entry.stored, MapPages.TOP_PLAYERS).map(mapPlayerFromRow).filter(p => p.id);
+            const body = MapPages.renderMapPage({
+                map: entry, slug, rank: maps.list.indexOf(entry) + 1, since: maps.since, players, lobbies, lobbiesAt: at || null,
+                related: maps.list.filter(MapPages.isIndexable), slugOf, stylesHref, isMatchId
+            });
+            return { status: 200, body };
+        });
+    } catch (e) { mapPageUnavailable(res, e); }
+}
+
+// The home page, the replay viewer, /maps/ and every map page busy enough to be indexed
+async function serveSitemap(res) {
+    await sendCached(res, 'sitemap', () => {
+        const urls = [{ path: '/' }, { path: '/replay' }];
+        try {
+            const { maps, slugOf } = mapSlugs();
+            const indexed = maps.list.filter(m => MapPages.isIndexable(m) && slugOf.has(m.name));
+            urls.push({ path: '/maps/', lastmod: Math.max(0, ...indexed.map(m => m.last)) || null });
+            for (const m of indexed) urls.push({ path: MapPages.mapPath(slugOf.get(m.name)), lastmod: m.last || null });
+        } catch (e) {
+            console.error('Sitemap: map history unavailable:', e.message);
+        }
+        return { status: 200, body: MapPages.renderSitemap(urls), type: 'application/xml; charset=utf-8' };
+    });
+}
+
+// index.html, with links to the busiest maps' pages where it says <!-- popular-maps -->
+async function serveHomePage(res) {
+    let html;
+    try {
+        html = await fs.promises.readFile(path.join(__dirname, 'index.html'), 'utf8');
+    } catch (e) {
+        res.writeHead(e.code === 'ENOENT' ? 404 : 500);
+        res.end(e.code === 'ENOENT' ? 'File not found' : 'Server error: ' + e.code);
+        return;
+    }
+    if (Date.now() - homeLinks.at >= PAGE_CACHE_MS) {
+        let links = '';
+        try { const { maps, slugOf } = mapSlugs(); links = MapPages.popularMapsHtml(maps.list, slugOf); } catch (e) { }
+        homeLinks = { at: Date.now(), html: links };
+    }
+    html = html.replace('<!-- popular-maps -->', () => homeLinks.html);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+    res.end(html);
 }
 
 async function handleRequest(req, res) {
@@ -1959,6 +2118,11 @@ async function handleRequest(req, res) {
         await serveHtmlPage(res, 'replay.html', false);
         return;
     }
+    if (pathname === '/maps') return redirect(res, '/maps/');
+    if (pathname === '/maps/') return serveMapsIndex(res);
+    if (pathname.startsWith('/maps/')) return serveMapPage(res, pathname.slice('/maps/'.length));
+    if (pathname === '/sitemap.xml') return serveSitemap(res);
+    if (pathname === '/' || pathname === '/index.html') return serveHomePage(res);
     if (pathname.startsWith('/api/spectate/')) {
         const id = pathname.slice('/api/spectate/'.length);
         if (!isMatchId(id)) {
