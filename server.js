@@ -1940,9 +1940,10 @@ async function serveLobbyStream(req, res) {
         const n = (streamPerIp.get(ip) || 1) - 1;
         if (n > 0) streamPerIp.set(ip, n); else streamPerIp.delete(ip);
     });
+    // Caddy compresses the stream (the same lobbies repeat, so it shrinks several times over) and flushes every event at once
     res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-cache, no-transform',
+        'Cache-Control': 'no-cache',
         'X-Accel-Buffering': 'no'
     });
     res.write('retry: 3000\n\n'); // how long the browser waits before reconnecting after a drop
