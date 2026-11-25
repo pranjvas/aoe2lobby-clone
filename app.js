@@ -147,8 +147,8 @@ function init() {
     }
     
     showView(['lobbies', 'players', 'spectate', 'maps'].includes(state.currentView) ? state.currentView : 'lobbies');
-    
-    fetchRealLobbies();
+
+    startLobbyFeed();
 }
 
 // Names, titles and maps come from the game's lobby feed: escape before putting them in HTML
@@ -380,63 +380,221 @@ function parseLobbies(matches) {
     });
 }
 
+// Shows a new lobby list: the filters' options follow it, and the view that shows lobbies is drawn again
+let modOptionsKey = null, serverOptionsKey = null;
+function showLobbyList(matches) {
+    state.rawMatches = matches;
+    lobbies = parseLobbies(matches);
+
+    // The options are rebuilt only when they change, so an open dropdown isn't reset by every update
+    const modFilter = document.getElementById('modFilter');
+    if (modFilter) {
+        // Keep the saved choice even while no open lobby uses that mod, like the server filter does
+        const currentModSelection = String(state.mod ?? 'all');
+        const uniqueMods = [...new Set(lobbies.map(l => l.modInfo).filter(m => m && m !== 'No Mods'))].sort();
+        if (!['all', 'No Mods', 'Mods Enabled'].includes(currentModSelection) && !uniqueMods.includes(currentModSelection)) {
+            uniqueMods.push(currentModSelection);
+        }
+        const key = JSON.stringify(uniqueMods);
+        if (key !== modOptionsKey) {
+            modOptionsKey = key;
+            modFilter.innerHTML = `
+                <option value="all">All Mods</option>
+                <option value="No Mods">No Mods</option>
+                <option value="Mods Enabled">Any Mods Enabled</option>
+            `;
+            uniqueMods.forEach(mod => {
+                const opt = document.createElement('option');
+                opt.value = mod;
+                opt.textContent = mod;
+                modFilter.appendChild(opt);
+            });
+            modFilter.value = currentModSelection;
+        }
+    }
+
+    if (serverFilter) {
+        const servers = [...new Set(lobbies.map(l => l.server).filter(Boolean))].sort();
+        if (state.server !== 'all' && !servers.includes(state.server)) servers.push(state.server);
+        const key = JSON.stringify(servers);
+        if (key !== serverOptionsKey) {
+            serverOptionsKey = key;
+            serverFilter.innerHTML = '<option value="all">All Servers</option>' +
+                servers.map(sv => `<option value="${esc(sv)}">${esc(sv)}</option>`).join('');
+            serverFilter.value = state.server;
+        }
+    }
+
+    const first = isInitialLoad;
+    isInitialLoad = false;
+    // Spectate shows no lobbies; the Maps view only where a listed player is in a lobby now
+    if (!first && state.currentView === 'spectate') return;
+    if (!first && state.currentView === 'maps' && mapsLobbyKey(shownMapPlayers()) === mapsLobbyKeyShown) return;
+    applyFiltersAndRender();
+}
+
+// --- Live lobby list -------------------------------------------------------------------------------------------------------
+// The server pushes every change over one EventSource stream (/api/lobbies/stream): the whole list when it opens, then
+// only the lobbies that changed, a few seconds at most after the game shows them. While the stream is down the page
+// polls /api/lobbies instead. A tab hidden for a minute closes the stream; it reopens, with the whole list, on return.
+const LOBBY_POLL_MS = 5000;
+const STREAM_SILENCE_MS = 40000; // the server sends at least a ping every 15 s
+const STREAM_RETRY_MS = 30000; // after the server refused the stream (too many open): poll meanwhile
+const STREAM_HIDDEN_MS = 60000;
+let lobbyFeedOn = true; // false while the tab has been hidden for a while
+let lobbyStream = null, streamLive = false, streamSeq = -1;
+let streamMatches = new Map(), streamOrder = [];
+let streamSilenceTimer = 0, streamRetryTimer = 0, streamHiddenTimer = 0;
+
+// The server's clock minus this device's, from the stream's timestamps: the largest of the recent samples, since the
+// network delay only ever makes one smaller. Lobby ages use it, so a device whose clock is off still shows them right.
+const clockSamples = [];
+let clockOffsetMs = 0;
+function noteServerTime(serverMs) {
+    if (!Number.isFinite(serverMs)) return;
+    clockSamples.push(serverMs - Date.now());
+    if (clockSamples.length > 8) clockSamples.shift();
+    clockOffsetMs = Math.max(...clockSamples);
+}
+function serverNow() {
+    return Date.now() + clockOffsetMs;
+}
+
+function startLobbyFeed() {
+    document.addEventListener('visibilitychange', () => {
+        clearTimeout(streamHiddenTimer);
+        if (document.hidden) streamHiddenTimer = setTimeout(pauseLobbyFeed, STREAM_HIDDEN_MS);
+        else if (!lobbyFeedOn) resumeLobbyFeed();
+    });
+    resumeLobbyFeed();
+}
+
+function resumeLobbyFeed() {
+    lobbyFeedOn = true;
+    if (typeof EventSource === 'function') openLobbyStream();
+    else fetchRealLobbies();
+}
+
+function pauseLobbyFeed() {
+    lobbyFeedOn = false;
+    closeLobbyStream();
+    clearTimeout(streamRetryTimer);
+    clearTimeout(pollTimer);
+    pollTimer = 0;
+}
+
+function openLobbyStream() {
+    closeLobbyStream();
+    clearTimeout(streamRetryTimer);
+    if (!lobbyFeedOn) return;
+    const es = new EventSource('/api/lobbies/stream');
+    lobbyStream = es;
+    es.onmessage = (e) => { if (es === lobbyStream) onLobbyStreamMessage(e.data); };
+    es.onerror = () => {
+        if (es !== lobbyStream) return;
+        streamDown();
+        // Refused (the server's limit): the browser won't retry by itself. Otherwise it is reconnecting already.
+        if (es.readyState === EventSource.CLOSED) {
+            closeLobbyStream();
+            streamRetryTimer = setTimeout(openLobbyStream, STREAM_RETRY_MS);
+        }
+    };
+    armStreamWatchdog();
+}
+
+function closeLobbyStream() {
+    if (lobbyStream) lobbyStream.close();
+    lobbyStream = null;
+    streamLive = false;
+    streamSeq = -1;
+    clearTimeout(streamSilenceTimer);
+}
+
+// The stream is down: keep the list moving by polling until it's back
+function streamDown() {
+    streamLive = false;
+    if (lobbyFeedOn && !pollTimer) pollTimer = setTimeout(fetchRealLobbies, LOBBY_POLL_MS);
+}
+
+// Silent for too long (a laptop that slept, a proxy that dropped it quietly): start a new stream
+function armStreamWatchdog() {
+    clearTimeout(streamSilenceTimer);
+    streamSilenceTimer = setTimeout(() => {
+        if (!lobbyStream) return;
+        streamDown();
+        openLobbyStream();
+    }, STREAM_SILENCE_MS);
+}
+
+// Out of step with the server (a missed change): start again from the whole list
+function resyncLobbyStream() {
+    closeLobbyStream();
+    streamDown();
+    streamRetryTimer = setTimeout(openLobbyStream, 1000);
+}
+
+function onLobbyStreamMessage(text) {
+    let msg;
+    try { msg = JSON.parse(text); } catch (e) { return; }
+    if (!msg || typeof msg !== 'object') return;
+    armStreamWatchdog();
+    noteServerTime(msg.now);
+    if (msg.t === 'ping') {
+        if (msg.seq !== streamSeq) resyncLobbyStream();
+        return;
+    }
+    if (msg.t === 'full' && Array.isArray(msg.matches)) {
+        streamMatches = new Map();
+        streamOrder = [];
+        for (const m of msg.matches) {
+            if (!m || typeof m !== 'object') continue;
+            const key = String(m.id);
+            if (!streamMatches.has(key)) streamOrder.push(key);
+            streamMatches.set(key, m);
+        }
+    } else if (msg.t === 'diff') {
+        if (msg.base !== streamSeq || !Array.isArray(msg.upsert) || !Array.isArray(msg.remove)) { resyncLobbyStream(); return; }
+        for (const key of msg.remove) streamMatches.delete(String(key));
+        for (const m of msg.upsert) {
+            if (!m || typeof m !== 'object') continue;
+            const key = String(m.id);
+            if (!streamMatches.has(key) && !Array.isArray(msg.order)) streamOrder.push(key);
+            streamMatches.set(key, m);
+        }
+        if (Array.isArray(msg.order)) streamOrder = msg.order.map(String);
+    } else {
+        return;
+    }
+    streamSeq = msg.seq;
+    if (!streamLive) {
+        streamLive = true;
+        clearTimeout(pollTimer);
+        pollTimer = 0;
+    }
+    const seen = msg.seen && typeof msg.seen === 'object' ? msg.seen : {};
+    const matches = [];
+    for (const key of streamOrder) {
+        const m = streamMatches.get(key);
+        if (!m) continue;
+        m.lastSeen = Object.hasOwn(seen, key) ? seen[key] : msg.seenAt;
+        matches.push(m);
+    }
+    showLobbyList(matches);
+}
+
+// The fallback while the stream is down, and the only feed in a browser without EventSource
 async function fetchRealLobbies() {
+    clearTimeout(pollTimer);
+    pollTimer = 0;
     try {
         const response = await fetch('/api/lobbies?t=' + Date.now());
         const data = await response.json();
-        
-        let hasUnknownMap = false;
-
-        if (data && Array.isArray(data.matches)) {
-            state.rawMatches = data.matches;
-            lobbies = parseLobbies(data.matches);
-
-            // Dynamically populate Mod Filter
-            const modFilter = document.getElementById('modFilter');
-            if (modFilter) {
-                // Keep the saved choice even while no open lobby uses that mod, like the server filter does
-                const currentModSelection = String(state.mod ?? 'all');
-                const uniqueMods = [...new Set(lobbies.map(l => l.modInfo).filter(m => m && m !== 'No Mods'))].sort();
-                if (!['all', 'No Mods', 'Mods Enabled'].includes(currentModSelection) && !uniqueMods.includes(currentModSelection)) {
-                    uniqueMods.push(currentModSelection);
-                }
-
-                modFilter.innerHTML = `
-                    <option value="all">All Mods</option>
-                    <option value="No Mods">No Mods</option>
-                    <option value="Mods Enabled">Any Mods Enabled</option>
-                `;
-                uniqueMods.forEach(mod => {
-                    const opt = document.createElement('option');
-                    opt.value = mod;
-                    opt.textContent = mod;
-                    modFilter.appendChild(opt);
-                });
-                modFilter.value = currentModSelection;
-            }
-
-            if (serverFilter) {
-                const servers = [...new Set(lobbies.map(l => l.server).filter(Boolean))].sort();
-                if (state.server !== 'all' && !servers.includes(state.server)) servers.push(state.server);
-                serverFilter.innerHTML = '<option value="all">All Servers</option>' +
-                    servers.map(sv => `<option value="${esc(sv)}">${esc(sv)}</option>`).join('');
-                serverFilter.value = state.server;
-            }
-
-            hasUnknownMap = lobbies.some(lobby => lobby.map === "Unknown Map");
-            if (isInitialLoad) {
-                isInitialLoad = false;
-            }
-            applyFiltersAndRender();
-        }
-        
-        clearTimeout(pollTimer);
-        pollTimer = setTimeout(fetchRealLobbies, hasUnknownMap ? 5000 : 10000);
+        // The stream came back while this was in flight: its list is newer
+        if (!streamLive && lobbyFeedOn && data && Array.isArray(data.matches)) showLobbyList(data.matches);
     } catch (error) {
         console.warn("Failed to fetch real lobbies:", error);
-        clearTimeout(pollTimer);
-        pollTimer = setTimeout(fetchRealLobbies, 10000);
     }
+    if (lobbyFeedOn && !streamLive && !pollTimer) pollTimer = setTimeout(fetchRealLobbies, LOBBY_POLL_MS);
 }
 
 function setupEventListeners() {
@@ -712,6 +870,8 @@ function aggregatePlayers() {
     return allPlayers;
 }
 
+// Cards are kept and changed in place, in the new order: with updates every few seconds, rebuilding them all would make
+// the list flicker, and a card the visitor expanded would close
 function renderPlayers(players) {
     if (isInitialLoad) {
         playerGrid.innerHTML = `
@@ -723,25 +883,61 @@ function renderPlayers(players) {
         return;
     }
 
-    playerGrid.innerHTML = ''; // Clear grid before re-rendering
-
     if (players.length === 0) {
-        const emptyState = document.createElement('div');
-        emptyState.id = 'emptyStatePlayers';
-        emptyState.className = 'empty-state';
-        emptyState.innerHTML = state.playerSearch
+        const html = state.playerSearch
             ? `<h3>No players match your search</h3><p>No player or map matches <strong>${esc(state.playerSearch)}</strong>.</p>`
             : `<h3>No Players Found</h3><p>There are no open lobbies with players currently.</p>`;
-        playerGrid.appendChild(emptyState);
+        const shown = document.getElementById('emptyStatePlayers');
+        if (!shown || shown.dataset.html !== html || playerGrid.children.length !== 1) {
+            playerGrid.innerHTML = '';
+            const emptyState = document.createElement('div');
+            emptyState.id = 'emptyStatePlayers';
+            emptyState.className = 'empty-state';
+            emptyState.innerHTML = html;
+            emptyState.dataset.html = html;
+            playerGrid.appendChild(emptyState);
+        }
         return;
     }
 
-    players.forEach(p => {
+    const existing = new Map();
+    for (const child of Array.from(playerGrid.children)) {
+        if (child.dataset.key) existing.set(child.dataset.key, child);
+        else child.remove(); // the loader or the empty state
+    }
+    const keys = new Set();
+    let prev = null;
+    players.forEach((p, i) => {
+        let key = `${p.id || 'name:' + p.name}|${p.lobbyId}`;
+        if (keys.has(key)) key += '|' + i;
+        keys.add(key);
+        const html = playerCardHtml(p);
+        let div = existing.get(key);
+        if (div) {
+            existing.delete(key);
+            if (div._html !== html) { div.innerHTML = html; div._html = html; }
+        } else {
+            div = document.createElement('div');
+            div.className = 'lobby-card'; // Reuse the card styling for consistency
+            div.dataset.key = key;
+            div.style.animation = "fadeIn 0.5s ease-out";
+            div.innerHTML = html;
+            div._html = html;
+            div.onclick = (e) => {
+                if(e.target.tagName === 'BUTTON' || e.target.tagName === 'A' || e.target.closest('button')) return;
+                div.classList.toggle('expanded');
+            };
+        }
+        const want = prev ? prev.nextSibling : playerGrid.firstChild;
+        if (div !== want) playerGrid.insertBefore(div, want);
+        prev = div;
+    });
+    for (const node of existing.values()) node.remove();
+}
+
+function playerCardHtml(p) {
         const loading = statsLoading(p);
-        const div = document.createElement('div');
-        div.className = 'lobby-card'; // Reuse the card styling for consistency
-        div.style.animation = "fadeIn 0.5s ease-out";
-        div.innerHTML = `
+        return `
             <div class="card-header">
                 <div class="host-info">
                     <div class="host-name" style="display: flex; align-items: center; gap: 8px;">
@@ -789,14 +985,6 @@ function renderPlayers(players) {
             </div>
             `}
         `;
-        
-        div.onclick = (e) => {
-            if(e.target.tagName === 'BUTTON' || e.target.tagName === 'A' || e.target.closest('button')) return;
-            div.classList.toggle('expanded');
-        };
-        
-        playerGrid.appendChild(div);
-    });
 }
 
 // Badges for values we actually know; unknown values are left out rather than guessed
@@ -845,7 +1033,7 @@ function playerCountText(lobby) {
 
 // How long ago a lobby was made, in the largest unit that fits: "Created 12 mins ago", "3 hrs ago", "2 days ago"
 function lobbyAgeText(createdTime) {
-    const mins = Math.max(0, Math.floor((Date.now() / 1000 - createdTime) / 60));
+    const mins = Math.max(0, Math.floor((serverNow() / 1000 - createdTime) / 60));
     const ago = (n, unit) => `Created ${n} ${unit}${n === 1 ? '' : 's'} ago`;
     if (mins < 1) return 'Created just now';
     if (mins < 60) return ago(mins, 'min');
@@ -895,7 +1083,7 @@ function lobbyCardHtml(lobby) {
                     <span class="detail-icon" style="opacity: 0.7;">🗺️</span> <span style="font-weight: 500;">${esc(lobby.map)}</span>
                 </div>
                 ${lobby.createdTime ? `<div class="detail-row">
-                    <span class="detail-icon" style="opacity: 0.7;">🕒</span> <span class="lobby-age" title="${esc(new Date(lobby.createdTime * 1000).toLocaleString())}">${lobbyAgeText(lobby.createdTime)}</span>
+                    <span class="detail-icon" style="opacity: 0.7;">🕒</span> <span class="lobby-age" data-created="${esc(lobby.createdTime)}" title="${esc(new Date(lobby.createdTime * 1000).toLocaleString())}">${lobbyAgeText(lobby.createdTime)}</span>
                 </div>` : ''}
                 <div class="tags-row">
                     ${passwordBadge(lobby)}
@@ -1245,8 +1433,15 @@ function shownMapPlayers() {
     return mapPlayers.map(p => ({ ...p, stat: mapPlayerStat(p), lobby: inLobby.get(p.id) || null }));
 }
 
+// Which listed players are in which lobby now, as the Maps view last drew it: a lobby update redraws the view (up to a
+// thousand cards) only when this changes
+let mapsLobbyKeyShown = null;
+function mapsLobbyKey(players) {
+    return players.map(p => p.lobby ? `${p.id}:${p.lobby.id}:${p.lobby.isPlaying ? 1 : 0}:${p.lobby.title}` : '').join('|');
+}
+
 function seenAgoText(ms) {
-    const mins = Math.max(0, Math.floor((Date.now() - ms) / 60000));
+    const mins = Math.max(0, Math.floor((serverNow() - ms) / 60000));
     if (mins < 2) return 'just now';
     if (mins < 60) return `${mins} min ago`;
     const hours = Math.floor(mins / 60);
@@ -1255,6 +1450,7 @@ function seenAgoText(ms) {
 }
 
 function renderMaps(players) {
+    mapsLobbyKeyShown = mapsLobbyKey(players);
     const note = document.getElementById('mapsNote');
     const map = state.mapsMap;
     const entry = mapList.find(m => m.name === map);
@@ -1475,14 +1671,14 @@ function filterSpectate() {
 }
 
 function minutesAgo(startTime) {
-    const mins = Math.max(0, Math.floor((Date.now() / 1000 - startTime) / 60));
+    const mins = Math.max(0, Math.floor((serverNow() / 1000 - startTime) / 60));
     if (mins < 1) return 'Started just now';
     if (mins < 60) return `Started ${mins} min ago`;
     return `Started ${Math.floor(mins / 60)} h ${mins % 60} min ago`;
 }
 
 function countdownText(readyAt) {
-    const left = Math.ceil(readyAt - Date.now() / 1000);
+    const left = Math.ceil(readyAt - serverNow() / 1000);
     if (left <= 0) return '';
     return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
 }
@@ -1557,7 +1753,7 @@ function clockTime(seconds) {
 
 // "Live game data unavailable since HH:MM" when the server's snapshot is over 3 minutes old or marked stale
 function unavailableText(at, stale) {
-    if (!stale && !(at > 0 && Date.now() / 1000 - at > 180)) return '';
+    if (!stale && !(at > 0 && serverNow() / 1000 - at > 180)) return '';
     if (!(at > 0)) return 'Live game data unavailable right now';
     return `Live game data unavailable since ${clockTime(at)}`;
 }
@@ -1598,6 +1794,14 @@ function showMoreSpectate() {
 // Tick the spectate countdowns and "started" times once a second
 setInterval(() => {
     if (matchPageId) { tickMatch(); return; }
+    // Lobby ages move on between updates (the stream sends only changes)
+    if (state.currentView === 'lobbies') {
+        for (const el of lobbyGrid.querySelectorAll('.lobby-age[data-created]')) {
+            const text = lobbyAgeText(Number(el.dataset.created));
+            if (el.textContent !== text) el.textContent = text;
+        }
+        return;
+    }
     if (state.currentView !== 'spectate') return;
     for (const el of spectateGrid.querySelectorAll('.spectate-countdown[data-ready-at]')) {
         const wait = countdownText(Number(el.dataset.readyAt));

@@ -25,21 +25,25 @@ const PUBLIC_FILES = new Set([
 ]);
 const FILE_ALIASES = { '/favicon.ico': '/favicon-32.png' };
 const RELIC_API = 'https://aoe-api.worldsedgelink.com/community'; // aoe-api.reliclink.com is a CNAME of this host
-// Every visitor polls /api/lobbies; build it at most once per LOBBIES_CACHE_MS and share the result
-const LOBBIES_CACHE_MS = 4000;
+// The lobby list, built again whenever Relic's list or aoe2lobby.com's data changes while anyone is watching (see "Live
+// lobby list"), and shared by every visitor
 let lobbiesCache = { at: 0, body: null };
-let lobbiesLoading = null, lobbiesFailUntil = 0, lobbiesFailures = 0;
+let lobbiesFailUntil = 0, lobbiesFailures = 0;
 let lobbyPlayers = { at: 0, ids: new Set() }; // who was in a lobby at the last build (the Maps view's "Active now" sort)
 const profileCache = new Map(); // profile_id -> { alias, rating, totalGames, totalWins, winRate, stats, steamProfile, fetchedAt, lastSeen }
 const PROFILE_REFRESH_MS = 6 * 60 * 60 * 1000; // cached profiles this old are refetched, in the background only
 const PROFILE_FORGET_MS = 24 * 60 * 60 * 1000; // profiles not seen in any lobby for this long are dropped
 const pendingProfileIds = new Set(); // profile ids with a GetPersonalStat request in flight
-// Players' Unranked ratings come only from aoe2lobby.com, whose feed scraper.js snapshots every 15 s: a joining player's
-// arrive within about 20 s (0-21 s, median 10, for 193 joins watched on the live site). Until then, or this long into
-// the player's stay in lobbies, their stats show a spinner instead of "No games on this ladder".
+// Profile ids whose GetPersonalStat request failed (Relic down or slow): not asked again for PROFILE_RETRY_MS, as the
+// list is rebuilt every few seconds while anyone is watching
+const profileFailedAt = new Map();
+const PROFILE_RETRY_MS = 15000;
+// Players' Unranked ratings come only from aoe2lobby.com, whose feed scraper.js follows live (its updates come about
+// every 3 s; a joining player's ratings took 0-21 s, median 10, for 193 joins when it was read every 15 s). Until they
+// arrive, or this long into the player's stay in lobbies, their stats show a spinner instead of "No games on this ladder".
 const RATINGS_WAIT_MS = 45000;
-// For players aoe2lobby.com doesn't list yet, the stay is timed by our own builds, which run only while someone polls
-// (every 10 s per open page): a player unseen for STAY_GAP_MS starts a new stay
+// For players aoe2lobby.com doesn't list yet, the stay is timed by our own builds, which run only while someone is
+// watching (every few seconds then): a player unseen for STAY_GAP_MS starts a new stay
 const STAY_GAP_MS = 30000;
 const PLAYER_SEEN_FORGET_MS = 10 * 60 * 1000;
 const playerSeen = new Map(); // profile id -> { first, last }: our builds' view of the player's current stay
@@ -181,7 +185,11 @@ function cleanStats(stats) {
 }
 
 async function fetchProfilesBatch(ids) {
-    ids = ids.filter(id => isProfileId(id) && !pendingProfileIds.has(id));
+    const start = Date.now();
+    if (profileFailedAt.size > 1000) {
+        for (const [id, at] of profileFailedAt) if (start - at >= PROFILE_RETRY_MS) profileFailedAt.delete(id);
+    }
+    ids = ids.filter(id => isProfileId(id) && !pendingProfileIds.has(id) && !(start - (profileFailedAt.get(id) ?? -Infinity) < PROFILE_RETRY_MS));
     if (ids.length === 0) return;
     ids.forEach(id => pendingProfileIds.add(id));
     try {
@@ -245,6 +253,7 @@ async function fetchProfilesBatch(ids) {
                     // pending and aren't re-requested on every build (the 6 h refresh retries them)
                     const now = Date.now();
                     for (const id of chunk) {
+                        profileFailedAt.delete(id);
                         if (!profileCache.has(id)) {
                             profileCache.set(id, { alias: 'Unknown', rating: null, totalGames: 0, totalWins: 0, winRate: "0.0", stats: {}, steamProfile: null, fetchedAt: now, lastSeen: now });
                         }
@@ -252,6 +261,8 @@ async function fetchProfilesBatch(ids) {
                 }
             } catch(e) {
                 console.error("Error fetching profile batch:", e.message);
+                const failedAt = Date.now();
+                for (const id of chunk) profileFailedAt.set(id, failedAt);
             }
         }
     } finally {
@@ -1461,13 +1472,14 @@ function playerFromScraped(p, scrapedPlayers, ladder, now) {
 
 // Relic's lobby list, every page. Throws when page 0 fails or there are no lobbies at all; complete is false
 // when a later page failed (so lobbies missing from this crawl may still exist).
+const RELIC_PAGE = 100; // the most findAdvertisements gives per request (count=101 is an error)
 async function fetchRelicLobbies() {
     const matches = [];
     let complete = true;
-    for (let pageCount = 0, start = 0; pageCount < 10; pageCount++, start += 100) {
+    for (let pageCount = 0, start = 0; pageCount < 10; pageCount++, start += RELIC_PAGE) {
         let parsed;
         try {
-            parsed = JSON.parse(await httpsGet(`${RELIC_API}/advertisement/findAdvertisements?title=age2&start=${start}`));
+            parsed = JSON.parse(await httpsGet(`${RELIC_API}/advertisement/findAdvertisements?title=age2&start=${start}&count=${RELIC_PAGE}`));
         } catch (e) {
             if (start === 0) throw new Error('Relic lobby list: ' + e.message);
             console.error("Error fetching page:", start, e.message);
@@ -1476,13 +1488,15 @@ async function fetchRelicLobbies() {
         }
         if (!parsed || !Array.isArray(parsed.matches) || parsed.matches.length === 0) break;
         matches.push(...parsed.matches.filter(m => m && typeof m === 'object' && Number.isSafeInteger(m.id) && m.id > 0));
+        if (parsed.matches.length < RELIC_PAGE) break; // a short page is the last: no request for an empty one
     }
     if (matches.length === 0) throw new Error('Relic returned no lobbies');
     return { matches, complete };
 }
 
-// Builds the /api/lobbies body (a JSON string). Never touches a response; throws when Relic gives nothing usable.
-async function buildLobbiesBody() {
+// Reads Relic's lobby list into activeMatches, fetching the profiles of new hosts first so every host has a name. Throws
+// when Relic gives nothing usable. Returns the profile ids it asked Relic for (buildLobbies doesn't ask again).
+async function pollRelic() {
     const { matches: allMatches, complete } = await fetchRelicLobbies();
     const now = Date.now();
     const currentMatchIds = new Set();
@@ -1562,7 +1576,9 @@ async function buildLobbiesBody() {
             for (let i = 0; i < hostIdsArray.length; i += 200) {
                 promises.push(fetchProfilesBatch(hostIdsArray.slice(i, i + 200)));
             }
-            await Promise.all(promises);
+            // activeMatches already has the new lobbies: no build until their hosts have names
+            relicApplying = true;
+            try { await Promise.all(promises); } finally { relicApplying = false; }
         }
 
         // Fetch remaining player profiles, and refresh old ones, asynchronously so we don't block
@@ -1581,7 +1597,13 @@ async function buildLobbiesBody() {
     for (const [id, p] of profileCache) {
         if (now - p.lastSeen > PROFILE_FORGET_MS) profileCache.delete(id);
     }
+    return new Set([...missingIds, ...staleIds]);
+}
 
+// The lobby list: Relic's lobbies as pollRelic last read them, with aoe2lobby.com's data (scraper.js's files) merged in,
+// and its lobbies that Relic doesn't list. Synchronous, so it can run again on every change of the files.
+function buildLobbies(requested = new Set()) {
+    const now = Date.now();
     // aoe2lobby.com data; both files are skipped together when the lobbies file is stale
     const scrapedLobbiesRaw = readScrapedJson(SCRAPED_LOBBIES_PATH);
     const scrapedById = loadScrapedLobbies(scrapedLobbiesRaw);
@@ -1741,27 +1763,207 @@ async function buildLobbiesBody() {
         });
     }
 
-    markPendingStats(allMatchesArray, now, scrapedPlayers, scrapedLobbiesRaw !== null, new Set([...missingIds, ...staleIds]));
+    markPendingStats(allMatchesArray, now, scrapedPlayers, scrapedLobbiesRaw !== null, requested);
     const ids = new Set();
     for (const lobby of allMatchesArray) for (const p of lobby.players) if (isProfileId(p.id)) ids.add(p.id);
     lobbyPlayers = { at: now, ids };
-    return JSON.stringify({ matches: allMatchesArray });
+    return allMatchesArray;
 }
 
-// One build at a time, shared by every waiting request; after a failure, wait (15 s doubling to 60 s) before retrying
+// --- Live lobby list -----------------------------------------------------------------------------------------------------
+// While anyone is watching (an open /api/lobbies/stream, or a poll of /api/lobbies in the last LOBBY_IDLE_MS), Relic's
+// list is read every RELIC_POLL_MS, and the list is built again as soon as it or aoe2lobby.com's data changes (scraper.js
+// rewrites its files on each of the feed's updates, about every 3 s). Each build that changes anything goes to every open
+// stream at once, as just the lobbies that changed. With nobody watching, nothing is fetched.
+const RELIC_POLL_MS = 2000;
+const SCRAPED_CHECK_MS = 100; // how often the scraped files' times are checked (a stat each, while anyone is watching)
+const LOBBY_IDLE_MS = 30000;
+const RELIC_STALE_MS = 60000; // once Relic's list is this old (it keeps failing), aoe2lobby.com's updates alone don't rebuild
+const RELIC_WAIT_MS = 10000; // a poll finding Relic's list older than this waits for a fresh read
+let relicPolling = null, relicPollStartedAt = 0, relicOkAt = 0;
+let relicApplying = false; // pollRelic is between updating activeMatches and having every new host's name
+let scrapedMtime = 0; // the scraped files' newest time, as of the last build
+let lobbyLoopTimer = null, lastLobbyPollAt = 0;
+
+// Reads Relic's list and publishes the list built from it. One read at a time, shared by every waiting request; after a
+// failure, wait (15 s doubling to 60 s) before retrying
 function refreshLobbies() {
-    if (!lobbiesLoading && Date.now() >= lobbiesFailUntil) {
-        lobbiesLoading = buildLobbiesBody()
-            .then(body => { lobbiesCache = { at: Date.now(), body }; lobbiesFailures = 0; })
+    if (!relicPolling && Date.now() >= lobbiesFailUntil) {
+        relicPollStartedAt = Date.now();
+        relicPolling = pollRelic()
+            .then(requested => {
+                relicOkAt = Date.now();
+                lobbiesFailures = 0;
+                publishLobbies(requested);
+            })
             .catch(e => {
                 lobbiesFailures++;
                 lobbiesFailUntil = Date.now() + Math.min(60000, 15000 * 2 ** (lobbiesFailures - 1));
                 console.error('Lobbies refresh failed:', e.message);
             })
-            .finally(() => { lobbiesLoading = null; });
+            .finally(() => { relicPolling = null; });
     }
-    return lobbiesLoading;
+    return relicPolling;
 }
+
+function scrapedFilesTime() {
+    let t = 0;
+    for (const file of [SCRAPED_LOBBIES_PATH, SCRAPED_PLAYERS_PATH]) {
+        try { t = Math.max(t, fs.statSync(file).mtimeMs); } catch (e) { }
+    }
+    return t;
+}
+
+// Builds the list, keeps it for /api/lobbies and sends what changed to the open streams
+function publishLobbies(requested) {
+    scrapedMtime = scrapedFilesTime(); // before reading them: a write in between is seen as a change, and built again
+    let matches;
+    try {
+        matches = buildLobbies(requested);
+    } catch (e) {
+        console.error('Building the lobby list failed:', e);
+        return;
+    }
+    lobbiesCache = { at: Date.now(), body: JSON.stringify({ matches }) };
+    streamLobbies(matches);
+}
+
+function lobbyTick() {
+    lobbyLoopTimer = null;
+    const now = Date.now();
+    if (streamClients.size === 0 && now - lastLobbyPollAt > LOBBY_IDLE_MS) return; // nobody watching: stop until someone is
+    // aoe2lobby.com's data changed: build again with the Relic list we have, also while a Relic read waits on the network
+    // (it builds again when it's done)
+    if (!relicApplying && now - relicOkAt < RELIC_STALE_MS && scrapedFilesTime() !== scrapedMtime) publishLobbies();
+    if (now - relicPollStartedAt >= RELIC_POLL_MS) refreshLobbies();
+    lobbyLoopTimer = setTimeout(lobbyTick, SCRAPED_CHECK_MS);
+}
+
+function watchLobbies() {
+    if (!lobbyLoopTimer) lobbyTick();
+}
+
+// --- The lobby stream (/api/lobbies/stream, server-sent events) ----------------------------------------------------------
+// The page's EventSource gets the whole list when it connects, then each change as it is built: the lobbies that changed
+// (upsert), those that closed (remove) and, when it changed, the order of every id. seq counts the changes; a diff names
+// the seq it follows (base), so a page that missed one reconnects for the whole list. A ping every STREAM_PING_MS keeps
+// proxies from closing a quiet stream and lets the page notice a dead one. Every message carries the server's clock (now).
+// lastSeen is left out of the lobbies (it moves on with every Relic read): most lobbies share one, sent once as seenAt,
+// with the few others in seen by id.
+const STREAM_MAX = 2000;
+const STREAM_PER_IP = 20;
+const STREAM_PING_MS = 15000;
+const STREAM_BUFFER_MAX = 1024 * 1024; // a client this far behind is dropped; it reconnects and starts from a whole list
+const streamClients = new Map(); // response -> { ip, ready }: ready once it has the whole list
+const streamPerIp = new Map();
+let streamSeq = 0;
+let sentLobbies = new Map(); // id (as text) -> the lobby's JSON without lastSeen, as last sent
+let sentOrder = [];
+let sentSeen = { seenAt: 0, seen: {} };
+let streamFullCache = null; // the whole list as a message body, for clients that connect before the next change
+
+function seenOf(matches) {
+    const counts = new Map();
+    for (const m of matches) counts.set(m.lastSeen, (counts.get(m.lastSeen) || 0) + 1);
+    let seenAt = 0, most = 0;
+    for (const [t, n] of counts) if (n > most) { seenAt = t; most = n; }
+    const seen = {};
+    for (const m of matches) if (m.lastSeen !== seenAt) seen[String(m.id)] = m.lastSeen;
+    return { seenAt: Number(seenAt) || 0, seen };
+}
+
+function streamWrite(res, text) {
+    if (res.writableLength > STREAM_BUFFER_MAX) { res.destroy(); return; }
+    res.write(text);
+}
+
+function streamLobbies(matches) {
+    const next = new Map(), order = [];
+    for (const m of matches) {
+        const key = String(m.id);
+        if (next.has(key)) continue;
+        const { lastSeen, ...lobby } = m;
+        next.set(key, JSON.stringify(lobby));
+        order.push(key);
+    }
+    const upsert = [], remove = [];
+    for (const [key, json] of next) if (sentLobbies.get(key) !== json) upsert.push(json);
+    for (const key of sentLobbies.keys()) if (!next.has(key)) remove.push(key);
+    const orderChanged = order.length !== sentOrder.length || order.some((key, i) => key !== sentOrder[i]);
+    sentSeen = seenOf(matches);
+    streamFullCache = null;
+    if (!upsert.length && !remove.length && !orderChanged) return; // only lastSeen moved on: nothing to send
+    const base = streamSeq++;
+    sentLobbies = next;
+    sentOrder = order;
+    let ready = 0;
+    for (const client of streamClients.values()) if (client.ready) ready++;
+    if (!ready) return;
+    const msg = `data: {"t":"diff","seq":${streamSeq},"base":${base},"now":${Date.now()},"seenAt":${sentSeen.seenAt},` +
+        `"seen":${JSON.stringify(sentSeen.seen)},${orderChanged ? `"order":${JSON.stringify(order)},` : ''}` +
+        `"remove":${JSON.stringify(remove)},"upsert":[${upsert.join(',')}]}\n\n`;
+    for (const [res, client] of streamClients) if (client.ready) streamWrite(res, msg);
+}
+
+function streamFullMessage() {
+    if (!streamFullCache) {
+        streamFullCache = `"seenAt":${sentSeen.seenAt},"seen":${JSON.stringify(sentSeen.seen)},` +
+            `"matches":[${sentOrder.map(key => sentLobbies.get(key)).join(',')}]}`;
+    }
+    return `data: {"t":"full","seq":${streamSeq},"now":${Date.now()},${streamFullCache}\n\n`;
+}
+
+// Caddy passes the visitor's address in X-Forwarded-For (it replaces any the visitor sent)
+function clientIp(req) {
+    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',').pop().trim();
+    return forwarded || req.socket.remoteAddress || '';
+}
+
+async function serveLobbyStream(req, res) {
+    if (req.method === 'HEAD') {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+        res.end();
+        return;
+    }
+    const ip = clientIp(req);
+    if (streamClients.size >= STREAM_MAX || (streamPerIp.get(ip) || 0) >= STREAM_PER_IP) {
+        // The page polls /api/lobbies instead, and tries the stream again later
+        res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '30', 'Cache-Control': 'no-store' });
+        res.end('Too many live connections');
+        return;
+    }
+    const client = { ip, ready: false };
+    streamClients.set(res, client);
+    streamPerIp.set(ip, (streamPerIp.get(ip) || 0) + 1);
+    res.on('close', () => {
+        if (!streamClients.delete(res)) return;
+        const n = (streamPerIp.get(ip) || 1) - 1;
+        if (n > 0) streamPerIp.set(ip, n); else streamPerIp.delete(ip);
+    });
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no'
+    });
+    res.write('retry: 3000\n\n'); // how long the browser waits before reconnecting after a drop
+    watchLobbies();
+    // No list yet (the server just started): wait for the first. One from before anyone was watching: wait up to 5 s for
+    // a fresh read, else send it, and the change follows.
+    if (!lobbiesCache.body || Date.now() - relicOkAt > RELIC_WAIT_MS) {
+        const pending = refreshLobbies();
+        if (pending && !lobbiesCache.body) await pending;
+        else if (pending) await Promise.race([pending, new Promise(resolve => setTimeout(resolve, 5000).unref())]);
+    }
+    if (!streamClients.has(res)) return; // gone while waiting
+    streamWrite(res, streamFullMessage());
+    client.ready = true;
+}
+
+setInterval(() => {
+    if (!streamClients.size) return;
+    const msg = `data: {"t":"ping","seq":${streamSeq},"now":${Date.now()}}\n\n`;
+    for (const [res, client] of streamClients) if (client.ready) streamWrite(res, msg);
+}, STREAM_PING_MS).unref();
 
 // --- Map history (the Maps view): which players keep showing up in each map's lobbies ----------------------------------
 // scraper.js counts them into a SQLite file (map-history.js), kept for good; this side only reads it. Feed map names are
@@ -2144,14 +2346,19 @@ async function handleRequest(req, res) {
         return;
     }
 
+    if (pathname === '/api/lobbies/stream') {
+        await serveLobbyStream(req, res);
+        return;
+    }
     if (req.url.startsWith('/api/lobbies')) {
-        // Serve the cached body; past LOBBIES_CACHE_MS refresh it. Wait for the build when there is no body or it is
-        // more than two cache periods old (a lone poller would otherwise always get the previous build); with
-        // steady traffic the body is fresh enough that requests don't wait. A failed build keeps the old body.
-        const age = Date.now() - lobbiesCache.at;
-        if (!lobbiesCache.body || age >= LOBBIES_CACHE_MS) {
+        // Polled by pages whose stream is down (and by pages from before the stream). A poll keeps the list live for
+        // LOBBY_IDLE_MS, and waits for a fresh read when Relic's list is out of date (nobody was watching). A failed read
+        // keeps the old body.
+        lastLobbyPollAt = Date.now();
+        watchLobbies();
+        if (!lobbiesCache.body || Date.now() - relicOkAt > RELIC_WAIT_MS) {
             const pending = refreshLobbies();
-            if (pending && (!lobbiesCache.body || age > 2 * LOBBIES_CACHE_MS)) await pending;
+            if (pending) await pending;
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(lobbiesCache.body || '{"matches":[]}');
@@ -2232,8 +2439,11 @@ server.listen(API_PORT, HOST, () => {
     console.log(`API Server listening on ${HOST}:${API_PORT}`);
 });
 
-// pm2 stop/reload sends SIGINT: finish in-flight requests, then exit (force it after 8 s)
+// pm2 stop/reload sends SIGINT: finish in-flight requests, then exit (force it after 8 s). Open lobby streams are ended
+// first (they would hold the server open); their pages reconnect to the new process.
 function shutdown() {
+    for (const res of streamClients.keys()) res.end();
+    clearTimeout(lobbyLoopTimer);
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 8000).unref();
 }

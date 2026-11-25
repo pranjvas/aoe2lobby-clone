@@ -7,8 +7,14 @@ Target: any Ubuntu 22.04/24.04 VPS with Node 22.12 or newer. The scraper no long
 
 ```
 Internet -> Caddy (80/443, auto HTTPS) -> server.js (127.0.0.1:3002, API + frontend)
-                                          scraper.js (WebSocket snapshots of aoe2lobby.com -> scraped_*_v2.json)
+                                          scraper.js (live WebSocket to aoe2lobby.com -> scraped_*_v2.json)
 ```
+
+Lobby data flow: `scraper.js` keeps one socket open to aoe2lobby.com and rewrites `scraped_*_v2.json` on each of its
+updates (about every 3 s). While anyone is on the site, `server.js` reads Relic's lobby list every 2 s, rebuilds the list
+as soon as that or the scraped files change, and pushes the changed lobbies to every open page over
+`/api/lobbies/stream` (server-sent events). Pages poll `/api/lobbies` only while their stream is down. With nobody on
+the site, the server fetches nothing.
 
 `server.js` serves both `/api/lobbies` and the frontend (only the whitelisted runtime files: `index.html`,
 `app.js`, `styles.css`, `fonts/`, favicons and icons, `robots.txt`, ...) and the pages it builds (`/maps/`, the sitemap), so `fe_server.js`
@@ -152,5 +158,7 @@ rm -rf /home/aoe2/.cache/puppeteer
 - **Third-party data:** the site republishes data pulled from aoe2lobby.com and the Relic API. Make sure that is
   acceptable to those services before putting it on a public domain.
 - **No auth / rate limiting** on `/api/lobbies`; Caddy or Cloudflare rate limits are worth adding if traffic grows.
+  `/api/lobbies/stream` allows 2000 open streams in all and 20 per address (by `X-Forwarded-For`, which Caddy sets);
+  past that it answers 503 and those pages poll instead.
 - **fail2ban** bans your own IP for 1 h after 5 wrong passwords in 10 minutes. Recover from the Contabo console or
   another IP.

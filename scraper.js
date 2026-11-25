@@ -79,8 +79,8 @@ function toId(value) {
     return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
-let lobbyMatchAll = null;
-let lastDataAt = 0; // when the last lobby_match_all arrived
+let lobbyMatchAll = null; // match id -> lobby, kept current from the socket's messages
+let lastDataAt = 0; // when the last lobby list or update arrived
 const startedAt = Date.now();
 let lobbyEloUpdate = Object.create(null); // { profileId: { mode1: stats, mode2: stats } }
 // When each player's ratings last arrived; players not seen for ELO_KEEP_MS are dropped so memory stays bounded
@@ -111,10 +111,10 @@ function mergeElo(update) {
     return merged;
 }
 
-// When each player's current stay in lobbies began: the first snapshot that listed them in any lobby slot, kept while
-// they move between lobbies. Missing from the snapshots for over PRESENCE_GAP_MS starts a new stay. Written as
+// When each player's current stay in lobbies began: the first write that listed them in any lobby slot, kept while
+// they move between lobbies. Missing from the writes for over PRESENCE_GAP_MS starts a new stay. Written as
 // inLobbySince: server.js waits RATINGS_WAIT_MS from it for a joining player's ratings before showing "No games on
-// this ladder", and this clock runs every SNAPSHOT_MS whether or not anyone is on the site.
+// this ladder", and this clock runs on every update (about every 3 s) whether or not anyone is on the site.
 const PRESENCE_GAP_MS = 45000;
 const presence = new Map(); // profileId -> { since, last }
 
@@ -147,65 +147,105 @@ function playerStats(profileId) {
     return stats;
 }
 
-// aoe2lobby.com sends a full snapshot when a socket connects but no live updates afterwards,
-// so take a fresh snapshot over a short-lived socket every SNAPSHOT_MS. This is the only source.
+// aoe2lobby.com's socket sends the whole lobby list when it connects (lobby_match_all), then about every 3 s the lobbies
+// again (lobby_match_update, merged in the way aoe2lobby.com's own page does: added over the list) and the ones that closed
+// (lobby_match_remove). One socket stays open, and the files are rewritten after each update, so server.js sees a change
+// within a few seconds. This is the only source. The map history still counts one snapshot every SNAPSHOT_MS.
 const SNAPSHOT_MS = 15000;
-const SNAPSHOT_TIMEOUT_MS = 10000;
-function takeSnapshot() {
-    return new Promise(resolve => {
-        let ws;
-        let gotMatches = false, gotElo = false, finished = false;
-        const done = (reason) => {
-            if (finished) return;
-            finished = true;
-            clearTimeout(timer);
-            try { ws.close(); } catch (e) { }
-            if (gotMatches) {
-                // Lobbies are fresh even if the rating update did not arrive; ratings from earlier snapshots are kept
-                try { dumpData(); } catch (e) { console.error('Failed to save snapshot:', e); }
-            } else {
-                console.error(`Snapshot failed: ${reason}`);
-            }
-            resolve();
-        };
-        const timer = setTimeout(() => done(`no lobby_match_all within ${SNAPSHOT_TIMEOUT_MS / 1000} s`), SNAPSHOT_TIMEOUT_MS);
-        try {
-            ws = new WebSocket(WS_URL, { headers: { 'User-Agent': USER_AGENT } });
-        } catch (e) {
-            return done(e.message);
-        }
-        ws.onopen = () => ws.send(JSON.stringify({ action: 'subscribe', type: 'elotypes', context: 'lobby', ids: ELO_TYPES }));
-        ws.onerror = (e) => done(`socket error ${e?.message || e?.error?.message || ''}`.trim());
-        ws.onclose = (e) => done(`socket closed (code ${e?.code})`);
-        ws.onmessage = (msg) => {
-            if (finished) return;
-            try {
-                const data = JSON.parse(msg.data);
-                if (data.schema && typeof data.schema === 'object') liveSchema = data.schema;
-                if (data.lobby_match_all && typeof data.lobby_match_all === 'object') {
-                    lobbyMatchAll = data.lobby_match_all;
-                    lastDataAt = Date.now();
-                    gotMatches = true;
-                }
-                if (data.lobby_elo_update) { mergeElo(data.lobby_elo_update); gotElo = true; }
-                if (gotMatches && gotElo) done();
-            } catch (e) {
-                console.error('Bad snapshot message:', e.message);
-            }
-        };
-    });
+const WRITE_DELAY_MS = 150; // the ratings for an update arrive just after it: write once, with both
+const SILENCE_MS = 20000; // updates come every ~3 s; this long without any message means the socket is dead
+const RECONNECT_MIN_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
+const RESYNC_MS = 30 * 60 * 1000; // a fresh whole list now and then, in case a removal was ever missed
+let ws = null, wsOpenedAt = 0, silenceTimer = null, writeTimer = null, reconnectMs = RECONNECT_MIN_MS;
+
+function isObject(v) {
+    return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-// One snapshot at a time: a slow one makes the next tick skip instead of opening a second socket
-let snapshotInFlight = false;
-async function snapshotTick() {
-    if (snapshotInFlight) return;
-    snapshotInFlight = true;
+function connect() {
+    let sock;
     try {
-        await takeSnapshot();
-    } finally {
-        snapshotInFlight = false;
+        sock = new WebSocket(WS_URL, { headers: { 'User-Agent': USER_AGENT } });
+    } catch (e) {
+        return dropSocket(e.message);
     }
+    ws = sock;
+    wsOpenedAt = Date.now();
+    armSilence();
+    sock.onopen = () => sock.send(JSON.stringify({ action: 'subscribe', type: 'elotypes', context: 'lobby', ids: ELO_TYPES }));
+    sock.onerror = (e) => { if (sock === ws) dropSocket(`socket error ${e?.message || e?.error?.message || ''}`.trim()); };
+    sock.onclose = (e) => { if (sock === ws) dropSocket(`socket closed (code ${e?.code})`); };
+    sock.onmessage = (msg) => {
+        if (sock !== ws) return;
+        armSilence();
+        onMessage(msg.data);
+        // Planned: reconnect for a fresh whole list (no backoff, nothing logged)
+        if (Date.now() - wsOpenedAt > RESYNC_MS && lobbyMatchAll) dropSocket(null);
+    };
+}
+
+function armSilence() {
+    clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(() => dropSocket(`no message for ${SILENCE_MS / 1000} s`), SILENCE_MS);
+}
+
+// Close the socket and open another: at once for a planned resync (reason null), else after a delay that doubles up to
+// RECONNECT_MAX_MS while it keeps failing. The files stop being rewritten meanwhile, so the server sees them go stale.
+function dropSocket(reason) {
+    const sock = ws;
+    ws = null;
+    clearTimeout(silenceTimer);
+    if (sock) { sock.onopen = sock.onmessage = sock.onerror = sock.onclose = null; try { sock.close(); } catch (e) { } }
+    const delay = reason === null ? 0 : reconnectMs;
+    if (reason !== null) {
+        console.error(`Socket: ${reason}; reconnecting in ${delay / 1000} s`);
+        reconnectMs = Math.min(RECONNECT_MAX_MS, reconnectMs * 2);
+    }
+    setTimeout(connect, delay);
+}
+
+function onMessage(text) {
+    let data;
+    try {
+        data = JSON.parse(text);
+    } catch (e) {
+        console.error('Bad socket message:', e.message);
+        return;
+    }
+    if (!isObject(data)) return;
+    if (isObject(data.schema)) liveSchema = data.schema;
+    let changed = false;
+    // A null-prototype object: a feed key such as "__proto__" stays a plain entry (dumpData checks every entry)
+    if (isObject(data.lobby_match_all)) {
+        lobbyMatchAll = Object.assign(Object.create(null), data.lobby_match_all);
+        lastDataAt = Date.now();
+        reconnectMs = RECONNECT_MIN_MS; // a whole list arrived: the connection works
+        changed = true;
+    }
+    if (lobbyMatchAll && isObject(data.lobby_match_update)) {
+        Object.assign(lobbyMatchAll, data.lobby_match_update);
+        lastDataAt = Date.now();
+        changed = true;
+    }
+    if (lobbyMatchAll && Array.isArray(data.lobby_match_remove)) {
+        for (const id of data.lobby_match_remove) {
+            if ((typeof id === 'string' || typeof id === 'number') && Object.hasOwn(lobbyMatchAll, String(id))) {
+                delete lobbyMatchAll[String(id)];
+                changed = true;
+            }
+        }
+    }
+    if (data.lobby_elo_update && mergeElo(data.lobby_elo_update) > 0) changed = true;
+    if (changed && lobbyMatchAll) scheduleWrite();
+}
+
+function scheduleWrite() {
+    if (writeTimer) return;
+    writeTimer = setTimeout(() => {
+        writeTimer = null;
+        try { dumpData(); } catch (e) { console.error('Failed to save lobbies:', e); }
+    }, WRITE_DELAY_MS);
 }
 
 // Write to a temp file and rename it over the target, so the server never reads a half-written file
@@ -224,6 +264,7 @@ function writeJsonAtomic(file, obj) {
 
 const MAX_DATA_AGE_MS = 60000;
 let lastSavedSummary = '';
+let lastHistoryAt = 0; // the map history's last snapshot
 
 function dumpData() {
     if (!lobbyMatchAll) return;
@@ -232,7 +273,7 @@ function dumpData() {
 
     // Keyed by String(matchid) and String(profileId), never by display name
     const scrapedLobbies = Object.create(null);
-    const mapLobbies = []; // this snapshot's lobbies, for the map history
+    const mapLobbies = []; // this write's lobbies, for the map history
     const scrapedPlayers = Object.create(null);
 
     const now = Date.now();
@@ -312,7 +353,11 @@ function dumpData() {
 
     const savedLobbies = writeJsonAtomic(OUTPUT_PATH, scrapedLobbies);
     const savedPlayers = writeJsonAtomic(PLAYERS_PATH, scrapedPlayers);
-    try { mapHistory?.recordSnapshot(mapLobbies, now); } catch (e) { console.error('Map history: snapshot not saved:', e.message); }
+    // At the cadence it was built for (one transaction per SNAPSHOT_MS), not on every 3 s write
+    if (now - lastHistoryAt >= SNAPSHOT_MS) {
+        lastHistoryAt = now;
+        try { mapHistory?.recordSnapshot(mapLobbies, now); } catch (e) { console.error('Map history: snapshot not saved:', e.message); }
+    }
     // Log only when the counts change, to keep pm2 logs small
     const summary = `${Object.keys(scrapedLobbies).length} lobbies and ${Object.keys(scrapedPlayers).length} players`;
     if (savedLobbies && savedPlayers && summary !== lastSavedSummary) {
@@ -321,12 +366,12 @@ function dumpData() {
     }
 }
 
-// Watchdog: if no lobby_match_all arrives for WATCHDOG_MS, exit so pm2 restarts the scraper
+// Watchdog: if no lobby list or update arrives for WATCHDOG_MS (reconnecting hasn't helped), exit so pm2 restarts the scraper
 const WATCHDOG_MS = 180000;
 setInterval(() => {
     const since = Math.max(lastDataAt, startedAt);
     if (Date.now() - since > WATCHDOG_MS) {
-        console.error(`No lobby_match_all from aoe2lobby.com for ${Math.round((Date.now() - since) / 1000)} s; exiting so pm2 restarts the scraper.`);
+        console.error(`No lobbies from aoe2lobby.com for ${Math.round((Date.now() - since) / 1000)} s; exiting so pm2 restarts the scraper.`);
         process.exit(1);
     }
 }, 10000);
@@ -339,6 +384,5 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     });
 }
 
-console.log(`Starting aoe2lobby.com lobby scraper (direct WebSocket snapshot every ${SNAPSHOT_MS / 1000} s)...`);
-snapshotTick();
-setInterval(snapshotTick, SNAPSHOT_MS);
+console.log('Starting aoe2lobby.com lobby scraper (one live WebSocket; the files are rewritten on each update)...');
+connect();
