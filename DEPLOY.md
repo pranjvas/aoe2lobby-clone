@@ -11,10 +11,13 @@ Internet -> Caddy (80/443, auto HTTPS) -> server.js (127.0.0.1:3002, API + front
 ```
 
 Lobby data flow: `scraper.js` keeps one socket open to aoe2lobby.com and rewrites `scraped_*_v2.json` on each of its
-updates (about every 3 s). While anyone is on the site, `server.js` reads Relic's lobby list every 2 s, rebuilds the list
-as soon as that or the scraped files change, and pushes the changed lobbies to every open page over
-`/api/lobbies/stream` (server-sent events). Pages poll `/api/lobbies` only while their stream is down. With nobody on
-the site, the server fetches nothing.
+updates (about every 3 s; when the feed sends no updates, it takes a fresh list every 5 s). While anyone is on the site,
+`server.js` reads Relic's lobby list every second (all pages at once), rebuilds the list as soon as that or the scraped
+files change, and pushes the changed lobbies to every open page over `/api/lobbies/stream` (server-sent events). Pages
+poll `/api/lobbies` only while their stream is down. With nobody on the site, the server fetches nothing.
+
+Both name the page version (`app.js?v=` in `index.html`). A page opened before a deploy sees a different one when its
+stream reconnects after the restart and reloads itself, so bump `?v=` whenever `app.js` changes.
 
 `server.js` serves both `/api/lobbies` and the frontend (only the whitelisted runtime files: `index.html`,
 `app.js`, `styles.css`, `fonts/`, favicons and icons, `robots.txt`, ...) and the pages it builds (`/maps/`, the sitemap), so `fe_server.js`

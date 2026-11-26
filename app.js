@@ -475,6 +475,30 @@ function serverNow() {
     return Date.now() + clockOffsetMs;
 }
 
+// A page opened before a deploy: the server names the version it serves now (index.html's app.js?v=) in the stream's
+// whole list, which every reconnect gets (a deploy restarts the server), and in /api/lobbies. When it isn't this page's,
+// the page reloads (filters and view are saved), waiting while someone types in a field. Once per version, so a server
+// that names a version it doesn't serve can't make the page reload over and over.
+const PAGE_VERSION = (() => {
+    try { return new URL(document.currentScript.src).searchParams.get('v') || ''; } catch (e) { return ''; }
+})();
+const RELOADED_KEY = 'aoe2ReloadedFor'; // sessionStorage: the version this tab last reloaded for
+let reloadTimer = 0;
+function noteServerVersion(v) {
+    if (typeof v !== 'string' || !/^\d{1,9}$/.test(v) || !PAGE_VERSION || v === PAGE_VERSION || reloadTimer) return;
+    try {
+        if (sessionStorage.getItem(RELOADED_KEY) === v) return;
+        sessionStorage.setItem(RELOADED_KEY, v);
+    } catch (e) { return; } // without storage there's no guard against a loop: keep this version
+    reloadWhenIdle();
+}
+function reloadWhenIdle() {
+    reloadTimer = 0;
+    const el = document.activeElement;
+    if (!document.hidden && el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) reloadTimer = setTimeout(reloadWhenIdle, 5000);
+    else location.reload();
+}
+
 function startLobbyFeed() {
     document.addEventListener('visibilitychange', () => {
         clearTimeout(streamHiddenTimer);
@@ -554,6 +578,7 @@ function onLobbyStreamMessage(text) {
     if (!msg || typeof msg !== 'object') return;
     armStreamWatchdog();
     noteServerTime(msg.now);
+    if (msg.t === 'full') noteServerVersion(msg.v);
     if (msg.t === 'ping') {
         if (msg.seq !== streamSeq) resyncLobbyStream();
         return;
@@ -604,6 +629,7 @@ async function fetchRealLobbies() {
     try {
         const response = await fetch('/api/lobbies?t=' + Date.now());
         const data = await response.json();
+        if (data) noteServerVersion(data.v);
         // The stream came back while this was in flight: its list is newer
         if (!streamLive && lobbyFeedOn && data && Array.isArray(data.matches)) showLobbyList(data.matches);
     } catch (error) {

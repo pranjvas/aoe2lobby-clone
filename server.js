@@ -29,6 +29,10 @@ const RELIC_API = 'https://aoe-api.worldsedgelink.com/community'; // aoe-api.rel
 // lobby list"), and shared by every visitor
 let lobbiesCache = { at: 0, body: null };
 let lobbiesFailUntil = 0, lobbiesFailures = 0;
+// The page version index.html loads (its app.js?v=). The stream's whole list and /api/lobbies name it, and a page that
+// was opened before a deploy reloads itself when it differs from its own.
+let pageVersion = '';
+try { pageVersion = (/\/app\.js\?v=(\d+)/.exec(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8')) || [])[1] || ''; } catch (e) { }
 let lobbyPlayers = { at: 0, ids: new Set() }; // who was in a lobby at the last build (the Maps view's "Active now" sort)
 const profileCache = new Map(); // profile_id -> { alias, rating, totalGames, totalWins, winRate, stats, steamProfile, fetchedAt, lastSeen }
 const PROFILE_REFRESH_MS = 6 * 60 * 60 * 1000; // cached profiles this old are refetched, in the background only
@@ -1582,26 +1586,50 @@ function playerFromScraped(p, scrapedPlayers, ladder, now) {
 
 // Relic's lobby list, every page. Throws when page 0 fails or there are no lobbies at all; complete is false
 // when a later page failed (so lobbies missing from this crawl may still exist).
+// The pages are read at once, as many as the last read needed (one more when its last page was nearly full), then one
+// more at a time while the last is full: one round trip (~0.2 s) however many lobbies there are. The list is newest
+// first and start is an offset into it, so a lobby closing during the read moves the ones after it up a place; the pages
+// overlap by RELIC_OVERLAP so those are still read (a duplicate is dropped by id).
 const RELIC_PAGE = 100; // the most findAdvertisements gives per request (count=101 is an error)
+const RELIC_OVERLAP = 10;
+const RELIC_STEP = RELIC_PAGE - RELIC_OVERLAP;
+const RELIC_MAX_PAGES = 12;
+let relicPagesWanted = 1;
 async function fetchRelicLobbies() {
-    const matches = [];
+    const byId = new Map();
     let complete = true;
-    for (let pageCount = 0, start = 0; pageCount < 10; pageCount++, start += RELIC_PAGE) {
-        let parsed;
+    const readPage = async (index) => {
+        const start = index * RELIC_STEP;
         try {
-            parsed = JSON.parse(await httpsGet(`${RELIC_API}/advertisement/findAdvertisements?title=age2&start=${start}&count=${RELIC_PAGE}`));
+            const parsed = JSON.parse(await httpsGet(`${RELIC_API}/advertisement/findAdvertisements?title=age2&start=${start}&count=${RELIC_PAGE}`));
+            return parsed && Array.isArray(parsed.matches) ? parsed.matches : [];
         } catch (e) {
-            if (start === 0) throw new Error('Relic lobby list: ' + e.message);
+            if (index === 0) throw new Error('Relic lobby list: ' + e.message);
             console.error("Error fetching page:", start, e.message);
             complete = false;
-            break;
+            return null;
         }
-        if (!parsed || !Array.isArray(parsed.matches) || parsed.matches.length === 0) break;
-        matches.push(...parsed.matches.filter(m => m && typeof m === 'object' && Number.isSafeInteger(m.id) && m.id > 0));
-        if (parsed.matches.length < RELIC_PAGE) break; // a short page is the last: no request for an empty one
+    };
+    let next = 0, batch = relicPagesWanted, end = false;
+    while (next < RELIC_MAX_PAGES) {
+        const indexes = [];
+        for (let i = next; i < Math.min(next + batch, RELIC_MAX_PAGES); i++) indexes.push(i);
+        const pages = await Promise.all(indexes.map(readPage));
+        pages.forEach((page, i) => {
+            if (page === null || end) return;
+            for (const m of page) if (m && typeof m === 'object' && Number.isSafeInteger(m.id) && m.id > 0) byId.set(m.id, m);
+            if (page.length < RELIC_PAGE) { // a short page is the last
+                end = true;
+                relicPagesWanted = indexes[i] + 1 + (page.length > RELIC_PAGE - RELIC_OVERLAP ? 1 : 0);
+            }
+        });
+        if (end || !complete) break;
+        next += indexes.length;
+        batch = 1;
     }
-    if (matches.length === 0) throw new Error('Relic returned no lobbies');
-    return { matches, complete };
+    if (!end && complete) relicPagesWanted = RELIC_MAX_PAGES; // every page was full: read them all at once next time
+    if (byId.size === 0) throw new Error('Relic returned no lobbies');
+    return { matches: [...byId.values()], complete };
 }
 
 // Reads Relic's lobby list into activeMatches, fetching the profiles of new hosts first so every host has a name. Throws
@@ -1889,7 +1917,7 @@ function buildLobbies(requested = new Set()) {
 // list is read every RELIC_POLL_MS, and the list is built again as soon as it or aoe2lobby.com's data changes (scraper.js
 // rewrites its files on each of the feed's updates, about every 3 s). Each build that changes anything goes to every open
 // stream at once, as just the lobbies that changed. With nobody watching, nothing is fetched.
-const RELIC_POLL_MS = 2000;
+const RELIC_POLL_MS = 1000;
 const SCRAPED_CHECK_MS = 100; // how often the scraped files' times are checked (a stat each, while anyone is watching)
 const LOBBY_IDLE_MS = 30000;
 const RELIC_STALE_MS = 60000; // once Relic's list is this old (it keeps failing), aoe2lobby.com's updates alone don't rebuild
@@ -1943,7 +1971,7 @@ function publishLobbies(requested) {
         console.error('Building the lobby list failed:', e);
         return;
     }
-    lobbiesCache = { at: Date.now(), body: JSON.stringify({ matches }) };
+    lobbiesCache = { at: Date.now(), body: JSON.stringify({ v: pageVersion, matches }) };
     streamLobbies(matches);
 }
 
@@ -2032,7 +2060,7 @@ function streamFullMessage() {
         streamFullCache = `"seenAt":${sentSeen.seenAt},"seen":${JSON.stringify(sentSeen.seen)},` +
             `"matches":[${sentOrder.map(key => sentLobbies.get(key)).join(',')}]}`;
     }
-    return `data: {"t":"full","seq":${streamSeq},"now":${Date.now()},${streamFullCache}\n\n`;
+    return `data: {"t":"full","seq":${streamSeq},"v":${JSON.stringify(pageVersion)},"now":${Date.now()},${streamFullCache}\n\n`;
 }
 
 // Caddy passes the visitor's address in X-Forwarded-For (it replaces any the visitor sent)
