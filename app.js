@@ -316,8 +316,8 @@ function parseRelicLobby(match) {
             }
         });
 
-        // Sort a copy by team for display, so players[0] stays the host
-        playersHtml = [...players].sort((a,b) => a.team - b.team).map(p => {
+        // Sort a copy by team for display (Teams 1-4, then random, then no team), so players[0] stays the host
+        playersHtml = [...players].sort((a, b) => teamRank(a) - teamRank(b)).map(p => {
             const wr = p.displayWR ? (String(p.displayWR).endsWith('%') ? p.displayWR : p.displayWR + '%') : 'N/A';
             let statsHtml = `${esc(p.displayGames)} Games, ${esc(wr)} WR`;
 
@@ -327,7 +327,7 @@ function parseRelicLobby(match) {
             return `
             <div class="player-item" style="display: flex; align-items: center; justify-content: space-between;">
                 <span class="player-name" style="display: flex; align-items: center; gap: 6px;">
-                    T${esc(p.team)} - ${esc(p.name)}
+                    ${teamPrefixHtml(p)}${esc(p.name)}
                     ${civChipHtml(p)}
                     ${copyHandleHtml(p.name)}
                     <span class="player-stats">${statsHtml}</span>
@@ -370,6 +370,21 @@ function parseRelicLobby(match) {
         createdTime: intIn(match.createdTime, 1, Number.MAX_SAFE_INTEGER),
         rawPlayers: players
     };
+}
+
+// A lobby player's team as the lobby shows it: Teams 1-4 (team), "?" when the game picks (randomTeam), or no team
+function lobbyTeamOf(p) {
+    const team = intIn(p.team, 1, 4);
+    return team !== null ? team : p.randomTeam === true ? '?' : null;
+}
+function teamRank(p) {
+    const t = lobbyTeamOf(p);
+    return typeof t === 'number' ? t : t === '?' ? 5 : 6;
+}
+function teamPrefixHtml(p) {
+    const t = lobbyTeamOf(p);
+    if (t === null) return '';
+    return `<span class="player-team" title="${t === '?' ? 'Random team' : `Team ${t}`}">T${t}</span> - `;
 }
 
 // One bad lobby is skipped (and logged) instead of blanking the whole list

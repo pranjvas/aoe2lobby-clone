@@ -147,17 +147,21 @@ function playerStats(profileId) {
     return stats;
 }
 
-// aoe2lobby.com's socket sends the whole lobby list when it connects (lobby_match_all), then about every 3 s the lobbies
-// again (lobby_match_update, merged in the way aoe2lobby.com's own page does: added over the list) and the ones that closed
-// (lobby_match_remove). One socket stays open, and the files are rewritten after each update, so server.js sees a change
-// within a few seconds. This is the only source. The map history still counts one snapshot every SNAPSHOT_MS.
+// aoe2lobby.com's socket sends the whole lobby list when it connects (lobby_match_all) with the players' ratings, then,
+// while its live updates work, about every 3 s the lobbies again (lobby_match_update, merged in the way aoe2lobby.com's own
+// page does: added over the list) and the ones that closed (lobby_match_remove). Its updates come and go: on 25 Nov 2026
+// they stopped after its server restarted, and every socket got the list and nothing more. So the socket stays open while
+// updates come, and when none comes for DATA_WAIT_MS a new socket takes a fresh list. Either way the files are rewritten
+// within a few seconds of a change. This is the only source. The map history still counts one snapshot every SNAPSHOT_MS.
 const SNAPSHOT_MS = 15000;
 const WRITE_DELAY_MS = 150; // the ratings for an update arrive just after it: write once, with both
-const SILENCE_MS = 20000; // updates come every ~3 s; this long without any message means the socket is dead
+const DATA_WAIT_MS = 5000; // updates come every ~3 s; this long without one, take a fresh list
+const FIRST_LIST_MS = 15000; // a new socket that sends no list in this time has failed
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 const RESYNC_MS = 30 * 60 * 1000; // a fresh whole list now and then, in case a removal was ever missed
-let ws = null, wsOpenedAt = 0, silenceTimer = null, writeTimer = null, reconnectMs = RECONNECT_MIN_MS;
+let ws = null, wsOpenedAt = 0, waitTimer = null, writeTimer = null, reconnectMs = RECONNECT_MIN_MS;
+let liveUpdates = null; // whether aoe2lobby.com is sending live updates, as last logged
 
 function isObject(v) {
     return v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -172,30 +176,44 @@ function connect() {
     }
     ws = sock;
     wsOpenedAt = Date.now();
-    armSilence();
+    let updates = 0;
+    armWait(FIRST_LIST_MS, () => dropSocket(`no lobby list within ${FIRST_LIST_MS / 1000} s`));
     sock.onopen = () => sock.send(JSON.stringify({ action: 'subscribe', type: 'elotypes', context: 'lobby', ids: ELO_TYPES }));
     sock.onerror = (e) => { if (sock === ws) dropSocket(`socket error ${e?.message || e?.error?.message || ''}`.trim()); };
     sock.onclose = (e) => { if (sock === ws) dropSocket(`socket closed (code ${e?.code})`); };
     sock.onmessage = (msg) => {
         if (sock !== ws) return;
-        armSilence();
-        onMessage(msg.data);
+        const kind = onMessage(msg.data);
+        if (!kind) return; // ratings and the like: the wait is for lobbies
+        if (kind === 'update') { updates++; noteLiveUpdates(true); }
         // Planned: reconnect for a fresh whole list (no backoff, nothing logged)
-        if (Date.now() - wsOpenedAt > RESYNC_MS && lobbyMatchAll) dropSocket(null);
+        if (Date.now() - wsOpenedAt > RESYNC_MS) return dropSocket(null);
+        armWait(DATA_WAIT_MS, () => {
+            if (!updates) noteLiveUpdates(false);
+            dropSocket(null);
+        });
     };
 }
 
-function armSilence() {
-    clearTimeout(silenceTimer);
-    silenceTimer = setTimeout(() => dropSocket(`no message for ${SILENCE_MS / 1000} s`), SILENCE_MS);
+function armWait(ms, onTimeout) {
+    clearTimeout(waitTimer);
+    waitTimer = setTimeout(onTimeout, ms);
 }
 
-// Close the socket and open another: at once for a planned resync (reason null), else after a delay that doubles up to
+// Logged only when it changes (in snapshot mode the socket is replaced every few seconds)
+function noteLiveUpdates(on) {
+    if (liveUpdates === on) return;
+    liveUpdates = on;
+    console.log(on ? 'aoe2lobby.com is sending live updates: following them'
+        : `aoe2lobby.com is sending no live updates: taking a fresh list every ${DATA_WAIT_MS / 1000} s`);
+}
+
+// Close the socket and open another: at once for a fresh list (reason null), else after a delay that doubles up to
 // RECONNECT_MAX_MS while it keeps failing. The files stop being rewritten meanwhile, so the server sees them go stale.
 function dropSocket(reason) {
     const sock = ws;
     ws = null;
-    clearTimeout(silenceTimer);
+    clearTimeout(waitTimer);
     if (sock) { sock.onopen = sock.onmessage = sock.onerror = sock.onclose = null; try { sock.close(); } catch (e) { } }
     const delay = reason === null ? 0 : reconnectMs;
     if (reason !== null) {
@@ -205,15 +223,16 @@ function dropSocket(reason) {
     setTimeout(connect, delay);
 }
 
+// Applies one socket message. Returns 'all' for a whole lobby list, 'update' for live updates, else null.
 function onMessage(text) {
     let data;
     try {
         data = JSON.parse(text);
     } catch (e) {
         console.error('Bad socket message:', e.message);
-        return;
+        return null;
     }
-    if (!isObject(data)) return;
+    if (!isObject(data)) return null;
     if (isObject(data.schema)) liveSchema = data.schema;
     let changed = false;
     // A null-prototype object: a feed key such as "__proto__" stays a plain entry (dumpData checks every entry)
@@ -238,6 +257,7 @@ function onMessage(text) {
     }
     if (data.lobby_elo_update && mergeElo(data.lobby_elo_update) > 0) changed = true;
     if (changed && lobbyMatchAll) scheduleWrite();
+    return isObject(data.lobby_match_all) ? 'all' : (lobbyMatchAll && isObject(data.lobby_match_update)) ? 'update' : null;
 }
 
 function scheduleWrite() {
@@ -309,8 +329,11 @@ function dumpData() {
                 const stats = playerStats(profileId);
                 const inLobbySince = stayStart(String(profileId), now);
 
+                // The slot's team as the lobby sets it: 1 none ("-"), 2-5 teams 1-4, 0 or 6 random ("?"); server.js reads it
+                const team = Number.isSafeInteger(slot.team) && slot.team >= 0 && slot.team <= 6 ? slot.team : null;
+
                 scrapedPlayers[String(profileId)] = { profileId, name: slot.name, steamProfile, civ, stats, inLobbySince };
-                players.push({ name: slot.name, profileId, civ, steamProfile, stats, inLobbySince });
+                players.push({ name: slot.name, profileId, civ, steamProfile, stats, inLobbySince, team });
             }
         }
 

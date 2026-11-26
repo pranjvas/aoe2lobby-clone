@@ -38,10 +38,9 @@ const pendingProfileIds = new Set(); // profile ids with a GetPersonalStat reque
 // list is rebuilt every few seconds while anyone is watching
 const profileFailedAt = new Map();
 const PROFILE_RETRY_MS = 15000;
-// Players' Unranked ratings come only from aoe2lobby.com, whose feed scraper.js follows live (its updates come about
-// every 3 s; a joining player's ratings took 0-21 s, median 10, for 193 joins when it was read every 15 s). Until they
-// arrive, or this long into the player's stay in lobbies, their stats show a spinner instead of "No games on this ladder".
-const RATINGS_WAIT_MS = 45000;
+// A joining player's stats show a spinner until Relic and aoe2companion have answered for them (see markPendingStats),
+// and never longer than this into their stay in lobbies
+const RATINGS_WAIT_MS = 20000;
 // For players aoe2lobby.com doesn't list yet, the stay is timed by our own builds, which run only while someone is
 // watching (every few seconds then): a player unseen for STAY_GAP_MS starts a new stay
 const STAY_GAP_MS = 30000;
@@ -281,11 +280,45 @@ function parseSlotInfoIds(slotinfoBase64) {
             const arr = JSON.parse(jsonStr);
             return arr.filter(p => p && p['profileInfo.id'] !== -1).map(p => ({
                 id: p['profileInfo.id'],
-                team: p.teamID
+                teamCode: slotTeamCode(p.metaData)
             }));
         }
     } catch(e) {}
     return [];
+}
+
+// A Relic slot's metaData: base64 of a JSON string holding base64 of [pair count] then [uint32 LE length][text] for each
+// key and value. Its "Team" is the team the lobby shows, in the codes aoe2lobby.com's slots use (see displayTeam): 223 of
+// 229 players agreed with aoe2lobby.com on 25 Nov 2026, the rest having just switched. The slot's teamID is not the
+// lobby's team: it is 0 for nearly everyone. Returns the code, or null.
+function slotTeamCode(metaData) {
+    if (typeof metaData !== 'string' || !metaData || metaData.length > 4096) return null;
+    try {
+        const inner = JSON.parse(Buffer.from(metaData, 'base64').toString('utf8'));
+        if (typeof inner !== 'string') return null;
+        const buf = Buffer.from(inner, 'base64');
+        let i = 1;
+        const text = () => {
+            if (i + 4 > buf.length) return null;
+            const len = buf.readUInt32LE(i);
+            i += 4;
+            if (i + len > buf.length) return null;
+            const s = buf.subarray(i, i + len).toString('utf8');
+            i += len;
+            return s;
+        };
+        for (let n = 0; n < buf[0]; n++) {
+            const key = text(), value = text();
+            if (key === null || value === null) break;
+            if (key === 'Team') return /^\d$/.test(value) ? Number(value) : null;
+        }
+    } catch (e) { }
+    return null;
+}
+
+// A lobby player's team from a team code: Teams 1-4 (displayTeam), or none; randomTeam for "?" (0 or 6: the game picks)
+function lobbyTeam(code) {
+    return { team: displayTeam(code), randomTeam: code === 0 || code === 6 };
 }
 
 // --- Spectate: games in progress, from aoe2lobby.com's spectate feed ---------------------------------
@@ -1303,9 +1336,11 @@ function scrapedLobbyPlayer(p) {
     const civ = str(p.civ);
     // When the scraper first listed the player in their current stay in lobbies (ms); markPendingStats times its wait from it
     const since = num(p.inLobbySince);
+    const team = num(p.team);
     return {
         name: str(p.name), profileId: profileIdOf(p.profileId), civ: civLabel(civ), civRor: ROR_SHARED_LABELS.has(civ), steamProfile: str(p.steamProfile), stats: cleanStats(p.stats),
-        since: since !== null && since > 0 ? since : null
+        since: since !== null && since > 0 ? since : null,
+        team: Number.isInteger(team) ? team : null // the slot's team code (lobby players only)
     };
 }
 
@@ -1420,17 +1455,86 @@ function ratingsFor(id, scrapedPlayers) {
     return stats || lastRatings.get(id) || null;
 }
 
-// Sets statsPending on every player of the built lobby list, and asks Relic for players it hasn't answered for.
-// Pending (a spinner, not "No games on this ladder") lasts until both sources have had their say: Relic, asked on
-// first sight, and aoe2lobby.com, the only source of Unranked ratings (the default view), which reaches us through
-// scraper.js some seconds after a player joins: the first lobby read after the join often has no ratings for them.
-// A player aoe2lobby.com still hasn't rated RATINGS_WAIT_MS into their stay in lobbies is taken to have none. The stay
-// is timed by scraper.js (inLobbySince), which runs whether or not anyone is on the site; for a player its feed
-// doesn't list yet, by our own builds. With no fresh scraped files (scrapedFresh false) no ratings can come, so
-// nothing waits for them. requested: ids this build already asked Relic for, not asked twice if that just failed.
-// Runs after the lobbies are built, so ratingsFor has already seen every player.
-function markPendingStats(lobbies, now, scrapedPlayers, scrapedFresh, requested) {
-    const askRelic = [];
+// --- Unranked ratings (ladder 0) from aoe2companion -----------------------------------------------------------------------
+// Relic's profile API has the ranked ladders only. aoe2lobby.com's feed, the other source of Unranked ratings, comes and
+// goes: on 26 Nov 2026 it sent none at all, so players who joined then showed "No games on this ladder". aoe2companion's
+// public API has every player's Unranked rating, the numbers aoe2lobby.com shows (the same rating, games and wins for the
+// players checked), and answers for up to UNRANKED_BATCH players in one request, in about 0.1 s; players with no Unranked
+// games are left out of its answer. Each player in a lobby is asked for once, then every UNRANKED_REFRESH_MS while they
+// stay; one request at a time, at least UNRANKED_GAP_MS apart.
+const COMPANION_API = 'https://data.aoe2companion.com/api';
+const COMPANION_HEADERS = { 'User-Agent': 'aoe2lobby.online (+https://aoe2lobby.online)' };
+const UNRANKED_BATCH = 50;
+const UNRANKED_REFRESH_MS = 10 * 60 * 1000;
+const UNRANKED_GAP_MS = 500;
+const unrankedCache = new Map(); // profile id -> { stats (rating, games, wins, winp, highest, streak) or null, fetchedAt, lastSeen }
+const unrankedFailedAt = new Map(); // profile id -> when a request for it failed: not asked again for PROFILE_RETRY_MS
+const unrankedWanted = new Set(); // queued or in flight
+let unrankedRunning = false;
+
+function askUnranked(ids) {
+    for (const id of ids) unrankedWanted.add(id);
+    if (!unrankedRunning && unrankedWanted.size) fetchUnranked().catch(e => console.error('Unranked ratings:', e));
+}
+
+async function fetchUnranked() {
+    unrankedRunning = true;
+    try {
+        while (unrankedWanted.size) {
+            const chunk = [...unrankedWanted].slice(0, UNRANKED_BATCH);
+            try {
+                const data = JSON.parse(await httpsGet(`${COMPANION_API}/leaderboards/unranked?profile_ids=${chunk.join(',')}`, COMPANION_HEADERS));
+                if (!data || !Array.isArray(data.players)) throw new Error('no players list in the answer');
+                const asked = new Set(chunk);
+                const found = new Map();
+                for (const p of data.players) {
+                    const id = p && typeof p === 'object' ? profileIdOf(p.profileId) : 0;
+                    if (!asked.has(id)) continue;
+                    const games = num(p.games, 0), wins = num(p.wins, 0);
+                    found.set(id, { rating: num(p.rating), games, wins, winp: games > 0 ? Math.round(wins / games * 100) : 0, highest: num(p.maxRating), streak: num(p.streak) });
+                }
+                const now = Date.now();
+                for (const id of chunk) {
+                    unrankedFailedAt.delete(id);
+                    unrankedCache.set(id, { stats: found.get(id) || null, fetchedAt: now, lastSeen: unrankedCache.get(id)?.lastSeen ?? now });
+                }
+                rebuildSoon(); // the spinners these answers end
+            } catch (e) {
+                console.error('Unranked ratings (aoe2companion):', e.message);
+                const failedAt = Date.now();
+                for (const id of chunk) unrankedFailedAt.set(id, failedAt);
+            }
+            for (const id of chunk) unrankedWanted.delete(id);
+            if (unrankedWanted.size) await new Promise(resolve => setTimeout(resolve, UNRANKED_GAP_MS));
+        }
+    } finally {
+        unrankedRunning = false;
+    }
+}
+
+// aoe2companion's Unranked record over aoe2lobby.com's when it has more games (games only go up, so it is the newer one)
+function withUnranked(scraped, id) {
+    const u = isProfileId(id) ? unrankedCache.get(id)?.stats : null;
+    if (!u) return scraped;
+    if (!scraped) return { '0': u };
+    return (!scraped['0'] || u.games > scraped['0'].games) ? { ...scraped, '0': u } : scraped;
+}
+
+// Every ladder known for a lobby player: aoe2lobby.com's, aoe2companion's Unranked and Relic's ranked ones
+function lobbyPlayerStats(id, scraped) {
+    return mergedStats(withUnranked(scraped, id), isProfileId(id) ? profileCache.get(id)?.stats : null);
+}
+
+// Sets statsPending on every player of the built lobby list, and asks Relic and aoe2companion for players they haven't
+// answered for. Pending (a spinner, not "No games on this ladder") lasts until both have had their say, normally well
+// under a second: Relic (the ranked ladders and the player's name) and, for the Unranked ladder (the default view),
+// aoe2companion, unless aoe2lobby.com has already sent the player's ratings. A source that fails, or hasn't answered
+// RATINGS_WAIT_MS into the player's stay in lobbies, isn't waited for (for Relic only while it fails: the name comes from
+// it). The stay is timed by scraper.js (inLobbySince) for players aoe2lobby.com lists, else by our own builds.
+// requested: ids this build already asked Relic for, not asked twice if that just failed. Runs after the lobbies are
+// built, so ratingsFor has already seen every player.
+function markPendingStats(lobbies, now, scrapedPlayers, requested) {
+    const askRelic = [], askCompanion = [];
     for (const lobby of lobbies) {
         for (const p of lobby.players) {
             if (!isProfileId(p.id)) { p.statsPending = false; continue; }
@@ -1438,14 +1542,20 @@ function markPendingStats(lobbies, now, scrapedPlayers, scrapedFresh, requested)
             if (!seen || now - seen.last > STAY_GAP_MS) playerSeen.set(p.id, seen = { first: now, last: now });
             seen.last = now;
             const cached = profileCache.get(p.id);
-            const relicDue = !cached;
+            const relicDue = !cached && !profileFailedAt.has(p.id);
             const stayStart = scrapedPlayers.get(p.id)?.since ?? seen.first;
-            const ratingsDue = scrapedFresh && !lastRatings.has(p.id) && now - stayStart < RATINGS_WAIT_MS;
-            p.statsPending = relicDue || ratingsDue;
+            const unranked = unrankedCache.get(p.id);
+            if (unranked) unranked.lastSeen = now;
+            const unrankedDue = !unranked && !lastRatings.has(p.id) && !unrankedFailedAt.has(p.id) && now - stayStart < RATINGS_WAIT_MS;
+            p.statsPending = relicDue || unrankedDue;
             // Also refresh old profiles: those of players only aoe2lobby.com lists get no other refresh
-            if ((relicDue || now - cached.fetchedAt > PROFILE_REFRESH_MS) && !requested.has(p.id)) askRelic.push(p.id);
+            if ((!cached || now - cached.fetchedAt > PROFILE_REFRESH_MS) && !requested.has(p.id)) askRelic.push(p.id);
+            if ((!unranked || now - unranked.fetchedAt > UNRANKED_REFRESH_MS) && !unrankedWanted.has(p.id) &&
+                !(now - (unrankedFailedAt.get(p.id) ?? -Infinity) < PROFILE_RETRY_MS)) askCompanion.push(p.id);
         }
     }
+    for (const [id, at] of unrankedFailedAt) if (now - at >= PROFILE_RETRY_MS) unrankedFailedAt.delete(id);
+    if (askCompanion.length) askUnranked([...new Set(askCompanion)]);
     for (const [id, seen] of playerSeen) {
         if (now - seen.last > PLAYER_SEEN_FORGET_MS) { playerSeen.delete(id); lastRatings.delete(id); }
     }
@@ -1465,8 +1575,8 @@ function playerFromScraped(p, scrapedPlayers, ladder, now) {
     const sp = p.profileId ? scrapedPlayers.get(p.profileId) : undefined;
     const cached = p.profileId ? profileCache.get(p.profileId) : undefined;
     if (cached) cached.lastSeen = now;
-    const player = { id: p.profileId || 0, name: p.name || 'Unknown', team: 0, elo: null, totalGames: 0, totalWins: 0, winRate: "0.0%", steamProfile: p.steamProfile || sp?.steamProfile || null, civ: p.civ || null, civRor: !!(p.civ && p.civRor), statsPending: false };
-    applyStat(player, mergedStats(ratingsFor(p.profileId, scrapedPlayers) || p.stats, cached?.stats), ladder);
+    const player = { id: p.profileId || 0, name: p.name || 'Unknown', ...lobbyTeam(p.team), elo: null, totalGames: 0, totalWins: 0, winRate: "0.0%", steamProfile: p.steamProfile || sp?.steamProfile || null, civ: p.civ || null, civRor: !!(p.civ && p.civRor), statsPending: false };
+    applyStat(player, lobbyPlayerStats(p.profileId, ratingsFor(p.profileId, scrapedPlayers) || p.stats), ladder);
     return player;
 }
 
@@ -1593,9 +1703,12 @@ async function pollRelic() {
     for (const [id, m] of activeMatches) {
         if (!currentMatchIds.has(id) && (complete || now - m.lastSeen > 2 * 60 * 1000)) activeMatches.delete(id);
     }
-    // Forget profiles that no lobby has shown for a day
+    // Forget profiles and Unranked ratings that no lobby has shown for a day
     for (const [id, p] of profileCache) {
         if (now - p.lastSeen > PROFILE_FORGET_MS) profileCache.delete(id);
+    }
+    for (const [id, u] of unrankedCache) {
+        if (now - u.lastSeen > PROFILE_FORGET_MS) unrankedCache.delete(id);
     }
     return new Set([...missingIds, ...staleIds]);
 }
@@ -1625,7 +1738,8 @@ function buildLobbies(requested = new Set()) {
             const civFrom = lp?.civ ? lp : sp?.civ ? sp : null;
             const civ = civFrom ? civFrom.civ : null;
             return {
-                id: p.id, name, team: p.team, elo: cached ? cached.rating : null,
+                // The team as Relic's slot has it now, else as aoe2lobby.com last listed it
+                id: p.id, name, ...lobbyTeam(p.teamCode ?? lp?.team ?? null), elo: cached ? cached.rating : null,
                 totalGames: cached?.totalGames || 0, totalWins: cached?.totalWins || 0, winRate: cached?.winRate ? String(cached.winRate).replace(/%?$/, '%') : "0.0%",
                 steamProfile, civ, civRor: !!(civFrom && civFrom.civRor), statsPending: false // set by markPendingStats
             };
@@ -1687,7 +1801,7 @@ function buildLobbies(requested = new Set()) {
         const targetMode = ladderFor(matchType, finalMapName, slotsTotal);
 
         parsedPlayers.forEach(p => {
-            applyStat(p, mergedStats(ratingsFor(p.id, scrapedPlayers), profileCache.get(p.id)?.stats), targetMode);
+            applyStat(p, lobbyPlayerStats(p.id, ratingsFor(p.id, scrapedPlayers)), targetMode);
         });
         // Relic gave no slot info: show aoe2lobby.com's players for this lobby instead
         if (parsedPlayers.length === 0 && sm) {
@@ -1763,7 +1877,7 @@ function buildLobbies(requested = new Set()) {
         });
     }
 
-    markPendingStats(allMatchesArray, now, scrapedPlayers, scrapedLobbiesRaw !== null, requested);
+    markPendingStats(allMatchesArray, now, scrapedPlayers, requested);
     const ids = new Set();
     for (const lobby of allMatchesArray) for (const p of lobby.players) if (isProfileId(p.id)) ids.add(p.id);
     lobbyPlayers = { at: now, ids };
@@ -1784,6 +1898,11 @@ let relicPolling = null, relicPollStartedAt = 0, relicOkAt = 0;
 let relicApplying = false; // pollRelic is between updating activeMatches and having every new host's name
 let scrapedMtime = 0; // the scraped files' newest time, as of the last build
 let lobbyLoopTimer = null, lastLobbyPollAt = 0;
+let rebuildWanted = false; // new stats arrived (aoe2companion): build again at the next tick
+
+function rebuildSoon() {
+    rebuildWanted = true;
+}
 
 // Reads Relic's list and publishes the list built from it. One read at a time, shared by every waiting request; after a
 // failure, wait (15 s doubling to 60 s) before retrying
@@ -1834,7 +1953,10 @@ function lobbyTick() {
     if (streamClients.size === 0 && now - lastLobbyPollAt > LOBBY_IDLE_MS) return; // nobody watching: stop until someone is
     // aoe2lobby.com's data changed: build again with the Relic list we have, also while a Relic read waits on the network
     // (it builds again when it's done)
-    if (!relicApplying && now - relicOkAt < RELIC_STALE_MS && scrapedFilesTime() !== scrapedMtime) publishLobbies();
+    if (!relicApplying && now - relicOkAt < RELIC_STALE_MS && (rebuildWanted || scrapedFilesTime() !== scrapedMtime)) {
+        rebuildWanted = false;
+        publishLobbies();
+    }
     if (now - relicPollStartedAt >= RELIC_POLL_MS) refreshLobbies();
     lobbyLoopTimer = setTimeout(lobbyTick, SCRAPED_CHECK_MS);
 }
@@ -2059,7 +2181,7 @@ function mapPlayerFromRow(row) {
     try { stats = cleanStats(JSON.parse(row.stats || 'null')); } catch (e) { }
     return {
         id, name: str(row.name) || `Player ${id}`, steamProfile: str(row.steam), count: Number(row.count) || 0,
-        lastSeen: Number(row.lastSeen) || 0, allStats: mergedStats(stats, profileCache.get(id)?.stats)
+        lastSeen: Number(row.lastSeen) || 0, allStats: lobbyPlayerStats(id, stats)
     };
 }
 
