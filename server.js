@@ -339,7 +339,7 @@ let spectateLoading = null, spectateFailedAt = 0;
 // how they were checked); this table only reads the spectate feed. Keep the two in sync.
 const NEW_CIVS = Object.assign(Object.create(null), {
     '-56': 'Thracians', '-57': 'Puru', '-61': 'Saxons', '-62': 'Varangians', '-63': 'Danes',
-    '-1540': 'Macedonians', '-1600': 'Saxons', '-1610': 'Varangians', '-1620': 'Danes'
+    '-1540': 'Macedonians', '-1550': 'Thracians', '-1560': 'Puru', '-1600': 'Saxons', '-1610': 'Varangians', '-1620': 'Danes'
 });
 // The schema's 15 is singular, and three Return of Rome civs (58, 62, 66) carry internal names, not display names
 const CIV_LABEL_FIXES = Object.assign(Object.create(null), { Aztec: 'Aztecs', OldPersians: 'Persians', OldRomans: 'Romans', LacViet: 'Lac Viet' });

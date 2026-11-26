@@ -38,12 +38,15 @@ const FALLBACK_SCHEMA = {
     resources: { 0: "Standard", 1: "Low", 2: "Medium", 3: "High", 4: "Ultra High", 5: "Infinite", 6: "Random" },
     // Civs newer than the live schema's table, which never labels them. The two feeds use different ids for the same civ: lobby
     // slots send the four-digit ids, and the spectate feed sends the two-digit ones. Both sets are here, and in NEW_CIVS in
-    // server.js; keep the two in sync. The lobby ids aren't documented: each was checked against a finished game in match
-    // history, so add one only once it has been seen. Don't work it out from the others: the steps of 10 they follow would give
-    // Mapuche -1580, and the feed sends 75.
+    // server.js; keep the two in sync. Neither feed documents them. The two-digit id is the civ's number in the game's
+    // own civ list (resources/_common/dat/civilizations.json, position + 1: 55 Macedonians, 56 Thracians, 57 Puru, 61-63
+    // Saxons, Varangians, Danes), negated. The lobby id is -(990 + 10 x that number): -1540, -1600, -1610 and -1620 were each
+    // checked against a finished game in match history, and -1550 and -1560 (Thracians and Puru, Chronicles: Alexander the
+    // Great) follow from the game's list. The rule holds only for ids the schema lacks: a civ it knows arrives as the
+    // schema's id (Mapuche, number 59, as 75, not -1580). A new id gets logged with a player and lobby to check it against.
     civilization: {
         "-56": "Thracians", "-57": "Puru", "-61": "Saxons", "-62": "Varangians", "-63": "Danes",
-        "-1540": "Macedonians", "-1600": "Saxons", "-1610": "Varangians", "-1620": "Danes"
+        "-1540": "Macedonians", "-1550": "Thracians", "-1560": "Puru", "-1600": "Saxons", "-1610": "Varangians", "-1620": "Danes"
     }
 };
 let liveSchema = null;
@@ -59,16 +62,18 @@ function label(field, value, unknown = "Unknown") {
     return unknown;
 }
 
-// A slot's civ. An id neither table labels is logged once, so the tables can be updated by hand, and shown as "Unknown civ" like
-// the Spectate views. A slot with no civ stays null, and so does any id before the live schema arrives, when it can't be read.
+// A slot's civ. An id neither table labels is logged once, with the first player and lobby seen with it (their finished game
+// in match history, e.g. aoe2companion's /api/matches?profile_ids=<player>, names the civ), so the tables can be updated by
+// hand, and shown as "Unknown civ" like the Spectate views. A slot with no civ stays null, and so does any id before the live
+// schema arrives, when it can't be read.
 const loggedUnknownCivs = new Set();
-function civLabel(value) {
+function civLabel(value, profileId, matchId) {
     const civ = label('civilization', value, null);
     if (civ || (typeof value !== 'string' && typeof value !== 'number') || !liveSchema?.civilization) return civ;
     const key = String(value);
     if (!loggedUnknownCivs.has(key) && loggedUnknownCivs.size < 100) {
         loggedUnknownCivs.add(key);
-        console.log(`Lobby: civ id ${JSON.stringify(key.slice(0, 20))} has no label, shown as "Unknown civ" (add it to FALLBACK_SCHEMA.civilization and NEW_CIVS)`);
+        console.log(`Lobby: civ id ${JSON.stringify(key.slice(0, 20))} has no label, shown as "Unknown civ" (player ${profileId} in lobby ${matchId}; add it to FALLBACK_SCHEMA.civilization and NEW_CIVS)`);
     }
     return 'Unknown civ';
 }
@@ -325,7 +330,7 @@ function dumpData() {
                 if (profileId === hostProfileId) hostName = slot.name;
 
                 const steamProfile = typeof slot.steam_profile === 'string' && slot.steam_profile ? slot.steam_profile : null;
-                const civ = civLabel(slot.civilization); // e.g. Franks, or Random / Custom / Hidden before the game starts
+                const civ = civLabel(slot.civilization, profileId, matchId); // e.g. Franks, or Random / Custom / Hidden before the game starts
                 const stats = playerStats(profileId);
                 const inLobbySince = stayStart(String(profileId), now);
 
