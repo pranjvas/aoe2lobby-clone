@@ -25,7 +25,7 @@ const REGION_NAMES = {
 
 function snapshot() {
     return new Promise((resolve, reject) => {
-        const ws = new WebSocket('wss://aoe2lobby.com/ws/lobby/');
+        const ws = new WebSocket('wss://data.aoe2lobby.com/ws/lobby/');
         let schema = null;
         const timer = setTimeout(() => reject(new Error('timed out waiting for aoe2lobby.com')), 15000);
         ws.onerror = (e) => { clearTimeout(timer); reject(new Error('websocket error')); };

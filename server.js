@@ -403,24 +403,33 @@ function countryCode(country) {
     return /^[a-z]{2}$/.test(c) ? c : null;
 }
 
+// aoe2lobby.com's sockets are on data.aoe2lobby.com since 26 Nov 2026 (the old host answers 403); the old host stays as the
+// second choice, tried after a socket that never opened (see WS_HOSTS in scraper.js)
+const A2L_WS_HOSTS = ['data.aoe2lobby.com', 'aoe2lobby.com'];
+let spectateHostIndex = 0;
+
 function fetchSpectateSnapshot() {
     return new Promise((resolve, reject) => {
-        let schema = null, matches = null;
+        let schema = null, matches = null, opened = false;
         const elo = Object.create(null);
         let ws;
         const finish = (err) => {
             clearTimeout(timer);
             try { ws.close(); } catch (e) { }
-            if (matches) resolve({ schema: schema || {}, matches, elo });
-            else reject(err || new Error('no spectate data'));
+            if (matches) return resolve({ schema: schema || {}, matches, elo });
+            if (!opened) spectateHostIndex = (spectateHostIndex + 1) % A2L_WS_HOSTS.length; // refused: the other host next time
+            reject(err || new Error('no spectate data'));
         };
         const timer = setTimeout(() => finish(new Error('spectate snapshot timed out')), 20000);
         try {
-            ws = new WebSocket('wss://aoe2lobby.com/ws/spectate/');
+            ws = new WebSocket(`wss://${A2L_WS_HOSTS[spectateHostIndex]}/ws/spectate/`);
         } catch (e) {
             return finish(e);
         }
-        ws.onopen = () => ws.send(JSON.stringify({ action: 'subscribe', type: 'elotypes', context: 'spectate', ids: SPECTATE_ELO_TYPES }));
+        ws.onopen = () => {
+            opened = true;
+            ws.send(JSON.stringify({ action: 'subscribe', type: 'elotypes', context: 'spectate', ids: SPECTATE_ELO_TYPES }));
+        };
         ws.onerror = () => finish(new Error('spectate websocket error'));
         ws.onmessage = (msg) => {
             try {

@@ -15,7 +15,11 @@ process.on('uncaughtException', e => { console.error('Uncaught exception:', e); 
 const OUTPUT_PATH = path.join(__dirname, 'scraped_lobbies_v2.json');
 const PLAYERS_PATH = path.join(__dirname, 'scraped_players_v2.json');
 
-const WS_URL = 'wss://aoe2lobby.com/ws/lobby/';
+// aoe2lobby.com's page opens its sockets on data.aoe2lobby.com (getBaseDomain in its script). On 26 Nov 2026 the old host
+// began refusing every handshake (403), and the lobby data stopped for 17 hours. The old host stays as the second choice:
+// after a socket that never opened, the next attempt tries the other host.
+const WS_HOSTS = ['data.aoe2lobby.com', 'aoe2lobby.com'];
+let wsHostIndex = 0;
 const USER_AGENT = 'aoe2lobby.online lobby mirror (+https://aoe2lobby.online)';
 
 // Value labels as aoe2lobby.com defines them. It also sends this table as "schema" when a socket
@@ -165,7 +169,7 @@ const FIRST_LIST_MS = 15000; // a new socket that sends no list in this time has
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 const RESYNC_MS = 30 * 60 * 1000; // a fresh whole list now and then, in case a removal was ever missed
-let ws = null, wsOpenedAt = 0, waitTimer = null, writeTimer = null, reconnectMs = RECONNECT_MIN_MS;
+let ws = null, wsOpenedAt = 0, wsOpened = false, waitTimer = null, writeTimer = null, reconnectMs = RECONNECT_MIN_MS;
 let liveUpdates = null; // whether aoe2lobby.com is sending live updates, as last logged
 
 function isObject(v) {
@@ -174,8 +178,9 @@ function isObject(v) {
 
 function connect() {
     let sock;
+    wsOpened = false;
     try {
-        sock = new WebSocket(WS_URL, { headers: { 'User-Agent': USER_AGENT } });
+        sock = new WebSocket(`wss://${WS_HOSTS[wsHostIndex]}/ws/lobby/`, { headers: { 'User-Agent': USER_AGENT } });
     } catch (e) {
         return dropSocket(e.message);
     }
@@ -183,7 +188,10 @@ function connect() {
     wsOpenedAt = Date.now();
     let updates = 0;
     armWait(FIRST_LIST_MS, () => dropSocket(`no lobby list within ${FIRST_LIST_MS / 1000} s`));
-    sock.onopen = () => sock.send(JSON.stringify({ action: 'subscribe', type: 'elotypes', context: 'lobby', ids: ELO_TYPES }));
+    sock.onopen = () => {
+        wsOpened = true;
+        sock.send(JSON.stringify({ action: 'subscribe', type: 'elotypes', context: 'lobby', ids: ELO_TYPES }));
+    };
     sock.onerror = (e) => { if (sock === ws) dropSocket(`socket error ${e?.message || e?.error?.message || ''}`.trim()); };
     sock.onclose = (e) => { if (sock === ws) dropSocket(`socket closed (code ${e?.code})`); };
     sock.onmessage = (msg) => {
@@ -222,7 +230,9 @@ function dropSocket(reason) {
     if (sock) { sock.onopen = sock.onmessage = sock.onerror = sock.onclose = null; try { sock.close(); } catch (e) { } }
     const delay = reason === null ? 0 : reconnectMs;
     if (reason !== null) {
-        console.error(`Socket: ${reason}; reconnecting in ${delay / 1000} s`);
+        const host = WS_HOSTS[wsHostIndex];
+        if (!wsOpened) wsHostIndex = (wsHostIndex + 1) % WS_HOSTS.length; // refused: try the other host next
+        console.error(`Socket (${host}): ${reason}; reconnecting in ${delay / 1000} s${!wsOpened ? ` to ${WS_HOSTS[wsHostIndex]}` : ''}`);
         reconnectMs = Math.min(RECONNECT_MAX_MS, reconnectMs * 2);
     }
     setTimeout(connect, delay);

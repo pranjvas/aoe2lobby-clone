@@ -9,7 +9,7 @@ function collectAoe2lobby() {
     return new Promise((resolve, reject) => {
         const matches = {};
         const elo = {}; // eloType -> profileId -> stats
-        const ws = new WebSocket('wss://aoe2lobby.com/ws/lobby/');
+        const ws = new WebSocket('wss://data.aoe2lobby.com/ws/lobby/');
         const timer = setTimeout(() => { ws.close(); resolve({ matches, elo }); }, WAIT_MS);
         ws.onerror = (e) => { clearTimeout(timer); reject(new Error('websocket error: ' + (e.message || e.type))); };
         ws.onopen = () => {

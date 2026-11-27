@@ -79,7 +79,7 @@ visitor's savegame folder. See [V2 design](#v2-design).
 
 ### Data sources and facts (verified live, 2026-11-03)
 
-- **aoe2lobby.com spectate feed** (`wss://aoe2lobby.com/ws/spectate/`): about 470 games per snapshot, unauthenticated.
+- **aoe2lobby.com spectate feed** (`wss://data.aoe2lobby.com/ws/spectate/`; `aoe2lobby.com` itself until 26 Nov 2026): about 470 games per snapshot, unauthenticated.
   Settings sit flat on each match (`map_name`, `mode`, `size`, `speed`, `population`, `server`,
   `hide_civilizations`, `record`, `observer_delay` in minutes, `observers`). `slots` is an object.
   `observer_delay` is 2 for matchmaking and 0-10 for custom lobbies.
