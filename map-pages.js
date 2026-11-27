@@ -78,6 +78,11 @@ function mainLadder(allStats) {
     return { ladder: best.ladder, rating: num(best.rating), games: num(best.games) ?? 0, winp: num(best.winp) };
 }
 
+// The header's Mods link icon: a gold puzzle piece (the same as index.html's)
+const MODS_ICON = '<svg class="nav-mods-icon" viewBox="0 0 24 24" aria-hidden="true"><defs><linearGradient id="navModsGold" x1="0" y1="0" x2="1" y2="1">' +
+    '<stop offset="0" stop-color="#f8e39a"/><stop offset=".55" stop-color="#d4af37"/><stop offset="1" stop-color="#8f6a1c"/></linearGradient></defs>' +
+    '<path fill="url(#navModsGold)" stroke="#5a4210" stroke-width=".6" d="M10 3.5a2 2 0 0 1 4 0V5h4a1 1 0 0 1 1 1v4h1.5a2 2 0 0 1 0 4H19v4a1 1 0 0 1-1 1h-4v-1.5a2 2 0 0 0-4 0V19H6a1 1 0 0 1-1-1v-4h1.5a2 2 0 0 0 0-4H5V6a1 1 0 0 1 1-1h4z"/></svg>';
+
 // The page around the content: the site's header, stylesheet, icons, preview tags and analytics
 function page({ title, description, path, indexable, jsonLd, body, stylesHref }) {
     const url = SITE_URL + path;
@@ -116,12 +121,13 @@ function page({ title, description, path, indexable, jsonLd, body, stylesHref })
                 <span class="logo-icon">🛡️</span>
                 <span class="nav-brand">AoE2<span>Lobby</span> <small class="nav-tagline">Live Age of Empires II lobby browser</small></span>
             </a>
+            <a class="nav-mods-link${path === '/mods' ? ' is-current' : ''}" href="/mods"${path === '/mods' ? ' aria-current="page"' : ''}>${MODS_ICON}<span>Mods</span></a>
         </header>
         <main class="main-content seo-page">
 ${body}
         </main>
         <footer class="seo-footer">
-            <p><a href="/">Live lobbies</a> · <a href="/maps/">Maps</a> · <a href="/replay">Replay viewer</a> · <a href="/mods">pv's mods</a></p>
+            <p><a href="/">Live lobbies</a> · <a href="/maps/">Maps</a> · <a href="/replay">Replay viewer</a> · <a href="/mods">Mods</a></p>
             <p>${SITE_NAME} is a fan-made site and isn't affiliated with Microsoft, Xbox Game Studios, World's Edge or Forgotten Empires.</p>
         </footer>
     </div>
@@ -321,7 +327,7 @@ function renderModsPage({ author, readAt, mods, lobbiesAt, stylesHref, isMatchId
         const facts = [m.tag, m.version && `v${m.version}`, m.fileSize ? `${(m.fileSize / 1048576).toFixed(1)} MB` : '',
             m.created && `created ${day(m.created)}`, `ID ${m.id}`].filter(Boolean).map(esc).join(' · ');
         return `                <article class="mod-card" id="mod-${m.id}">
-                    ${m.thumb ? `<a class="mod-card-thumb" href="${link}" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true"><img src="${esc(m.thumb)}" alt="" width="192" height="108"${i >= 4 ? ' loading="lazy"' : ''}></a>` : ''}
+                    ${m.thumb ? `<a class="mod-card-thumb" href="${link}" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true"><img src="${esc(m.thumb)}" alt="" width="256" height="144"${i >= 4 ? ' loading="lazy"' : ''}></a>` : ''}
                     <div class="mod-card-body">
                         <h3 class="mod-card-name"><a href="${link}" target="_blank" rel="noopener noreferrer">${esc(m.name)}</a></h3>
                         <p class="mod-card-meta">${number(m.downloads)} ${m.downloads === 1 ? 'download' : 'downloads'} · ${number(m.installs)} ${m.installs === 1 ? 'install' : 'installs'}${m.ratings ? ` · ${number(m.ratings)} ${m.ratings === 1 ? 'rating' : 'ratings'}` : ''}${m.updated ? ` · updated ${day(m.updated)}` : ''}</p>

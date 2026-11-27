@@ -2249,22 +2249,44 @@ button.civ-chip {
     }
 }
 
-/* The header's link to pv's mods page (/mods), at its right */
+/* The header's Mods link (to /mods), at its right: a gold puzzle-piece icon with a soft glow */
 .nav-mods-link {
     margin-left: auto;
-    padding: 0.45rem 0.9rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 1rem 0.4rem 0.7rem;
     border: 1px solid var(--gold-dim);
-    border-radius: 8px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, rgba(212, 175, 55, 0.2), rgba(212, 175, 55, 0.04));
+    box-shadow: 0 0 14px rgba(212, 175, 55, 0.15);
     color: var(--gold-primary);
-    font-weight: 600;
-    font-size: 0.9rem;
+    font-weight: 700;
+    font-size: 0.95rem;
+    letter-spacing: 0.04em;
     text-decoration: none;
     white-space: nowrap;
+    transition: box-shadow 0.2s, background 0.2s;
+}
+
+.nav-mods-icon {
+    width: 22px;
+    height: 22px;
+    flex: none;
+    filter: drop-shadow(0 0 4px rgba(212, 175, 55, 0.55));
+    transition: transform 0.25s;
 }
 
 .nav-mods-link:hover,
-.nav-mods-link:focus-visible {
-    background: rgba(212, 175, 55, 0.1);
+.nav-mods-link:focus-visible,
+.nav-mods-link.is-current {
+    background: linear-gradient(135deg, rgba(212, 175, 55, 0.32), rgba(212, 175, 55, 0.08));
+    box-shadow: 0 0 22px rgba(212, 175, 55, 0.35);
+}
+
+.nav-mods-link:hover .nav-mods-icon,
+.nav-mods-link:focus-visible .nav-mods-icon {
+    transform: rotate(-12deg) scale(1.08);
 }
 
 /* /mods (map-pages.js renderModsPage): one card per mod */
@@ -2291,10 +2313,11 @@ button.civ-chip {
 
 .mod-card-thumb img {
     display: block;
-    width: 192px;
-    height: 108px;
+    width: 256px;
+    height: 144px;
     object-fit: cover;
     border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
 }
 
 .mod-card-body {

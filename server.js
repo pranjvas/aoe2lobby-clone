@@ -2477,9 +2477,9 @@ async function serveMapPlayers(res, query) {
 // --- pv's mods (the page's Mods section) --------------------------------------------------------------------------------
 // pv-mods.json lists pv's published mods as their My Mods page on ageofempires.com showed them (read once, by hand: since
 // late Nov 2026 the mod site and its API answer only signed-in visitors, so nothing here fetches them, and the numbers are
-// as of readAt). The thumbnails are small copies in mod-thumbs/ (the page's CSP allows images from this site only).
-// /api/mods adds the games in progress using each mod, from the Spectate view's snapshot as cached (not refreshed for
-// this); the page finds the lobbies using them itself, in the live list, by Relic's mod id (each lobby's modId).
+// as of readAt). Each mod's thumbnail is an image in mod-thumbs/: <id>.webp, .png or .jpg when there is one (generated
+// art, from tools/mod-thumb-prompts.md), else <id>.svg, drawn by tools/make-mod-thumbs.js; the CSP allows images from
+// this site only. /mods (serveModsPage) adds the lobbies and games in progress using each mod.
 const PV_MODS_PATH = path.join(__dirname, 'pv-mods.json');
 let pvMods = { author: 'pv', readAt: null, mods: [] };
 try {
@@ -2491,7 +2491,7 @@ try {
             created: str(m.created), updated: str(m.updated), fileSize: num(m.fileSize),
             downloads: num(m.downloads, 0), installs: num(m.installs, 0), likes: num(m.likes, 0), ratings: num(m.ratings, 0),
             link: `https://www.ageofempires.com/mods/details/${m.id}/`,
-            thumb: fs.existsSync(path.join(__dirname, 'mod-thumbs', `${m.id}.jpg`)) ? `/mod-thumbs/${m.id}.jpg` : null
+            thumb: ['webp', 'png', 'jpg', 'svg'].map(ext => `/mod-thumbs/${m.id}.${ext}`).find(p => fs.existsSync(path.join(__dirname, p))) || null
         }));
     for (const m of mods) if (m.thumb) PUBLIC_FILES.add(m.thumb);
     pvMods = { author: str(saved.author) || 'pv', readAt: str(saved.readAt), mods };
@@ -2837,6 +2837,7 @@ async function handleRequest(req, res) {
         '.json': 'application/json',
         '.png': 'image/png',
         '.jpg': 'image/jpeg',
+        '.webp': 'image/webp',
         '.gif': 'image/gif',
         '.svg': 'image/svg+xml',
         '.wav': 'audio/wav',
