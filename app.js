@@ -1736,8 +1736,10 @@ function renderMods() {
         if (!inLobbies.has(id)) inLobbies.set(id, []);
         inLobbies.get(id).push(l);
     }
+    // Last updated first (then the newer mod)
+    const time = iso => { const t = iso ? Date.parse(iso) : NaN; return isNaN(t) ? 0 : t; };
     const mods = modsData.mods.map(m => ({ ...m, lobbies: inLobbies.get(m.id) || [] }))
-        .sort((a, b) => (b.lobbies.length + b.games.length > 0) - (a.lobbies.length + a.games.length > 0) || b.downloads - a.downloads);
+        .sort((a, b) => time(b.updated) - time(a.updated) || time(b.created) - time(a.created) || b.id - a.id);
     const key = JSON.stringify(mods.map(m => [m.id, m.lobbies.map(l => [l.id, l.title, l.currentPlayers, l.maxPlayers, l.isPlaying]), m.games.map(g => g.id)]));
     if (key === modsKey) return;
     modsKey = key;

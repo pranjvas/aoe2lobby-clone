@@ -1886,9 +1886,10 @@ async function pollRelic() {
         }
 
         // Fetch remaining player profiles, and refresh old ones, asynchronously so we don't block
+        // and build again as soon as they arrive (~0.15 s), so a new player's name and ratings don't wait for the next read
         const remainingIds = [...missingIds, ...staleIds].filter(id => !hostIdsToFetch.has(id));
         for (let i = 0; i < remainingIds.length; i += 200) {
-            fetchProfilesBatch(remainingIds.slice(i, i + 200)).catch(e => console.error(e));
+            fetchProfilesBatch(remainingIds.slice(i, i + 200)).then(rebuildSoon, e => console.error(e));
         }
     }
 
@@ -2103,10 +2104,18 @@ function buildLobbies(requested = new Set()) {
 
 // --- Live lobby list -----------------------------------------------------------------------------------------------------
 // While anyone is watching (an open /api/lobbies/stream, or a poll of /api/lobbies in the last LOBBY_IDLE_MS), Relic's
-// list is read every RELIC_POLL_MS, and the list is built again as soon as it or aoe2lobby.com's data changes (scraper.js
+// list is read every relicPollMs() (0.5-1 s), and the list is built again as soon as it or aoe2lobby.com's data changes (scraper.js
 // rewrites its files on each of the feed's updates, about every 3 s). Each build that changes anything goes to every open
 // stream at once, as just the lobbies that changed. With nobody watching, nothing is fetched.
-const RELIC_POLL_MS = 1000;
+// Relic's list is live (at 4 reads a second, 259 of 360 differed on 27 Nov 2026; its max-age=5 header is advisory), so the
+// read interval is most of our delay. Every 500 ms while the list fits in 3 pages, slower as it grows, so the requests a
+// second never exceed 6 (the rate of a 6-page list read every second).
+const RELIC_POLL_MIN_MS = 500;
+const RELIC_POLL_MAX_MS = 1000;
+const RELIC_REQUESTS_PER_S = 6;
+function relicPollMs() {
+    return Math.min(RELIC_POLL_MAX_MS, Math.max(RELIC_POLL_MIN_MS, Math.round(relicPagesWanted * 1000 / RELIC_REQUESTS_PER_S)));
+}
 const SCRAPED_CHECK_MS = 100; // how often the scraped files' times are checked (a stat each, while anyone is watching)
 const LOBBY_IDLE_MS = 30000;
 const RELIC_STALE_MS = 60000; // once Relic's list is this old (it keeps failing), aoe2lobby.com's updates alone don't rebuild
@@ -2174,7 +2183,7 @@ function lobbyTick() {
         rebuildWanted = false;
         publishLobbies();
     }
-    if (now - relicPollStartedAt >= RELIC_POLL_MS) refreshLobbies();
+    if (now - relicPollStartedAt >= relicPollMs()) refreshLobbies();
     lobbyLoopTimer = setTimeout(lobbyTick, SCRAPED_CHECK_MS);
 }
 
