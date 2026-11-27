@@ -2493,7 +2493,13 @@ try {
             link: `https://www.ageofempires.com/mods/details/${m.id}/`,
             thumb: ['webp', 'png', 'jpg', 'svg'].map(ext => `/mod-thumbs/${m.id}.${ext}`).find(p => fs.existsSync(path.join(__dirname, p))) || null
         }));
-    for (const m of mods) if (m.thumb) PUBLIC_FILES.add(m.thumb);
+    for (const m of mods) {
+        if (!m.thumb) continue;
+        PUBLIC_FILES.add(m.thumb);
+        // ?v= is the image's content hash: a new image gets a new address, so no browser keeps showing the old one
+        const hash = crypto.createHash('sha1').update(fs.readFileSync(path.join(__dirname, m.thumb))).digest('hex').slice(0, 10);
+        m.thumb += `?v=${hash}`;
+    }
     pvMods = { author: str(saved.author) || 'pv', readAt: str(saved.readAt), mods };
 } catch (e) { if (e.code !== 'ENOENT') console.error('Error reading pv-mods.json:', e.message); }
 const pvModIds = new Set(pvMods.mods.map(m => m.id));
