@@ -74,8 +74,32 @@
 
         <!-- Main Content -->
         <main class="main-content">
-            <!-- Filters Section -->
-            <section class="filters-section glass-panel">
+            <!-- Header -->
+            <div class="lobbies-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <div style="display: flex; gap: 20px; align-items: center;">
+                    <h2 class="lobbies-title" style="margin: 0;">Active <span id="viewTitleText">Lobbies</span> <span class="pulse-indicator"></span></h2>
+                    <div class="view-toggles" style="display: flex; background: rgba(255,255,255,0.05); padding: 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
+                        <button id="viewLobbiesBtn" class="btn" style="border-radius: 6px; font-size: 0.9em; background: rgba(88, 101, 242, 0.2); border: 1px solid var(--accent); color: white;">Lobbies</button>
+                        <button id="viewPlayersBtn" class="btn" style="border-radius: 6px; font-size: 0.9em; background: transparent; border: 1px solid transparent; color: #8a9bb2;">Players</button>
+                        <button id="viewSpectateBtn" class="btn" style="border-radius: 6px; font-size: 0.9em; background: transparent; border: 1px solid transparent; color: #8a9bb2;">Spectate</button>
+                        <button id="viewMapsBtn" class="btn" style="border-radius: 6px; font-size: 0.9em; background: transparent; border: 1px solid transparent; color: #8a9bb2;" title="Players who keep showing up in a map's lobbies">Maps</button>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 20px; align-items: center;">
+                    <div class="layout-toggles" style="display: flex; background: rgba(255,255,255,0.05); padding: 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
+                        <button id="layoutGridBtn" class="btn" style="padding: 6px 12px; border-radius: 6px; font-size: 1.1em; background: rgba(88, 101, 242, 0.2); border: 1px solid var(--accent); color: white;" title="Grid View">&#x25EB;</button>
+                        <button id="layoutListBtn" class="btn" style="padding: 6px 12px; border-radius: 6px; font-size: 1.1em; background: transparent; border: 1px solid transparent; color: #8a9bb2;" title="List View">&#x2630;</button>
+                    </div>
+                    <div class="lobbies-stats" style="color: #8a9bb2; font-weight: 500;">
+                        <span id="itemCount" style="color: var(--accent); font-weight: 700; font-size: 1.2em;">0</span> <span id="countLabel">lobbies</span> found
+                        <button id="clearFiltersBtn" class="clear-filters-btn" type="button" hidden>Clear filters</button>
+                    </div>
+                </div>
+            </div>
+            <p id="feedNotice" class="feed-notice" role="status" hidden>aoe2lobby.com's lobby feed isn't responding. Lobbies, players, settings and civs still update live from the game's own list, but some ratings and lobby ages may be missing until it's back, and a rare map or setting may show as a number or not at all.</p>
+
+            <!-- Lobby Filters (the Lobbies view's search, below the heading like every view's) -->
+            <section class="filters-section glass-panel" id="lobbyFilters" style="margin-bottom: 20px;">
                 <div class="search-container">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="search-icon"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
                     <input type="text" id="searchInput" placeholder="Search by host, player, or map..." aria-label="Search lobbies">
@@ -180,30 +204,6 @@
                     </div>
                 </div>
             </section>
-
-            <!-- Header -->
-            <div class="lobbies-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <div style="display: flex; gap: 20px; align-items: center;">
-                    <h2 class="lobbies-title" style="margin: 0;">Active <span id="viewTitleText">Lobbies</span> <span class="pulse-indicator"></span></h2>
-                    <div class="view-toggles" style="display: flex; background: rgba(255,255,255,0.05); padding: 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
-                        <button id="viewLobbiesBtn" class="btn" style="border-radius: 6px; font-size: 0.9em; background: rgba(88, 101, 242, 0.2); border: 1px solid var(--accent); color: white;">Lobbies</button>
-                        <button id="viewPlayersBtn" class="btn" style="border-radius: 6px; font-size: 0.9em; background: transparent; border: 1px solid transparent; color: #8a9bb2;">Players</button>
-                        <button id="viewSpectateBtn" class="btn" style="border-radius: 6px; font-size: 0.9em; background: transparent; border: 1px solid transparent; color: #8a9bb2;">Spectate</button>
-                        <button id="viewMapsBtn" class="btn" style="border-radius: 6px; font-size: 0.9em; background: transparent; border: 1px solid transparent; color: #8a9bb2;" title="Players who keep showing up in a map's lobbies">Maps</button>
-                    </div>
-                </div>
-                <div style="display: flex; gap: 20px; align-items: center;">
-                    <div class="layout-toggles" style="display: flex; background: rgba(255,255,255,0.05); padding: 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
-                        <button id="layoutGridBtn" class="btn" style="padding: 6px 12px; border-radius: 6px; font-size: 1.1em; background: rgba(88, 101, 242, 0.2); border: 1px solid var(--accent); color: white;" title="Grid View">&#x25EB;</button>
-                        <button id="layoutListBtn" class="btn" style="padding: 6px 12px; border-radius: 6px; font-size: 1.1em; background: transparent; border: 1px solid transparent; color: #8a9bb2;" title="List View">&#x2630;</button>
-                    </div>
-                    <div class="lobbies-stats" style="color: #8a9bb2; font-weight: 500;">
-                        <span id="itemCount" style="color: var(--accent); font-weight: 700; font-size: 1.2em;">0</span> <span id="countLabel">lobbies</span> found
-                        <button id="clearFiltersBtn" class="clear-filters-btn" type="button" hidden>Clear filters</button>
-                    </div>
-                </div>
-            </div>
-            <p id="feedNotice" class="feed-notice" role="status" hidden>aoe2lobby.com's lobby feed isn't responding. Lobbies, players, settings and civs still update live from the game's own list, but some ratings and lobby ages may be missing until it's back, and a rare map or setting may show as a number or not at all.</p>
 
             <!-- Player Filters (Hidden by default) -->
             <section class="filters-section glass-panel" id="playerFilters" style="display: none; margin-bottom: 20px;">
@@ -408,7 +408,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/app.js?v=51"></script>
+    <script src="/app.js?v=52"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>
