@@ -442,6 +442,7 @@ function showLobbyList(matches) {
 
     const first = isInitialLoad;
     isInitialLoad = false;
+    if (state.currentView === 'maps') renderMapsLive();
     // Spectate shows no lobbies; the Maps view only where a listed player is in a lobby now
     if (!first && state.currentView === 'spectate') return;
     if (!first && state.currentView === 'maps' && mapsLobbyKey(shownMapPlayers()) === mapsLobbyKeyShown) return;
@@ -1357,6 +1358,7 @@ let mapPlayers = []; // the players loaded so far, in the server's order for map
 let mapPlayersMap = null; // the map they belong to
 let mapPlayersKey = null; // the query they answer: map, sort, Elo Type and search (mapPlayersQuery)
 let mapPlayersMatched = 0; // how many players that query has in all
+let mapPlayingHere = 0; // how many of the map's players are in a game on it now (the server counts all of them)
 let mapPlayersError = false; // the chosen map's players could not be loaded
 let mapPlayersPending = null; // the request in flight: 'load' (another map), 'update' (new sort or search), 'more', 'refresh'
 let mapPlayersRequest = 0;
@@ -1445,7 +1447,8 @@ async function fetchMapPlayers(more = false) {
                 id: p.id, name: typeof p.name === 'string' ? p.name : String(p.id),
                 steamProfile: typeof p.steamProfile === 'string' ? p.steamProfile : null,
                 count: intIn(p.count, 0, Number.MAX_SAFE_INTEGER) ?? 0, lastSeen: intIn(p.lastSeen, 0, Number.MAX_SAFE_INTEGER) ?? 0,
-                allStats: p.allStats && typeof p.allStats === 'object' ? p.allStats : null
+                allStats: p.allStats && typeof p.allStats === 'object' ? p.allStats : null,
+                playing: mapPlayerGame(p.playing)
             }));
         if (kind === 'more') {
             // Counts can move a player up between pages: never show anyone twice
@@ -1453,6 +1456,7 @@ async function fetchMapPlayers(more = false) {
             mapPlayers = mapPlayers.concat(players.filter(p => !shown.has(p.id)));
         } else mapPlayers = players;
         mapPlayersMatched = Math.max(intIn(data.matched, 0, Number.MAX_SAFE_INTEGER) ?? 0, mapPlayers.length);
+        mapPlayingHere = intIn(data.playingHere, 0, Number.MAX_SAFE_INTEGER) ?? 0;
         mapPlayersMap = query.map;
         mapPlayersKey = query.key;
         mapPlayersError = false;
@@ -1483,9 +1487,18 @@ function mapPlayerStat(p) {
     return { rating: finiteOrNull(stat.rating), games: finiteOrNull(stat.games) ?? 0, winp: finiteOrNull(stat.winp) };
 }
 
+// The game in progress a Maps view player is in (the server's playing; every such game allows spectators), checked
+function mapPlayerGame(g) {
+    if (!g || typeof g !== 'object' || !isMatchId(g.id)) return null;
+    return {
+        id: String(g.id), map: typeof g.map === 'string' && g.map ? g.map : 'Unknown Map',
+        startTime: intIn(g.startTime, 0, Number.MAX_SAFE_INTEGER) ?? 0, observerDelay: intIn(g.observerDelay, 0, 600) ?? 0
+    };
+}
+
 // The players loaded so far, in the server's order (it sorts and searches), with their numbers on the Elo Type ladder
-// and the lobby they're in now (any map, from the live lobby list; onMap when it is on the map shown, which the "Active
-// now first" sort puts first)
+// and where they are now: the lobby (any map, from the live lobby list), else the game in progress they can be watched in
+// (playing). onMap: that lobby or game is on the map shown, which the "Active now first" sort puts first.
 function shownMapPlayers() {
     if (mapPlayersMap !== state.mapsMap) return [];
     const inLobby = new Map();
@@ -1493,15 +1506,88 @@ function shownMapPlayers() {
     const thisMap = String(state.mapsMap).toLowerCase();
     return mapPlayers.map(p => {
         const lobby = inLobby.get(p.id) || null;
-        return { ...p, stat: mapPlayerStat(p), lobby, onMap: !!lobby && String(lobby.map).toLowerCase() === thisMap };
+        const playing = lobby ? null : p.playing; // the live lobby list is newer than the games snapshot
+        const where = lobby ? lobby.map : playing ? playing.map : null;
+        return { ...p, stat: mapPlayerStat(p), lobby, playing, onMap: where !== null && String(where).toLowerCase() === thisMap };
     });
+}
+
+// The map's lobbies open now, from the live lobby list, above the cards: the cards are players, and several of them can
+// be in one lobby. Redrawn on every lobby update while the Maps view is shown (only when it changes).
+const MAPS_LIVE_SHOWN = 5;
+let mapsLiveKey = null;
+function renderMapsLive() {
+    const el = document.getElementById('mapsLive');
+    if (!el) return;
+    const map = state.mapsMap;
+    const name = String(map).toLowerCase();
+    const open = map && !isInitialLoad
+        ? lobbies.filter(l => String(l.map).toLowerCase() === name).sort((a, b) => b.currentPlayers - a.currentPlayers)
+        : null;
+    // And how many of the map's players are in a game on it now (the server counts them all, not just the cards loaded)
+    const playing = mapPlayersMap === map ? mapPlayingHere : 0;
+    const key = open ? JSON.stringify([map, playing, open.map(l => [l.id, l.title, l.currentPlayers, l.maxPlayers, l.isPlaying])]) : '';
+    if (key === mapsLiveKey) return;
+    mapsLiveKey = key;
+    el.classList.toggle('maps-live-on', !!open && (open.length > 0 || playing > 0));
+    if (!open) { el.textContent = ''; return; }
+    const shown = open.slice(0, MAPS_LIVE_SHOWN).map(l =>
+        `<strong>${esc(l.title)}</strong> (${l.isPlaying ? 'full' : `${esc(l.currentPlayers)}/${esc(l.maxPlayers)} players`})`);
+    const more = open.length > MAPS_LIVE_SHOWN ? `, and ${open.length - MAPS_LIVE_SHOWN} more` : '';
+    const lobbiesText = open.length
+        ? `${open.length} ${esc(map)} ${open.length === 1 ? 'lobby' : 'lobbies'} open now: ${shown.join(', ')}${more}`
+        : `No ${esc(map)} lobby is open right now`;
+    const playingText = playing
+        ? ` · ${playing.toLocaleString()} of its players ${playing === 1 ? 'is' : 'are'} in ${aOrAn(map)} ${esc(map)} game now (Spectate on their cards)`
+        : '';
+    el.innerHTML = lobbiesText + playingText;
 }
 
 // Which listed players are in which lobby now, as the Maps view last drew it: a lobby update redraws the view (up to a
 // thousand cards) only when this changes
 let mapsLobbyKeyShown = null;
 function mapsLobbyKey(players) {
-    return players.map(p => p.lobby ? `${p.id}:${p.lobby.id}:${p.lobby.isPlaying ? 1 : 0}:${p.lobby.map}:${p.lobby.title}` : '').join('|');
+    return players.map(p => p.lobby ? `${p.id}:${p.lobby.id}:${p.lobby.isPlaying ? 1 : 0}:${p.lobby.map}:${p.lobby.title}`
+        : p.playing ? `${p.id}:game:${p.playing.id}` : '').join('|');
+}
+
+// Where a Maps view player is now (map: the map shown), as HTML: the line under their name, the badges, and the footer's
+// button. In a lobby: Join (when it has room). In a game in progress (every listed game allows spectators): Spectate, with
+// the time left until the delayed stream starts, and the game's page.
+function mapPlayerWhere(p, map) {
+    const lobby = p.lobby, game = p.playing;
+    if (lobby) {
+        const joinable = !lobby.isPlaying && isMatchId(lobby.id);
+        return {
+            line: p.onMap ? `In ${aOrAn(map)} ${esc(map)} lobby now: ${esc(lobby.title)}` : `In a lobby on another map now: ${esc(lobby.title)}`,
+            badges: p.onMap
+                ? `<span class="badge status-badge map-active-badge">&#x1F7E2; In ${aOrAn(map)} ${esc(map)} lobby now</span>`
+                : `<span class="badge server-badge" title="The lobby they're in now is on another map">In a lobby now</span>${lobby.map ? `<span class="badge server-badge" title="Map of the lobby they're in">${esc(lobby.map)}</span>` : ''}`,
+            footer: joinable ? `<a href="aoe2de://0/${esc(lobby.id)}" class="btn-join" style="margin-left: auto;">Join Lobby</a>` : ''
+        };
+    }
+    if (game) {
+        const started = minutesAgo(game.startTime).replace(/^Started/, 'started');
+        const readyAt = game.startTime + game.observerDelay * 60;
+        const wait = countdownText(readyAt);
+        return {
+            line: p.onMap ? `Playing ${aOrAn(map)} ${esc(map)} game now, ${started}` : `Playing on another map now, ${started}`,
+            badges: `<span class="badge status-badge map-playing-badge">&#x1F3AE; ${p.onMap ? `Playing ${esc(map)} now` : 'Playing now'}</span>` +
+                (p.onMap ? '' : `<span class="badge server-badge" title="Map of the game they're playing">${esc(game.map)}</span>`),
+            footer: `<div class="spectate-actions" style="margin-left: auto;">
+                <a href="/spectate/${esc(game.id)}" class="btn-view" title="This game's own page, with a link you can share">Details</a>
+                <a href="aoe2de://1/${esc(game.id)}" class="btn-join spectate-btn${wait ? ' waiting' : ''}" title="Opens Age of Empires II: DE as a spectator">
+                    &#x1F441; Spectate<span class="spectate-countdown" data-ready-at="${readyAt}">${wait ? ' &#x23F3; ' + wait : ''}</span>
+                </a>
+            </div>`
+        };
+    }
+    return { line: `Last seen on ${esc(map)} ${seenAgoText(p.lastSeen)}`, badges: '', footer: '' };
+}
+
+// "an" before a name read with a vowel first (an Arabia lobby, an Amazon Tunnel lobby), else "a"
+function aOrAn(word) {
+    return /^[aeiou]/i.test(String(word).trim()) ? 'an' : 'a';
 }
 
 function seenAgoText(ms) {
@@ -1515,6 +1601,7 @@ function seenAgoText(ms) {
 
 function renderMaps(players) {
     mapsLobbyKeyShown = mapsLobbyKey(players);
+    renderMapsLive();
     const note = document.getElementById('mapsNote');
     const map = state.mapsMap;
     const entry = mapList.find(m => m.name === map);
@@ -1547,8 +1634,7 @@ function renderMaps(players) {
     const ladder = state.eloType === 'auto' ? 'most played ladder' : (LADDER_NAMES[state.eloType] || 'this ladder');
     mapsGrid.innerHTML = players.map((p, i) => {
         const stat = p.stat;
-        const lobby = p.lobby;
-        const joinable = lobby && !lobby.isPlaying && isMatchId(lobby.id);
+        const where = mapPlayerWhere(p, map);
         return `
         <div class="lobby-card map-player-card">
             <div class="card-header">
@@ -1559,8 +1645,7 @@ function renderMaps(players) {
                         ${copyHandleHtml(p.name)}
                         ${stat?.rating != null ? `<span class="elo-badge">${esc(stat.rating)}</span>` : '<span class="elo-badge elo-badge-none">Unrated</span>'}
                     </div>
-                    <div class="game-title" style="font-size: 0.8em; color: var(--text-secondary);">${!lobby ? `Last seen on ${esc(map)} ${seenAgoText(p.lastSeen)}`
-                        : p.onMap ? `In a ${esc(map)} lobby now: ${esc(lobby.title)}` : `In a lobby on another map now: ${esc(lobby.title)}`}</div>
+                    <div class="game-title" style="font-size: 0.8em; color: var(--text-secondary);">${where.line}</div>
                     ${playerLinksHtml(p)}
                 </div>
             </div>
@@ -1578,12 +1663,10 @@ function renderMaps(players) {
                         <span class="detail-icon">&#x1F4CA;</span>
                         Games: ${stat ? esc(stat.games) : 0} <span class="map-ladder">(${esc(ladder)})</span>
                     </div>
-                    ${lobby ? `<div class="tags-row" style="margin-top: 10px;">${p.onMap
-                        ? `<span class="badge status-badge map-active-badge">&#x1F7E2; In a ${esc(map)} lobby now</span>`
-                        : `<span class="badge server-badge" title="The lobby they're in now is on another map">In a lobby now</span>${lobby.map ? `<span class="badge server-badge" title="Map of the lobby they're in">${esc(lobby.map)}</span>` : ''}`}</div>` : ''}
+                    ${where.badges ? `<div class="tags-row" style="margin-top: 10px;">${where.badges}</div>` : ''}
                 </div>
             </div>
-            ${joinable ? `<div class="card-footer"><a href="aoe2de://0/${esc(lobby.id)}" class="btn-join" style="margin-left: auto;">Join Lobby</a></div>` : ''}
+            ${where.footer ? `<div class="card-footer">${where.footer}</div>` : ''}
         </div>`;
     }).join('') + (mapPlayersMatched > players.length
         ? `<div class="spectate-more"><button type="button" class="clear-filters-btn" data-action="show-more-map-players"${mapPlayersPending ? ' disabled' : ''}>${mapPlayersPending === 'more' ? 'Loading&hellip;' : `Show more (${(mapPlayersMatched - players.length).toLocaleString()} more)`}</button></div>`
@@ -1869,12 +1952,15 @@ setInterval(() => {
         }
         return;
     }
-    if (state.currentView !== 'spectate') return;
-    for (const el of spectateGrid.querySelectorAll('.spectate-countdown[data-ready-at]')) {
+    // The Maps view's Spectate buttons count down the same way
+    const grid = state.currentView === 'spectate' ? spectateGrid : state.currentView === 'maps' ? mapsGrid : null;
+    if (!grid) return;
+    for (const el of grid.querySelectorAll('.spectate-countdown[data-ready-at]')) {
         const wait = countdownText(Number(el.dataset.readyAt));
         el.innerHTML = wait ? ' &#x23F3; ' + wait : '';
         el.closest('.spectate-btn')?.classList.toggle('waiting', !!wait);
     }
+    if (grid !== spectateGrid) return;
     for (const el of spectateGrid.querySelectorAll('.spectate-started[data-start]')) {
         el.textContent = minutesAgo(Number(el.dataset.start));
     }

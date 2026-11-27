@@ -741,6 +741,32 @@ function spectateGameByPlayer(cache, profileId) {
     return best ? spectateGameById(cache, best.id) : { status: 'unknown', game: null, ended: null };
 }
 
+// Who is playing now, for the Maps view: profile id -> the live game they started last (the same rule as
+// spectateGameByPlayer, so a team game they have left and since finished another doesn't count). Every game in the list
+// allows spectators: the feed's unobservable games are dropped in buildSpectateGames. Built once per snapshot.
+function playingIndex(cache) {
+    if (!spectateFresh(cache)) return new Map();
+    if (cache.playing && cache.playing.games === cache.games) return cache.playing.index;
+    const index = new Map();
+    for (const g of cache.games.values()) {
+        for (const p of g.players) {
+            if (p.kind !== 'human' || !isProfileId(p.id)) continue;
+            const had = index.get(p.id);
+            if (!had || g.startTime > had.startTime) index.set(p.id, g);
+        }
+    }
+    const keptSince = Math.floor((Date.now() - ENDED_KEEP_MS) / 1000);
+    for (const e of endedGames.values()) {
+        if (e.game.endedAt < keptSince) continue;
+        for (const p of e.game.players) {
+            const live = p.kind === 'human' ? index.get(p.id) : undefined;
+            if (live && e.game.startTime > live.startTime) index.delete(p.id);
+        }
+    }
+    cache.playing = { games: cache.games, index };
+    return index;
+}
+
 function emptyResult(state) {
     return { state, completedAt: null, duration: null, winningTeam: null, noWinner: null, aiWon: null, ratingKind: null, players: null, replay: null };
 }
@@ -2370,8 +2396,11 @@ function mapPlayerFromRow(row) {
     };
 }
 
-// ?map=&sort=&ladder=&q=&offset=&limit=: one page of the map's players, sorted, narrowed to names containing q
-function serveMapPlayers(res, query) {
+// ?map=&sort=&ladder=&q=&offset=&limit=: one page of the map's players, sorted, narrowed to names containing q. A player
+// in a game in progress (every listed game allows spectators) carries it as playing, so the page can offer to watch it;
+// the games come from the Spectate view's snapshot, refreshed on demand the same way (at most once a minute).
+const MAP_PLAYING_WAIT_MS = 2500; // the longest a request waits for a first snapshot
+async function serveMapPlayers(res, query) {
     const name = String(query.get('map') || '');
     if (!name || name.length > 120) return answerJson(res, 400, { error: 'bad map' });
     const sort = MAP_SORTS.includes(query.get('sort')) ? query.get('sort') : 'count';
@@ -2381,6 +2410,8 @@ function serveMapPlayers(res, query) {
     const offset = whole(query.get('offset'), 0, Number.MAX_SAFE_INTEGER, 0);
     const limit = whole(query.get('limit'), 1, MAP_PAGE_MAX, query.has('limit') ? 60 : MAP_PAGE_OLD);
     try {
+        await settleWithin(freshSpectate().catch(() => null), MAP_PLAYING_WAIT_MS);
+        const playing = playingIndex(spectateCache);
         const { since } = mapList();
         const kept = mapPlayersOf(name);
         if (!kept) return answerJson(res, 200, { map: name, since, lobbies: 0, total: 0, matched: 0, offset, players: [] });
@@ -2388,17 +2419,34 @@ function serveMapPlayers(res, query) {
         let sorted = kept.sorted.get(order);
         if (!sorted) {
             // A lobby list older than 2 min (nobody on the site) says nothing about who is in a lobby now. In a lobby on
-            // this map ranks 2, in another lobby 1.
+            // this map ranks 3, in a game on it 2, in another lobby or game 1.
             const live = Date.now() - lobbyPlayers.at < 2 * 60 * 1000 ? lobbyPlayers.ids : new Map();
             const thisMap = name.toLowerCase();
             const activeRank = id => {
-                const map = live.get(id);
-                return map === undefined ? 0 : String(map).toLowerCase() === thisMap ? 2 : 1;
+                const lobbyMap = live.get(id);
+                if (lobbyMap !== undefined) return String(lobbyMap).toLowerCase() === thisMap ? 3 : 1;
+                const game = playing.get(id);
+                return !game ? 0 : String(game.map).toLowerCase() === thisMap ? 2 : 1;
             };
             kept.sorted.set(order, sorted = sortMapPlayers(kept.players, sort, ladder, activeRank));
         }
         const page = mapPlayersPage(sorted, q, offset, limit);
-        answerJson(res, 200, { map: name, since, lobbies: kept.entry.lobbies, total: kept.players.length, matched: page.matched, offset, players: page.players });
+        // New objects: the kept players are shared by every request
+        const players = page.players.map(p => {
+            const g = playing.get(p.id);
+            return g ? { ...p, playing: { id: g.id, map: g.map, title: g.title, startTime: g.startTime, observerDelay: g.observerDelay } } : p;
+        });
+        // How many of the map's players are in a game on it now (not in a lobby), for the line above the cards
+        let playingHere = 0;
+        if (playing.size) {
+            const inLobby = Date.now() - lobbyPlayers.at < 2 * 60 * 1000 ? lobbyPlayers.ids : new Map();
+            const thisMap = name.toLowerCase();
+            for (const p of kept.players) {
+                const g = playing.get(p.id);
+                if (g && !inLobby.has(p.id) && String(g.map).toLowerCase() === thisMap) playingHere++;
+            }
+        }
+        answerJson(res, 200, { map: name, since, lobbies: kept.entry.lobbies, total: kept.players.length, matched: page.matched, offset, playingHere, players });
     } catch (e) {
         console.error('Map history: players failed:', e.message);
         answerJson(res, 503, { error: 'map history unavailable' });
@@ -2613,7 +2661,7 @@ async function handleRequest(req, res) {
         return;
     }
     if (pathname === '/api/maps/players') {
-        serveMapPlayers(res, query);
+        serveMapPlayers(res, query).catch(e => console.error('Map players request failed:', e.message));
         return;
     }
     if (pathname === '/api/player-games') {

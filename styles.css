@@ -495,6 +495,36 @@ select:focus, select:hover {
     border-color: #2ea043;
 }
 
+/* A Maps view player in a game in progress (it can be watched: the card's Spectate button) */
+.map-playing-badge {
+    background: rgba(88, 101, 242, 0.2);
+    color: #a5adff;
+    border-color: #5865f2;
+}
+
+/* The selected map's lobbies open now (the cards below are players, so this says how many lobbies they make up) */
+.maps-live {
+    width: 100%;
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.9em;
+}
+
+.maps-live:empty {
+    display: none;
+}
+
+.maps-live.maps-live-on::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 8px;
+    border-radius: 50%;
+    background: #2ea043;
+    vertical-align: middle;
+}
+
 .maps-note {
     width: 100%;
     margin: 0;
