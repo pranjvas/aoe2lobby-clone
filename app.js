@@ -149,6 +149,7 @@ function init() {
     showView(['lobbies', 'players', 'spectate', 'maps'].includes(state.currentView) ? state.currentView : 'lobbies');
 
     startLobbyFeed();
+    fetchMods();
 }
 
 // Names, titles and maps come from the game's lobby feed: escape before putting them in HTML
@@ -316,8 +317,8 @@ function parseRelicLobby(match) {
             }
         });
 
-        // Sort a copy by team for display (Teams 1-4, then random, then no team), so players[0] stays the host
-        playersHtml = [...players].sort((a, b) => teamRank(a) - teamRank(b)).map(p => {
+        // A copy in the in-game lobby's slot order (the server's slot; teams show as labels), so players[0] stays the host
+        playersHtml = [...players].sort((a, b) => (intIn(a.slot, 0, 255) ?? 255) - (intIn(b.slot, 0, 255) ?? 255)).map(p => {
             const wr = p.displayWR ? (String(p.displayWR).endsWith('%') ? p.displayWR : p.displayWR + '%') : 'N/A';
             let statsHtml = `${esc(p.displayGames)} Games, ${esc(wr)} WR`;
 
@@ -368,6 +369,7 @@ function parseRelicLobby(match) {
         isPlaying: !!match.isPlaying,
         lastSeen: match.lastSeen,
         createdTime: intIn(match.createdTime, 1, Number.MAX_SAFE_INTEGER),
+        modId: intIn(match.modId, 1, 999999999), // the data mod's id (the Mods section finds a mod's lobbies by it)
         rawPlayers: players
     };
 }
@@ -376,10 +378,6 @@ function parseRelicLobby(match) {
 function lobbyTeamOf(p) {
     const team = intIn(p.team, 1, 4);
     return team !== null ? team : p.randomTeam === true ? '?' : null;
-}
-function teamRank(p) {
-    const t = lobbyTeamOf(p);
-    return typeof t === 'number' ? t : t === '?' ? 5 : 6;
 }
 function teamPrefixHtml(p) {
     const t = lobbyTeamOf(p);
@@ -443,6 +441,7 @@ function showLobbyList(matches) {
     const first = isInitialLoad;
     isInitialLoad = false;
     if (state.currentView === 'maps') renderMapsLive();
+    renderMods(); // which of pv's mods the open lobbies use
     // Spectate shows no lobbies; the Maps view only where a listed player is in a lobby now
     if (!first && state.currentView === 'spectate') return;
     if (!first && state.currentView === 'maps' && mapsLobbyKey(shownMapPlayers()) === mapsLobbyKeyShown) return;
@@ -1671,6 +1670,120 @@ function renderMaps(players) {
     }).join('') + (mapPlayersMatched > players.length
         ? `<div class="spectate-more"><button type="button" class="clear-filters-btn" data-action="show-more-map-players"${mapPlayersPending ? ' disabled' : ''}>${mapPlayersPending === 'more' ? 'Loading&hellip;' : `Show more (${(mapPlayersMatched - players.length).toLocaleString()} more)`}</button></div>`
         : '');
+}
+
+// ---------------------------------------------------------------- Mods: pv's published mods (the right-hand section)
+// /api/mods gives the mods as pv's My Mods page on ageofempires.com listed them (the server's pv-mods.json; the mod site
+// needs a sign-in, so its numbers are as of readAt) and the games in progress using each. The lobbies using one are found
+// here, in the live lobby list (by Relic's mod id, else the data mod's name), so they follow every lobby update.
+const MODS_REFRESH_MS = 120000; // for the games in progress (the server's snapshot moves on about once a minute)
+let modsData = null; // { author, readAt, mods }
+let modsKey = null;
+
+async function fetchMods() {
+    try {
+        const data = await fetch('/api/mods').then(r => r.json());
+        if (data && Array.isArray(data.mods)) {
+            modsData = {
+                author: typeof data.author === 'string' && data.author ? data.author : 'pv',
+                readAt: typeof data.readAt === 'string' ? data.readAt : null,
+                mods: data.mods.filter(m => m && intIn(m.id, 1, 999999999) && typeof m.name === 'string').map(m => ({
+                    id: m.id, name: m.name, summary: typeof m.summary === 'string' ? m.summary : '',
+                    tag: typeof m.tag === 'string' ? m.tag : null, version: typeof m.version === 'string' ? m.version : null,
+                    created: typeof m.created === 'string' ? m.created : null, updated: typeof m.updated === 'string' ? m.updated : null,
+                    fileSize: intIn(m.fileSize, 0, Number.MAX_SAFE_INTEGER), downloads: intIn(m.downloads, 0, Number.MAX_SAFE_INTEGER) ?? 0,
+                    installs: intIn(m.installs, 0, Number.MAX_SAFE_INTEGER) ?? 0, ratings: intIn(m.ratings, 0, Number.MAX_SAFE_INTEGER) ?? 0,
+                    // Only this site's own thumbnail copies and the mod's page on ageofempires.com are ever linked
+                    thumb: typeof m.thumb === 'string' && /^\/mod-thumbs\/\d{1,9}\.jpg$/.test(m.thumb) ? m.thumb : null,
+                    link: `https://www.ageofempires.com/mods/details/${m.id}/`,
+                    games: (Array.isArray(m.games) ? m.games : []).map(mapPlayerGame).filter(Boolean)
+                }))
+            };
+            modsKey = null;
+            renderMods();
+        }
+    } catch (e) {
+        console.warn('Could not load the mods:', e);
+    }
+    setTimeout(fetchMods, MODS_REFRESH_MS);
+}
+
+// The pv mod a lobby uses: by Relic's mod id, else its data mod text ("<id>_<name>", or the exact name; a name two mods
+// share goes to the one with more downloads)
+function modIdOfLobby(lobby, byName) {
+    if (lobby.modId && modsData.mods.some(m => m.id === lobby.modId)) return lobby.modId;
+    const text = typeof lobby.modInfo === 'string' ? lobby.modInfo.trim() : '';
+    if (!text || text === 'No Mods') return null;
+    const byId = /^(\d{1,9})[_\- ]/.exec(text);
+    if (byId && modsData.mods.some(m => m.id === Number(byId[1]))) return Number(byId[1]);
+    return byName.get(text.toLowerCase()) ?? null;
+}
+
+function shortDate(iso) {
+    const d = iso ? new Date(iso) : null;
+    return d && !isNaN(d) ? d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+}
+
+function renderMods() {
+    const aside = document.getElementById('mods');
+    if (!aside || !modsData || matchPageId) return;
+    const byName = new Map();
+    for (const m of [...modsData.mods].sort((a, b) => a.downloads - b.downloads)) byName.set(m.name.trim().toLowerCase(), m.id);
+    const inLobbies = new Map(); // mod id -> open lobbies using it
+    for (const l of lobbies) {
+        const id = modIdOfLobby(l, byName);
+        if (!id) continue;
+        if (!inLobbies.has(id)) inLobbies.set(id, []);
+        inLobbies.get(id).push(l);
+    }
+    const mods = modsData.mods.map(m => ({ ...m, lobbies: inLobbies.get(m.id) || [] }))
+        .sort((a, b) => (b.lobbies.length + b.games.length > 0) - (a.lobbies.length + a.games.length > 0) || b.downloads - a.downloads);
+    const key = JSON.stringify(mods.map(m => [m.id, m.lobbies.map(l => [l.id, l.title, l.currentPlayers, l.maxPlayers, l.isPlaying]), m.games.map(g => g.id)]));
+    if (key === modsKey) return;
+    modsKey = key;
+    const total = modsData.mods.reduce((n, m) => n + m.downloads, 0);
+    document.getElementById('modsTitle').textContent = `Mods by ${modsData.author}`;
+    document.getElementById('modsSub').textContent = `${modsData.mods.length} published ${modsData.mods.length === 1 ? 'mod' : 'mods'} · ${total.toLocaleString()} downloads`;
+    // A lobby update redraws the list: the Details a visitor opened stay open
+    const list = document.getElementById('modsList');
+    const open = new Set([...list.querySelectorAll('details[open]')].map(d => d.dataset.modId));
+    list.innerHTML = mods.map(modItemHtml).join('');
+    for (const d of list.querySelectorAll('details')) if (open.has(d.dataset.modId)) d.open = true;
+    document.getElementById('modsNote').textContent = `Numbers from ageofempires.com${modsData.readAt ? ` on ${shortDate(modsData.readAt)}` : ''}. A mod's page there needs a free sign-in.`;
+    aside.hidden = mods.length === 0;
+    document.getElementById('navModsLink').hidden = mods.length === 0;
+}
+
+function modItemHtml(m) {
+    const link = esc(m.link);
+    const facts = [m.tag, m.version && `v${m.version}`, m.fileSize && `${(m.fileSize / 1048576).toFixed(1)} MB`,
+        `${m.installs.toLocaleString()} installs`, m.ratings ? `${m.ratings} ${m.ratings === 1 ? 'rating' : 'ratings'}` : '',
+        m.created && `created ${shortDate(m.created)}`, `ID ${m.id}`].filter(Boolean).map(esc).join(' · ');
+    const live = [];
+    for (const l of m.lobbies.slice(0, 3)) {
+        const joinable = !l.isPlaying && isMatchId(l.id);
+        live.push(`<div class="mod-live-row"><span class="mod-live-dot" aria-hidden="true"></span><span class="mod-live-text">Lobby: ${esc(l.title)} (${l.isPlaying ? 'full' : `${esc(l.currentPlayers)}/${esc(l.maxPlayers)}`})</span>` +
+            (joinable ? `<a class="mod-live-btn" href="aoe2de://0/${esc(l.id)}">Join</a>` : '') + '</div>');
+    }
+    for (const g of m.games.slice(0, 3)) {
+        live.push(`<div class="mod-live-row"><span class="mod-live-dot mod-live-game" aria-hidden="true"></span><span class="mod-live-text">Game on ${esc(g.map)}, ${minutesAgo(g.startTime).replace(/^Started/, 'started')}</span>` +
+            `<a class="mod-live-btn" href="aoe2de://1/${esc(g.id)}" title="Opens Age of Empires II: DE as a spectator">Spectate</a></div>`);
+    }
+    const moreLive = m.lobbies.length + m.games.length - live.length;
+    if (moreLive > 0) live.push(`<div class="mod-live-row mod-live-more">and ${moreLive} more</div>`);
+    const paragraphs = m.summary.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).map(p => `<p>${esc(p)}</p>`).join('');
+    return `
+        <article class="mod-item">
+            <div class="mod-head">
+                ${m.thumb ? `<a class="mod-thumb" href="${link}" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true"><img src="${esc(m.thumb)}" alt="" width="96" height="54" loading="lazy"></a>` : ''}
+                <div class="mod-head-text">
+                    <a class="mod-name" href="${link}" target="_blank" rel="noopener noreferrer" title="Open on ageofempires.com">${esc(m.name)}</a>
+                    <div class="mod-meta">&#x2B07; ${m.downloads.toLocaleString()}${m.updated ? ` · updated ${esc(shortDate(m.updated))}` : ''}</div>
+                </div>
+            </div>
+            ${live.length ? `<div class="mod-live">${live.join('')}</div>` : ''}
+            ${paragraphs ? `<details class="mod-details" data-mod-id="${m.id}"><summary>Details</summary>${paragraphs}<div class="mod-facts">${facts}</div></details>` : ''}
+        </article>`;
 }
 
 // ---------------------------------------------------------------- Spectate: games in progress

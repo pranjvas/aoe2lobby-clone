@@ -2231,3 +2231,202 @@ button.civ-chip {
         display: none;
     }
 }
+
+/* The lists, with pv's mods to their right on wide screens (below them on narrow ones) */
+.page-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2rem;
+    align-items: start;
+}
+
+@media (min-width: 1280px) {
+    .page-columns {
+        grid-template-columns: minmax(0, 1fr) 340px;
+    }
+    .mods-aside {
+        position: sticky;
+        top: 1rem;
+        max-height: calc(100vh - 2rem);
+        overflow-y: auto;
+    }
+}
+
+.match-mode .page-columns {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.match-mode .mods-aside,
+.match-mode .nav-mods-link {
+    display: none;
+}
+
+.nav-mods-link {
+    margin-left: auto;
+    padding: 0.45rem 0.9rem;
+    border: 1px solid var(--gold-dim);
+    border-radius: 8px;
+    color: var(--gold-primary);
+    font-weight: 600;
+    font-size: 0.9rem;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.nav-mods-link:hover,
+.nav-mods-link:focus-visible {
+    background: rgba(212, 175, 55, 0.1);
+}
+
+.nav-mods-link[hidden],
+.mods-aside[hidden] {
+    display: none;
+}
+
+.mods-aside {
+    padding: 1.25rem;
+    margin-bottom: 2rem;
+}
+
+.mods-title {
+    margin: 0;
+    font-size: 1.15rem;
+    color: var(--gold-primary);
+}
+
+.mods-sub,
+.mods-note {
+    margin: 0.35rem 0 0;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.mods-note {
+    margin-top: 1rem;
+}
+
+.mods-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+.mod-item {
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.mod-head {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+}
+
+.mod-thumb img {
+    display: block;
+    width: 96px;
+    height: 54px;
+    object-fit: cover;
+    border-radius: 6px;
+}
+
+.mod-head-text {
+    min-width: 0;
+}
+
+.mod-name {
+    display: block;
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 0.9rem;
+    line-height: 1.3;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
+.mod-name:hover,
+.mod-name:focus-visible {
+    color: var(--gold-primary);
+    text-decoration: underline;
+}
+
+.mod-meta {
+    margin-top: 0.25rem;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+}
+
+.mod-live {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.6rem;
+}
+
+.mod-live-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.78rem;
+    color: var(--text-primary);
+}
+
+.mod-live-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #2ea043;
+}
+
+.mod-live-dot.mod-live-game {
+    background: #5865f2;
+}
+
+.mod-live-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mod-live-btn {
+    flex: none;
+    margin-left: auto;
+    padding: 0.15rem 0.6rem;
+    border: 1px solid var(--gold-dim);
+    border-radius: 6px;
+    color: var(--gold-primary);
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.mod-live-more {
+    color: var(--text-secondary);
+}
+
+.mod-details {
+    margin-top: 0.6rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.mod-details > summary {
+    cursor: pointer;
+    color: var(--gold-primary);
+    font-weight: 600;
+}
+
+.mod-details p {
+    margin: 0.5rem 0 0;
+    line-height: 1.45;
+}
+
+.mod-facts {
+    margin-top: 0.5rem;
+    font-size: 0.75rem;
+    opacity: 0.85;
+}

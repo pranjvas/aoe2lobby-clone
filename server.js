@@ -291,10 +291,12 @@ function parseSlotInfo(slotinfoBase64) {
         const arr = JSON.parse(decompressed.substring(bracketIndex, lastBracketIndex + 1));
         if (!Array.isArray(arr)) return none;
         const slots = arr.filter(p => p && typeof p === 'object');
-        const players = slots.filter(p => p['profileInfo.id'] !== -1).map(p => {
+        // slot: the player's place in the list, which is the order the game's own lobby shows its slots in
+        const players = slots.map((p, slot) => ({ p, slot })).filter(({ p }) => p['profileInfo.id'] !== -1).map(({ p, slot }) => {
             const meta = slotMeta(p.metaData);
             return {
                 id: p['profileInfo.id'],
+                slot,
                 teamCode: /^\d$/.test(meta.Team || '') ? Number(meta.Team) : null,
                 civCode: /^\d{1,9}$/.test(meta['1'] || '') ? meta['1'] : null
             };
@@ -1943,7 +1945,8 @@ function buildLobbies(requested = new Set()) {
                 // The team as Relic's slot has it now, else as aoe2lobby.com last listed it
                 id: p.id, name, ...lobbyTeam(p.teamCode ?? lp?.team ?? null), elo: cached ? cached.rating : null,
                 totalGames: cached?.totalGames || 0, totalWins: cached?.totalWins || 0, winRate: cached?.winRate ? String(cached.winRate).replace(/%?$/, '%') : "0.0%",
-                steamProfile, civ: rawCiv ? civLabel(rawCiv) : null, civRor: ROR_SHARED_LABELS.has(rawCiv), statsPending: false // set by markPendingStats
+                steamProfile, civ: rawCiv ? civLabel(rawCiv) : null, civRor: ROR_SHARED_LABELS.has(rawCiv), statsPending: false, // set by markPendingStats
+                slot: p.slot // the in-game lobby's order (the list itself has the host first)
             };
         });
         hostFirst(parsedPlayers, hostId);
@@ -2012,7 +2015,8 @@ function buildLobbies(requested = new Set()) {
         });
         // Relic gave no slot info: show aoe2lobby.com's players for this lobby instead
         if (parsedPlayers.length === 0 && sm) {
-            parsedPlayers.push(...hostFirst(sm.players.map(p => playerFromScraped(p, scrapedPlayers, targetMode, now)), sm.hostProfileId));
+            // scraper.js lists them in slot order: that is their slot
+            parsedPlayers.push(...hostFirst(sm.players.map((p, slot) => ({ ...playerFromScraped(p, scrapedPlayers, targetMode, now), slot })), sm.hostProfileId));
         }
 
         return {
@@ -2023,6 +2027,8 @@ function buildLobbies(requested = new Set()) {
             matchType: matchType,
             mapSize: mapSize,
             modInfo: modInfo,
+            // Relic's id of the data mod (option 59; 0 or none: no mod), so a mod's lobbies can be found by id
+            modId: /^\d{1,9}$/.test(opts['59'] || '') && opts['59'] !== '0' ? Number(opts['59']) : null,
             population: population,
             speed: speed,
             startingAge: startingAge,
@@ -2059,7 +2065,7 @@ function buildLobbies(requested = new Set()) {
         const s = lobby.settings;
         const map = mapDisplayName(lobby.map);
         const ladder = ladderFor(s.Mode, map, lobby.slotsTotal);
-        const parsedPlayers = hostFirst(lobby.players.map(p => playerFromScraped(p, scrapedPlayers, ladder, now)), lobby.hostProfileId);
+        const parsedPlayers = hostFirst(lobby.players.map((p, slot) => ({ ...playerFromScraped(p, scrapedPlayers, ladder, now), slot })), lobby.hostProfileId);
 
         allMatchesArray.push({
             id,
@@ -2453,6 +2459,55 @@ async function serveMapPlayers(res, query) {
     }
 }
 
+// --- pv's mods (the page's Mods section) --------------------------------------------------------------------------------
+// pv-mods.json lists pv's published mods as their My Mods page on ageofempires.com showed them (read once, by hand: since
+// late Nov 2026 the mod site and its API answer only signed-in visitors, so nothing here fetches them, and the numbers are
+// as of readAt). The thumbnails are small copies in mod-thumbs/ (the page's CSP allows images from this site only).
+// /api/mods adds the games in progress using each mod, from the Spectate view's snapshot as cached (not refreshed for
+// this); the page finds the lobbies using them itself, in the live list, by Relic's mod id (each lobby's modId).
+const PV_MODS_PATH = path.join(__dirname, 'pv-mods.json');
+let pvMods = { author: 'pv', readAt: null, mods: [] };
+try {
+    const saved = JSON.parse(fs.readFileSync(PV_MODS_PATH, 'utf8'));
+    const mods = (saved && Array.isArray(saved.mods) ? saved.mods : [])
+        .filter(m => m && Number.isSafeInteger(m.id) && m.id > 0 && str(m.name))
+        .map(m => ({
+            id: m.id, name: m.name, summary: str(m.summary) || '', tag: str(m.tag), version: str(m.version),
+            created: str(m.created), updated: str(m.updated), fileSize: num(m.fileSize),
+            downloads: num(m.downloads, 0), installs: num(m.installs, 0), likes: num(m.likes, 0), ratings: num(m.ratings, 0),
+            link: `https://www.ageofempires.com/mods/details/${m.id}/`,
+            thumb: fs.existsSync(path.join(__dirname, 'mod-thumbs', `${m.id}.jpg`)) ? `/mod-thumbs/${m.id}.jpg` : null
+        }));
+    for (const m of mods) if (m.thumb) PUBLIC_FILES.add(m.thumb);
+    pvMods = { author: str(saved.author) || 'pv', readAt: str(saved.readAt), mods };
+} catch (e) { if (e.code !== 'ENOENT') console.error('Error reading pv-mods.json:', e.message); }
+const pvModIds = new Set(pvMods.mods.map(m => m.id));
+const pvModByName = new Map(); // lower-case name -> id; a name two mods share goes to the one with more downloads
+for (const m of [...pvMods.mods].sort((a, b) => a.downloads - b.downloads)) pvModByName.set(m.name.trim().toLowerCase(), m.id);
+
+// The pv mod a lobby's or game's data mod text names: "<id>_<name>" (and "<id>-", "<id> ") by id, else the exact name
+function pvModIdFor(text) {
+    if (typeof text !== 'string' || !text.trim()) return null;
+    const t = text.trim();
+    const byId = /^(\d{1,9})[_\- ]/.exec(t);
+    if (byId && pvModIds.has(Number(byId[1]))) return Number(byId[1]);
+    return pvModByName.get(t.toLowerCase()) ?? null;
+}
+
+function serveMods(res) {
+    const games = new Map(); // mod id -> games in progress using it
+    if (spectateFresh(spectateCache)) {
+        for (const g of spectateCache.games.values()) {
+            const id = pvModIdFor(g.modInfo);
+            if (!id) continue;
+            if (!games.has(id)) games.set(id, []);
+            games.get(id).push({ id: g.id, map: g.map, title: g.title, startTime: g.startTime, observerDelay: g.observerDelay,
+                players: g.players.filter(p => p.kind === 'human').length });
+        }
+    }
+    answerJson(res, 200, { author: pvMods.author, readAt: pvMods.readAt, mods: pvMods.mods.map(m => ({ ...m, games: games.get(m.id) || [] })) });
+}
+
 // --- Map pages (map-pages.js): /maps/, /maps/<slug>, the sitemap, and the home page's links to busy maps -------------
 // Server-rendered, so search engines read them without the site's script. Each answer is kept PAGE_CACHE_MS.
 const MapPages = require('./map-pages');
@@ -2660,6 +2715,10 @@ async function handleRequest(req, res) {
         serveMapList(res);
         return;
     }
+    if (pathname === '/api/mods') {
+        serveMods(res);
+        return;
+    }
     if (pathname === '/api/maps/players') {
         serveMapPlayers(res, query).catch(e => console.error('Map players request failed:', e.message));
         return;
@@ -2742,7 +2801,7 @@ async function handleRequest(req, res) {
         '.css': 'text/css',
         '.json': 'application/json',
         '.png': 'image/png',
-        '.jpg': 'image/jpg',
+        '.jpg': 'image/jpeg',
         '.gif': 'image/gif',
         '.svg': 'image/svg+xml',
         '.wav': 'audio/wav',

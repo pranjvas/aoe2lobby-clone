@@ -25,6 +25,11 @@ civs never has them decoded. When the scraped files go stale (aoe2lobby.com's fe
 is; ratings and created times are then partly missing, the stream and `/api/lobbies` say `feed: false`, and the page shows
 a notice.
 
+The Mods section lists pv's published mods from `pv-mods.json`, with small thumbnails in `mod-thumbs/<id>.jpg` (the page's
+CSP allows images from this site only). The mod site and its API answer only signed-in visitors, so the file is updated by
+hand from pv's My Mods page on ageofempires.com; `/api/mods` adds the games in progress using each mod, and the page finds
+the lobbies using one in the live list by Relic's mod id.
+
 Both name the page version (`app.js?v=` in `index.html`). A page opened before a deploy sees a different one when its
 stream reconnects after the restart and reloads itself, so bump `?v=` whenever `app.js` changes.
 
