@@ -55,6 +55,7 @@ const PLAYER_SEEN_FORGET_MS = 10 * 60 * 1000;
 const playerSeen = new Map(); // profile id -> { first, last }: our builds' view of the player's current stay
 const lastRatings = new Map(); // profile id -> the last ratings aoe2lobby.com sent, kept while playerSeen has the player
 const activeMatches = new Map(); // Keep track of matches to simulate "Playing" state
+let relicReadOnce = false; // a lobby first seen in a later read was created about then (see firstSeen)
 
 // Scraped files (written by scraper.js) older than this are ignored: the scraper rewrites them every ~15 s while it has live data
 const SCRAPED_LOBBIES_PATH = path.join(__dirname, 'scraped_lobbies_v2.json');
@@ -276,33 +277,43 @@ async function fetchProfilesBatch(ids) {
     }
 }
 
-function parseSlotInfoIds(slotinfoBase64) {
+// A Relic lobby's slots (slotinfo: base64 of zlib of text holding a JSON array, one entry per slot). players: the human
+// players, with their team code and civ code from the slot's metaData. total: the slots a player can take (status 0, open or
+// taken; 1 is closed, 2 an AI), which is aoe2lobby.com's slots_total; ai: the AI slots. 8 of 8 lobbies agreed on 27 Nov 2026.
+function parseSlotInfo(slotinfoBase64) {
+    const none = { players: [], total: null, ai: null };
     try {
         const buffer = Buffer.from(slotinfoBase64, 'base64');
         const decompressed = zlib.inflateSync(buffer, { maxOutputLength: 256 * 1024 }).toString('utf-8');
         const bracketIndex = decompressed.indexOf('[');
         const lastBracketIndex = decompressed.lastIndexOf(']');
-        if (bracketIndex !== -1 && lastBracketIndex !== -1) {
-            const jsonStr = decompressed.substring(bracketIndex, lastBracketIndex + 1);
-            const arr = JSON.parse(jsonStr);
-            return arr.filter(p => p && p['profileInfo.id'] !== -1).map(p => ({
+        if (bracketIndex === -1 || lastBracketIndex === -1) return none;
+        const arr = JSON.parse(decompressed.substring(bracketIndex, lastBracketIndex + 1));
+        if (!Array.isArray(arr)) return none;
+        const slots = arr.filter(p => p && typeof p === 'object');
+        const players = slots.filter(p => p['profileInfo.id'] !== -1).map(p => {
+            const meta = slotMeta(p.metaData);
+            return {
                 id: p['profileInfo.id'],
-                teamCode: slotTeamCode(p.metaData)
-            }));
-        }
-    } catch(e) {}
-    return [];
+                teamCode: /^\d$/.test(meta.Team || '') ? Number(meta.Team) : null,
+                civCode: /^\d{1,9}$/.test(meta['1'] || '') ? meta['1'] : null
+            };
+        });
+        return { players, total: slots.filter(p => p.status === 0).length, ai: slots.filter(p => p.status === 2).length };
+    } catch (e) { }
+    return none;
 }
 
 // A Relic slot's metaData: base64 of a JSON string holding base64 of [pair count] then [uint32 LE length][text] for each
-// key and value. Its "Team" is the team the lobby shows, in the codes aoe2lobby.com's slots use (see displayTeam): 223 of
-// 229 players agreed with aoe2lobby.com on 25 Nov 2026, the rest having just switched. The slot's teamID is not the
-// lobby's team: it is 0 for nearly everyone. Returns the code, or null.
-function slotTeamCode(metaData) {
-    if (typeof metaData !== 'string' || !metaData || metaData.length > 4096) return null;
+// key and value, as a null-prototype object. "Team" is the team the lobby shows, in the codes aoe2lobby.com's slots use (see
+// displayTeam): 223 of 229 players agreed with aoe2lobby.com on 25 Nov 2026, the rest having just switched (the slot's
+// teamID is 0 for nearly everyone). "1" is the civ in the game's numbering (see RELIC_CODE_FIELDS).
+function slotMeta(metaData) {
+    const out = Object.create(null);
+    if (typeof metaData !== 'string' || !metaData || metaData.length > 4096) return out;
     try {
         const inner = JSON.parse(Buffer.from(metaData, 'base64').toString('utf8'));
-        if (typeof inner !== 'string') return null;
+        if (typeof inner !== 'string') return out;
         const buf = Buffer.from(inner, 'base64');
         let i = 1;
         const text = () => {
@@ -314,13 +325,13 @@ function slotTeamCode(metaData) {
             i += len;
             return s;
         };
-        for (let n = 0; n < buf[0]; n++) {
+        for (let n = 0; n < buf[0] && n < 32; n++) {
             const key = text(), value = text();
             if (key === null || value === null) break;
-            if (key === 'Team') return /^\d$/.test(value) ? Number(value) : null;
+            if (key.length <= 40 && value.length <= 40) out[key] = value;
         }
     } catch (e) { }
-    return null;
+    return out;
 }
 
 // A lobby player's team from a team code: Teams 1-4 (displayTeam), or none; randomTeam for "?" (0 or 6: the game picks)
@@ -1325,44 +1336,98 @@ const mapDictionary = Object.assign(Object.create(null), {
 });
 const GENERIC_MAPS = ["unknown map", "my map", "custom map", ""];
 
-// Map names from Relic's own lobby data, for lobbies aoe2lobby.com doesn't describe (its feed down, as for 17 hours on
-// 26-27 Nov 2026, when nearly every lobby showed Relic's "my map"). Relic's options give the map's id (10) or, for a custom
-// map (-2), its file name (11). aoe2lobby.com numbers maps its own way, so each id's name is learned from lobbies both feeds
-// list, once one has shown the same id and name for RELIC_MAP_LEARN_MS (a host changing the map reaches the two feeds a
-// few seconds apart, and that mix is never learned). Kept in relic_map_ids.json across restarts (deploy/push.sh keeps it).
-const RELIC_MAP_IDS_PATH = path.join(__dirname, 'relic_map_ids.json');
-const RELIC_MAP_LEARN_MS = 15000;
-const RELIC_MAP_SAVE_MS = 60000;
-const relicMapNames = Object.create(null); // Relic map id -> aoe2lobby.com's name for it
+// --- Lobby fields straight from Relic, decoded with code tables learned from aoe2lobby.com ------------------------------
+// aoe2lobby.com's page shows only what its server pushes (wss://data.aoe2lobby.com/ws/lobby/: the whole list, then whole
+// lobbies upserted, removals and ratings; read from its main bundle on 27 Nov 2026), and its server builds every lobby field
+// from Relic's own list, a median 3-4 s after Relic has it. Each field is a Relic lobby option or slot value in another
+// numbering; on 27 Nov 2026 all 54 lobbies agreed: option 10 the map, 5 the game mode, 8 the map size, 0 the starting age,
+// 37 the resources (aoe2lobby.com also reports custom resources, which no single option shows), 57 the treaty in minutes,
+// 28 the population, 41 the speed, 7 whether the lobby is full, 85 whether civs are hidden; and a slot's metaData "1" its civ
+// (111 of 122 players; the rest had just changed civ). Relic's codes are learned per field: once a lobby (or a player's
+// slot) has shown the same Relic code and aoe2lobby.com label for RELIC_LEARN_MS, that pair counts once, and a code decodes to
+// the label most lobbies showed with it. A host changing a setting reaches the two feeds seconds apart, and that mix never
+// lasts long enough to count. The counts are kept in relic_codes.json (deploy/push.sh keeps it).
+// Merging (mergeRelicField): aoe2lobby.com's label is exact, so it is shown, except while Relic's code has changed within
+// A2L_CATCH_UP_MS and decodes to another label: aoe2lobby.com hasn't caught up yet, and the change shows within a second. A
+// lobby aoe2lobby.com doesn't list (just created, or its feed down) gets the decoded values alone.
+const RELIC_CODES_PATH = path.join(__dirname, 'relic_codes.json');
+const RELIC_MAP_IDS_PATH = path.join(__dirname, 'relic_map_ids.json'); // the first map table, read into relic_codes.json once
+const RELIC_CODE_FIELDS = ['map', 'mode', 'size', 'age', 'resources', 'civ'];
+const RELIC_LEARN_MS = 15000;
+const A2L_CATCH_UP_MS = 12000; // aoe2lobby.com trails Relic by a median 3-4 s, 6.5 s at the 90th percentile
+const RELIC_CODES_SAVE_MS = 60000;
+const RELIC_CODE_COUNT_MAX = 1000; // past this a code's counts are halved, so a later label can still win
+const relicCodes = Object.create(null); // field -> Relic code -> label -> how many lobbies showed the pair
+for (const field of RELIC_CODE_FIELDS) relicCodes[field] = Object.create(null);
+const okRelicCode = c => typeof c === 'string' && /^-?\d{1,9}$/.test(c);
+const okCodeLabel = l => typeof l === 'string' && l.length > 0 && l.length <= 200 && l !== 'Unknown'; // "Unknown" names no code
+function addRelicCode(field, code, label, n) {
+    if (!okRelicCode(code) || !okCodeLabel(label) || !Number.isSafeInteger(n) || n <= 0) return;
+    const labels = relicCodes[field][code] || (relicCodes[field][code] = Object.create(null));
+    labels[label] = Math.min(RELIC_CODE_COUNT_MAX, (labels[label] || 0) + n);
+}
 try {
-    const saved = JSON.parse(fs.readFileSync(RELIC_MAP_IDS_PATH, 'utf8'));
-    if (saved && typeof saved === 'object') {
-        for (const [id, name] of Object.entries(saved)) if (/^\d{1,9}$/.test(id) && typeof name === 'string' && name && name.length <= 200) relicMapNames[id] = name;
+    const saved = JSON.parse(fs.readFileSync(RELIC_CODES_PATH, 'utf8'));
+    for (const field of RELIC_CODE_FIELDS) {
+        const table = saved && typeof saved === 'object' ? saved[field] : null;
+        if (!table || typeof table !== 'object') continue;
+        for (const [code, labels] of Object.entries(table)) {
+            if (labels && typeof labels === 'object') for (const [label, n] of Object.entries(labels)) addRelicCode(field, code, label, n);
+        }
     }
-} catch (e) { if (e.code !== 'ENOENT') console.error('Error reading relic_map_ids.json:', e.message); }
-const relicMapPairs = new Map(); // lobby id -> { key: "<map id>|<name>", since }: what it shows in both feeds, and since when
-let relicMapNamesDirty = false, relicMapNamesSavedAt = 0;
+} catch (e) { if (e.code !== 'ENOENT') console.error('Error reading relic_codes.json:', e.message); }
+if (!Object.keys(relicCodes.map).length) {
+    try {
+        const saved = JSON.parse(fs.readFileSync(RELIC_MAP_IDS_PATH, 'utf8'));
+        if (saved && typeof saved === 'object') for (const [id, name] of Object.entries(saved)) addRelicCode('map', id, name, 1);
+    } catch (e) { if (e.code !== 'ENOENT') console.error('Error reading relic_map_ids.json:', e.message); }
+}
+const relicLobbyFields = new Map(); // lobby id -> Map(field key -> { code, codeSince, pair, pairSince, counted })
+let relicCodesDirty = false, relicCodesSavedAt = 0;
 
-// A lobby both feeds describe: learn its map id's name once the pair has held for RELIC_MAP_LEARN_MS
-function learnRelicMap(m, scrapedMap, now) {
-    const id = m.relicMapId;
-    if (!id || !/^\d+$/.test(id) || typeof scrapedMap !== 'string' || !scrapedMap || scrapedMap.length > 200) {
-        relicMapPairs.delete(m.id);
-        return;
-    }
-    const key = id + '|' + scrapedMap;
-    const pair = relicMapPairs.get(m.id);
-    if (!pair || pair.key !== key) { relicMapPairs.set(m.id, { key, since: now }); return; }
-    if (now - pair.since < RELIC_MAP_LEARN_MS || relicMapNames[id] === scrapedMap) return;
-    relicMapNames[id] = scrapedMap;
-    relicMapNamesDirty = true;
+// The label most lobbies showed with this code, or undefined
+function relicDecode(field, code) {
+    const labels = okRelicCode(code) ? relicCodes[field][code] : undefined;
+    if (!labels) return undefined;
+    let best, most = 0;
+    for (const [label, n] of Object.entries(labels)) if (n > most) { best = label; most = n; }
+    return best;
 }
 
-function saveRelicMapNames(now) {
-    if (!relicMapNamesDirty || now - relicMapNamesSavedAt < RELIC_MAP_SAVE_MS) return;
-    relicMapNamesDirty = false;
-    relicMapNamesSavedAt = now;
-    writeJsonAtomic(RELIC_MAP_IDS_PATH, relicMapNames);
+function learnRelicCode(st, field, code, label, now) {
+    if (!okRelicCode(code) || !okCodeLabel(label)) return;
+    const pair = code + '\u0000' + label;
+    if (st.pair !== pair) { st.pair = pair; st.pairSince = now; st.counted = false; return; }
+    if (st.counted || now - st.pairSince < RELIC_LEARN_MS) return;
+    st.counted = true;
+    const labels = relicCodes[field][code] || (relicCodes[field][code] = Object.create(null));
+    labels[label] = (labels[label] || 0) + 1;
+    if (labels[label] > RELIC_CODE_COUNT_MAX) for (const l of Object.keys(labels)) labels[l] = Math.floor(labels[l] / 2);
+    relicCodesDirty = true;
+}
+
+// One field of one lobby (key: the field, or "civ:<profile id>"): the value to show, from Relic's code (decoded through the
+// field's table, or passed as decoded) and aoe2lobby.com's label (undefined when it has none). A lobby's first code doesn't
+// count as a change, so aoe2lobby.com's label wins as soon as it has one. learn: false for a pair that says nothing about
+// the code's meaning (a custom map's file, a hidden civ).
+function mergeRelicField(lobbyId, key, field, code, a2lLabel, now, { decoded, learn = true } = {}) {
+    let fields = relicLobbyFields.get(lobbyId);
+    if (!fields) relicLobbyFields.set(lobbyId, fields = new Map());
+    let st = fields.get(key);
+    if (!st) fields.set(key, st = { code, codeSince: 0, pair: null, pairSince: 0, counted: false });
+    else if (st.code !== code) { st.code = code; st.codeSince = now; }
+    if (decoded === undefined && field) decoded = relicDecode(field, code);
+    if (a2lLabel === undefined || a2lLabel === null) return decoded;
+    if (field && learn) learnRelicCode(st, field, code, String(a2lLabel), now);
+    if (decoded === undefined || decoded === null || String(decoded) === String(a2lLabel)) return a2lLabel;
+    return now - st.codeSince < A2L_CATCH_UP_MS ? decoded : a2lLabel;
+}
+
+function saveRelicCodes(now) {
+    if (!relicCodesDirty || now - relicCodesSavedAt < RELIC_CODES_SAVE_MS) return;
+    relicCodesDirty = false;
+    relicCodesSavedAt = now;
+    writeJsonAtomic(RELIC_CODES_PATH, relicCodes);
 }
 
 // The map as Relic's data names it: a custom map's file name, a learned id's name, or else the id itself (the way
@@ -1372,7 +1437,8 @@ function relicMapName(m) {
     const id = m.relicMapId;
     if (id === '-2') return m.relicRms ? { name: m.relicRms, known: true } : null;
     if (!id || !/^\d+$/.test(id)) return null;
-    if (relicMapNames[id]) return { name: relicMapNames[id], known: true };
+    const learned = relicDecode('map', id);
+    if (learned) return { name: learned, known: true };
     return { name: id, known: !!own(mapNames, id) };
 }
 
@@ -1406,6 +1472,7 @@ function scrapedLobbyPlayer(p) {
     const team = num(p.team);
     return {
         name: str(p.name), profileId: profileIdOf(p.profileId), civ: civLabel(civ), civRor: ROR_SHARED_LABELS.has(civ), steamProfile: str(p.steamProfile), stats: cleanStats(p.stats),
+        rawCiv: civ, // the label as scraper.js wrote it (what Relic's civ codes are learned against)
         since: since !== null && since > 0 ? since : null,
         team: Number.isInteger(team) ? team : null // the slot's team code (lobby players only)
     };
@@ -1737,6 +1804,8 @@ async function pollRelic() {
                         trueMapName = mapDictionary[modHash];
                     }
                 }
+                // The options the lobby fields are decoded from (see "Lobby fields straight from Relic")
+                m.relicOptions = options;
                 // 10 = the map's id in the game's numbering (aoe2lobby.com numbers maps its own way), -2 for a custom
                 // map, whose file name is 11 (the name aoe2lobby.com shows for it). See relicMapName.
                 if (/^-?\d{1,9}$/.test(options['10'] || '')) m.relicMapId = options['10'];
@@ -1748,8 +1817,16 @@ async function pollRelic() {
         }
         m.mapname = trueMapName;
 
+        // When this server first saw the lobby: its created time while aoe2lobby.com has none (unknown for the lobbies of
+        // the first read after a start)
+        const prev = activeMatches.get(m.id);
+        m.firstSeen = prev ? prev.firstSeen : relicReadOnce ? now : null;
+
         if (typeof m.slotinfo === 'string' && m.slotinfo) {
-            m.rawPlayers = parseSlotInfoIds(m.slotinfo);
+            const slots = parseSlotInfo(m.slotinfo);
+            m.rawPlayers = slots.players;
+            m.relicSlotsTotal = slots.total;
+            m.relicAiSlots = slots.ai;
             m.rawPlayers.forEach(p => {
                 if (!isProfileId(p.id)) return;
                 const cached = profileCache.get(p.id);
@@ -1792,9 +1869,10 @@ async function pollRelic() {
     for (const [id, m] of activeMatches) {
         if (!currentMatchIds.has(id) && (complete || now - m.lastSeen > 2 * 60 * 1000)) {
             activeMatches.delete(id);
-            relicMapPairs.delete(id);
+            relicLobbyFields.delete(id);
         }
     }
+    relicReadOnce = true;
     // Forget profiles and Unranked ratings that no lobby has shown for a day
     for (const [id, p] of profileCache) {
         if (now - p.lastSeen > PROFILE_FORGET_MS) profileCache.delete(id);
@@ -1818,6 +1896,7 @@ function buildLobbies(requested = new Set()) {
     const allMatchesArray = Array.from(activeMatches.values()).map(m => {
         const sm = scrapedById.get(String(m.id));
         const hostId = hostIdOf(m);
+        const opts = m.relicOptions || {};
 
         const parsedPlayers = m.rawPlayers.map(p => {
             const cached = profileCache.get(p.id);
@@ -1827,13 +1906,18 @@ function buildLobbies(requested = new Set()) {
             const alias = cached && cached.alias !== 'Unknown' ? cached.alias : null;
             const name = alias || lp?.name || sp?.name || (cached ? cached.alias : 'Player_' + p.id);
             const steamProfile = sp?.steamProfile || lp?.steamProfile || cached?.steamProfile || null;
-            const civFrom = lp?.civ ? lp : sp?.civ ? sp : null;
-            const civ = civFrom ? civFrom.civ : null;
+            // The civ: Relic's slot code decoded and merged with aoe2lobby.com's label (see mergeRelicField), else the
+            // player's last label on aoe2lobby.com. A pick the lobby hides is never shown: with Relic's option 85 on (or
+            // aoe2lobby.com saying Hidden) it is Hidden, and codes are decoded only while Relic says civs are shown.
+            let rawCiv;
+            if (opts['85'] === '1' || lp?.rawCiv === 'Hidden') rawCiv = 'Hidden';
+            else if (opts['85'] === '0') rawCiv = mergeRelicField(m.id, 'civ:' + p.id, 'civ', p.civCode, lp?.rawCiv ?? undefined, now) ?? sp?.rawCiv ?? null;
+            else rawCiv = lp?.rawCiv ?? sp?.rawCiv ?? null;
             return {
                 // The team as Relic's slot has it now, else as aoe2lobby.com last listed it
                 id: p.id, name, ...lobbyTeam(p.teamCode ?? lp?.team ?? null), elo: cached ? cached.rating : null,
                 totalGames: cached?.totalGames || 0, totalWins: cached?.totalWins || 0, winRate: cached?.winRate ? String(cached.winRate).replace(/%?$/, '%') : "0.0%",
-                steamProfile, civ, civRor: !!(civFrom && civFrom.civRor), statsPending: false // set by markPendingStats
+                steamProfile, civ: rawCiv ? civLabel(rawCiv) : null, civRor: ROR_SHARED_LABELS.has(rawCiv), statsPending: false // set by markPendingStats
             };
         });
         hostFirst(parsedPlayers, hostId);
@@ -1846,40 +1930,39 @@ function buildLobbies(requested = new Set()) {
             if (trueName) finalMapName = trueName;
         }
 
-        let matchType = undefined;
-        let mapSize = undefined;
         let modInfo = m.modInfo || "No Mods";
-        let population = undefined;
-        let speed = undefined;
-        let startingAge = undefined;
-        let resources = undefined;
-        let treaty = undefined;
         let serverRegion = regionName(m.relayserver_region);
-
-        if (m.relicPopulation) population = m.relicPopulation;
-        if (m.relicSpeed) speed = m.relicSpeed;
-
-        const smMapUsable = sm && sm.map !== undefined && !GENERIC_MAPS.includes(String(sm.map).toLowerCase());
+        const s = sm ? sm.settings : {};
         if (sm) {
-            const s = sm.settings;
-            if (smMapUsable) finalMapName = sm.map;
-            if (sm.isPlaying !== undefined) m.isPlaying = sm.isPlaying;
-            if (s.Mode !== undefined) matchType = s.Mode;
-            if (s.Size !== undefined) mapSize = s.Size;
             modInfo = (s['Data Mod'] && s['Data Mod'] !== "None") ? s['Data Mod'] : "No Mods";
-            if (s.Population !== undefined) population = s.Population;
-            if (s.Speed !== undefined) speed = s.Speed;
-            if (s['Starting Age'] !== undefined) startingAge = s['Starting Age'];
-            if (s.Resources !== undefined) resources = s.Resources;
-            if (s.Treaty !== undefined) treaty = s.Treaty;
             if (!serverRegion && regionName(s.Server)) serverRegion = regionName(s.Server);
         }
 
-        // No usable map name from aoe2lobby.com: Relic's map id (or custom map file) names it, else a known map name in
-        // the title, else the bare id
-        if (smMapUsable) learnRelicMap(m, sm.map, now);
-        const relicMap = smMapUsable ? null : relicMapName(m);
-        if (relicMap?.known) finalMapName = relicMap.name;
+        // Each setting from Relic's options, decoded and merged with aoe2lobby.com's label (see mergeRelicField): a change
+        // shows within a second, and a lobby aoe2lobby.com doesn't list yet has its settings anyway. aoe2lobby.com's
+        // "Unknown" is an answer too (custom resources, say), so a decoded guess doesn't replace it for long.
+        const a2l = v => (v === undefined || v === null) ? undefined : v;
+        const minutes = v => /^\d{1,4}$/.test(v || '') ? Number(v) : undefined;
+        const matchType = mergeRelicField(m.id, 'mode', 'mode', opts['5'], a2l(s.Mode), now);
+        const mapSize = mergeRelicField(m.id, 'size', 'size', opts['8'], a2l(s.Size), now);
+        const startingAge = mergeRelicField(m.id, 'age', 'age', opts['0'], a2l(s['Starting Age']), now);
+        const resources = mergeRelicField(m.id, 'resources', 'resources', opts['37'], a2l(s.Resources), now);
+        const treaty = mergeRelicField(m.id, 'treaty', null, opts['57'], a2l(s.Treaty), now, { decoded: minutes(opts['57']) });
+        const population = mergeRelicField(m.id, 'population', null, opts['28'], a2l(s.Population), now, { decoded: m.relicPopulation || undefined });
+        const speed = mergeRelicField(m.id, 'speed', null, opts['41'], a2l(s.Speed), now, { decoded: m.relicSpeed || undefined });
+        // Option 7 is aoe2lobby.com's open_slots inverted (1: no open slot), which scraper.js reads as isPlaying
+        const full = mergeRelicField(m.id, 'full', null, opts['7'], sm ? sm.isPlaying : undefined, now,
+            { decoded: opts['7'] === '1' ? true : opts['7'] === '0' ? false : undefined });
+        m.isPlaying = full === true;
+
+        // The map: aoe2lobby.com's name, or Relic's map id (or custom map file) decoded while aoe2lobby.com has none or
+        // hasn't caught up with a change; else a known map name in the title, else the bare id
+        const smMapUsable = sm && sm.map !== undefined && !GENERIC_MAPS.includes(String(sm.map).toLowerCase());
+        const relicMap = relicMapName(m);
+        const mapCode = m.relicMapId === '-2' ? `-2|${m.relicRms || ''}` : m.relicMapId;
+        const mergedMap = mergeRelicField(m.id, 'map', 'map', mapCode, smMapUsable ? sm.map : undefined, now,
+            { decoded: relicMap?.known ? relicMap.name : undefined, learn: /^\d+$/.test(m.relicMapId || '') });
+        if (mergedMap !== undefined) finalMapName = mergedMap;
         const title = str(m.description);
         if (!smMapUsable && !relicMap?.known && title) {
             if (!titleMaps) titleMaps = knownTitleMaps();
@@ -1894,7 +1977,8 @@ function buildLobbies(requested = new Set()) {
         if (relicMap && !relicMap.known && GENERIC_MAPS.includes(String(finalMapName).toLowerCase())) finalMapName = relicMap.name;
 
         finalMapName = mapDisplayName(finalMapName);
-        const slotsTotal = (sm && sm.slotsTotal) || num(m.maxplayers);
+        // Relic's slots give the same counts as aoe2lobby.com's, sooner
+        const slotsTotal = m.relicSlotsTotal || (sm && sm.slotsTotal) || num(m.maxplayers);
         const targetMode = ladderFor(matchType, finalMapName, slotsTotal);
 
         parsedPlayers.forEach(p => {
@@ -1921,10 +2005,11 @@ function buildLobbies(requested = new Set()) {
             server: serverRegion,
             isPasswordProtected: m.passwordprotected === 1 || m.passwordprotected === true || (sm ? sm.password : false),
             maxPlayers: slotsTotal,
-            aiSlots: (sm && sm.aiSlots) || 0,
+            aiSlots: m.relicAiSlots ?? ((sm && sm.aiSlots) || 0),
             isPlaying: m.isPlaying === true,
             lastSeen: m.lastSeen,
-            createdTime: sm ? sm.createdTime : null, // only aoe2lobby.com's feed has it; Relic's list doesn't
+            // aoe2lobby.com's (Relic's list has none), else when this server first saw the lobby (unix seconds)
+            createdTime: sm?.createdTime ?? (m.firstSeen ? Math.floor(m.firstSeen / 1000) : null),
             players: parsedPlayers
         };
     });
@@ -1980,7 +2065,7 @@ function buildLobbies(requested = new Set()) {
     for (const lobby of allMatchesArray) for (const p of lobby.players) if (isProfileId(p.id) && !ids.has(p.id)) ids.set(p.id, lobby.map);
     lobbyPlayers = { at: now, ids };
     scrapedFeedOk = !!scrapedLobbiesRaw;
-    saveRelicMapNames(now);
+    saveRelicCodes(now);
     return allMatchesArray;
 }
 

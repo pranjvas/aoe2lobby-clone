@@ -17,9 +17,13 @@ updates (about every 3 s; when the feed sends no updates, it takes a fresh list 
 files change, and pushes the changed lobbies to every open page over `/api/lobbies/stream` (server-sent events). Pages
 poll `/api/lobbies` only while their stream is down. With nobody on the site, the server fetches nothing.
 
-When the scraped files go stale (aoe2lobby.com's feed down), lobbies come from Relic alone: no settings or civs, and map
-names from Relic's map ids, whose names the server learns from lobbies both feeds list (`relic_map_ids.json`, kept by
-deploys). The stream and `/api/lobbies` then say `feed: false`, and the page shows a notice.
+aoe2lobby.com builds every lobby field from Relic's own list, 3-4 s after Relic has it. So the server decodes the map,
+game mode, map size, starting age, resources, treaty, population, speed and each player's civ straight from Relic's lobby
+options and slots, with code tables it learns from lobbies both feeds list (`relic_codes.json`, kept by deploys).
+aoe2lobby.com's label wins, except for a few seconds after Relic shows a change it hasn't caught up with. A lobby that hides
+civs never has them decoded. When the scraped files go stale (aoe2lobby.com's feed down), the decoded values are all there
+is; ratings and created times are then partly missing, the stream and `/api/lobbies` say `feed: false`, and the page shows
+a notice.
 
 Both name the page version (`app.js?v=` in `index.html`). A page opened before a deploy sees a different one when its
 stream reconnects after the restart and reloads itself, so bump `?v=` whenever `app.js` changes.

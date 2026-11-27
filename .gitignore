@@ -8,6 +8,7 @@ raw_*_dump.json
 cloudflared.exe
 map_names.json
 relic_map_ids.json
+relic_codes.json
 map_history.sqlite*
 scraped_map_players_v2.json.imported
 
