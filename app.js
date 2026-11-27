@@ -499,6 +499,19 @@ function reloadWhenIdle() {
     else location.reload();
 }
 
+// aoe2lobby.com's data (settings, civs, many ratings, the best map names) is missing while its feed is down. The server
+// says whether it has it (feed) in every stream message and in /api/lobbies; the page then shows a notice above the lists.
+let feedOk = true;
+function noteFeedState(ok) {
+    if (typeof ok !== 'boolean' || ok === feedOk) return;
+    feedOk = ok;
+    updateFeedNotice();
+}
+function updateFeedNotice() {
+    const el = document.getElementById('feedNotice');
+    if (el) el.hidden = feedOk || state.currentView === 'spectate'; // Spectate has its own feed and notice
+}
+
 function startLobbyFeed() {
     document.addEventListener('visibilitychange', () => {
         clearTimeout(streamHiddenTimer);
@@ -578,6 +591,7 @@ function onLobbyStreamMessage(text) {
     if (!msg || typeof msg !== 'object') return;
     armStreamWatchdog();
     noteServerTime(msg.now);
+    noteFeedState(msg.feed);
     if (msg.t === 'full') noteServerVersion(msg.v);
     if (msg.t === 'ping') {
         if (msg.seq !== streamSeq) resyncLobbyStream();
@@ -629,7 +643,10 @@ async function fetchRealLobbies() {
     try {
         const response = await fetch('/api/lobbies?t=' + Date.now());
         const data = await response.json();
-        if (data) noteServerVersion(data.v);
+        if (data) {
+            noteServerVersion(data.v);
+            if (!streamLive) noteFeedState(data.feed);
+        }
         // The stream came back while this was in flight: its list is newer
         if (!streamLive && lobbyFeedOn && data && Array.isArray(data.matches)) showLobbyList(data.matches);
     } catch (error) {
@@ -1319,6 +1336,7 @@ function showView(view) {
     }
     viewTitleText.textContent = VIEWS[view].title;
     countLabel.textContent = VIEWS[view].count;
+    updateFeedNotice();
     closeCivPopover(false);
     renderFollowPanel();
     if (view === 'spectate') fetchSpectate();
@@ -1466,19 +1484,24 @@ function mapPlayerStat(p) {
 }
 
 // The players loaded so far, in the server's order (it sorts and searches), with their numbers on the Elo Type ladder
-// and the lobby they're in now (any map, from the lobby list this page already polls)
+// and the lobby they're in now (any map, from the live lobby list; onMap when it is on the map shown, which the "Active
+// now first" sort puts first)
 function shownMapPlayers() {
     if (mapPlayersMap !== state.mapsMap) return [];
     const inLobby = new Map();
     for (const lobby of lobbies) for (const p of lobby.rawPlayers || []) if (p.id && !inLobby.has(Number(p.id))) inLobby.set(Number(p.id), lobby);
-    return mapPlayers.map(p => ({ ...p, stat: mapPlayerStat(p), lobby: inLobby.get(p.id) || null }));
+    const thisMap = String(state.mapsMap).toLowerCase();
+    return mapPlayers.map(p => {
+        const lobby = inLobby.get(p.id) || null;
+        return { ...p, stat: mapPlayerStat(p), lobby, onMap: !!lobby && String(lobby.map).toLowerCase() === thisMap };
+    });
 }
 
 // Which listed players are in which lobby now, as the Maps view last drew it: a lobby update redraws the view (up to a
 // thousand cards) only when this changes
 let mapsLobbyKeyShown = null;
 function mapsLobbyKey(players) {
-    return players.map(p => p.lobby ? `${p.id}:${p.lobby.id}:${p.lobby.isPlaying ? 1 : 0}:${p.lobby.title}` : '').join('|');
+    return players.map(p => p.lobby ? `${p.id}:${p.lobby.id}:${p.lobby.isPlaying ? 1 : 0}:${p.lobby.map}:${p.lobby.title}` : '').join('|');
 }
 
 function seenAgoText(ms) {
@@ -1536,7 +1559,8 @@ function renderMaps(players) {
                         ${copyHandleHtml(p.name)}
                         ${stat?.rating != null ? `<span class="elo-badge">${esc(stat.rating)}</span>` : '<span class="elo-badge elo-badge-none">Unrated</span>'}
                     </div>
-                    <div class="game-title" style="font-size: 0.8em; color: var(--text-secondary);">${lobby ? `In a lobby now: ${esc(lobby.title)}` : `Last seen on ${esc(map)} ${seenAgoText(p.lastSeen)}`}</div>
+                    <div class="game-title" style="font-size: 0.8em; color: var(--text-secondary);">${!lobby ? `Last seen on ${esc(map)} ${seenAgoText(p.lastSeen)}`
+                        : p.onMap ? `In a ${esc(map)} lobby now: ${esc(lobby.title)}` : `In a lobby on another map now: ${esc(lobby.title)}`}</div>
                     ${playerLinksHtml(p)}
                 </div>
             </div>
@@ -1554,7 +1578,9 @@ function renderMaps(players) {
                         <span class="detail-icon">&#x1F4CA;</span>
                         Games: ${stat ? esc(stat.games) : 0} <span class="map-ladder">(${esc(ladder)})</span>
                     </div>
-                    ${lobby ? `<div class="tags-row" style="margin-top: 10px;"><span class="badge status-badge map-active-badge">&#x1F7E2; In a lobby now</span>${lobby.map ? `<span class="badge server-badge" title="Map of the lobby they're in">${esc(lobby.map)}</span>` : ''}</div>` : ''}
+                    ${lobby ? `<div class="tags-row" style="margin-top: 10px;">${p.onMap
+                        ? `<span class="badge status-badge map-active-badge">&#x1F7E2; In a ${esc(map)} lobby now</span>`
+                        : `<span class="badge server-badge" title="The lobby they're in now is on another map">In a lobby now</span>${lobby.map ? `<span class="badge server-badge" title="Map of the lobby they're in">${esc(lobby.map)}</span>` : ''}`}</div>` : ''}
                 </div>
             </div>
             ${joinable ? `<div class="card-footer"><a href="aoe2de://0/${esc(lobby.id)}" class="btn-join" style="margin-left: auto;">Join Lobby</a></div>` : ''}

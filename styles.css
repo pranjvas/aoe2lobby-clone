@@ -1196,6 +1196,21 @@ input.filter-active {
 }
 
 /* "Live game data unavailable since HH:MM" above the Spectate list */
+/* aoe2lobby.com's feed is down (the server says so in the lobby stream) */
+.feed-notice {
+    margin: 0 0 20px;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    border: 1px solid var(--gold-dim);
+    background: rgba(212, 175, 55, 0.08);
+    color: var(--gold-primary);
+    font-weight: 500;
+}
+
+.feed-notice[hidden] {
+    display: none;
+}
+
 .spectate-notice {
     grid-column: 1 / -1;
     padding: 0.75rem 1rem;

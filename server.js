@@ -33,7 +33,10 @@ let lobbiesFailUntil = 0, lobbiesFailures = 0;
 // was opened before a deploy reloads itself when it differs from its own.
 let pageVersion = '';
 try { pageVersion = (/\/app\.js\?v=(\d+)/.exec(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8')) || [])[1] || ''; } catch (e) { }
-let lobbyPlayers = { at: 0, ids: new Set() }; // who was in a lobby at the last build (the Maps view's "Active now" sort)
+let lobbyPlayers = { at: 0, ids: new Map() }; // who was in a lobby at the last build, and its map (the Maps view's "Active now" sort)
+// Whether the last build had aoe2lobby.com's data (scraper.js's files fresh). Without it, lobbies have no settings or civs,
+// fewer ratings, and maps only as Relic's data names them; the stream tells the page, which says so.
+let scrapedFeedOk = true;
 const profileCache = new Map(); // profile_id -> { alias, rating, totalGames, totalWins, winRate, stats, steamProfile, fetchedAt, lastSeen }
 const PROFILE_REFRESH_MS = 6 * 60 * 60 * 1000; // cached profiles this old are refetched, in the background only
 const PROFILE_FORGET_MS = 24 * 60 * 60 * 1000; // profiles not seen in any lobby for this long are dropped
@@ -1322,6 +1325,57 @@ const mapDictionary = Object.assign(Object.create(null), {
 });
 const GENERIC_MAPS = ["unknown map", "my map", "custom map", ""];
 
+// Map names from Relic's own lobby data, for lobbies aoe2lobby.com doesn't describe (its feed down, as for 17 hours on
+// 26-27 Nov 2026, when nearly every lobby showed Relic's "my map"). Relic's options give the map's id (10) or, for a custom
+// map (-2), its file name (11). aoe2lobby.com numbers maps its own way, so each id's name is learned from lobbies both feeds
+// list, once one has shown the same id and name for RELIC_MAP_LEARN_MS (a host changing the map reaches the two feeds a
+// few seconds apart, and that mix is never learned). Kept in relic_map_ids.json across restarts (deploy/push.sh keeps it).
+const RELIC_MAP_IDS_PATH = path.join(__dirname, 'relic_map_ids.json');
+const RELIC_MAP_LEARN_MS = 15000;
+const RELIC_MAP_SAVE_MS = 60000;
+const relicMapNames = Object.create(null); // Relic map id -> aoe2lobby.com's name for it
+try {
+    const saved = JSON.parse(fs.readFileSync(RELIC_MAP_IDS_PATH, 'utf8'));
+    if (saved && typeof saved === 'object') {
+        for (const [id, name] of Object.entries(saved)) if (/^\d{1,9}$/.test(id) && typeof name === 'string' && name && name.length <= 200) relicMapNames[id] = name;
+    }
+} catch (e) { if (e.code !== 'ENOENT') console.error('Error reading relic_map_ids.json:', e.message); }
+const relicMapPairs = new Map(); // lobby id -> { key: "<map id>|<name>", since }: what it shows in both feeds, and since when
+let relicMapNamesDirty = false, relicMapNamesSavedAt = 0;
+
+// A lobby both feeds describe: learn its map id's name once the pair has held for RELIC_MAP_LEARN_MS
+function learnRelicMap(m, scrapedMap, now) {
+    const id = m.relicMapId;
+    if (!id || !/^\d+$/.test(id) || typeof scrapedMap !== 'string' || !scrapedMap || scrapedMap.length > 200) {
+        relicMapPairs.delete(m.id);
+        return;
+    }
+    const key = id + '|' + scrapedMap;
+    const pair = relicMapPairs.get(m.id);
+    if (!pair || pair.key !== key) { relicMapPairs.set(m.id, { key, since: now }); return; }
+    if (now - pair.since < RELIC_MAP_LEARN_MS || relicMapNames[id] === scrapedMap) return;
+    relicMapNames[id] = scrapedMap;
+    relicMapNamesDirty = true;
+}
+
+function saveRelicMapNames(now) {
+    if (!relicMapNamesDirty || now - relicMapNamesSavedAt < RELIC_MAP_SAVE_MS) return;
+    relicMapNamesDirty = false;
+    relicMapNamesSavedAt = now;
+    writeJsonAtomic(RELIC_MAP_IDS_PATH, relicMapNames);
+}
+
+// The map as Relic's data names it: a custom map's file name, a learned id's name, or else the id itself (the way
+// aoe2lobby.com shows an id it can't name; mapDisplayName then names it from map_names.json, or as "Map #<id>").
+// known is false for that last case, so a map named in the title can be preferred. null when Relic gives no map.
+function relicMapName(m) {
+    const id = m.relicMapId;
+    if (id === '-2') return m.relicRms ? { name: m.relicRms, known: true } : null;
+    if (!id || !/^\d+$/.test(id)) return null;
+    if (relicMapNames[id]) return { name: relicMapNames[id], known: true };
+    return { name: id, known: !!own(mapNames, id) };
+}
+
 // Reads one scraped file, or returns null when it is missing, stale or unreadable
 function readScrapedJson(file) {
     let mtimeMs;
@@ -1663,9 +1717,10 @@ async function pollRelic() {
             if (typeof m.options === 'string' && m.options) {
                 const options = parseRelicOptions(m.options);
 
-                // 52 = map/mod hash. Only options verified against aoe2lobby.com are read here
-                // (63 data mod, 28 population, 41 speed); Relic's mode and size codes don't map
-                // to aoe2lobby.com's, so those come from the scraper only.
+                // 52 is a value of its own for every lobby (not the map's: 58 lobbies had 58 values on 27 Nov 2026), so
+                // only the old entries in mapDictionary are looked up; nothing is learned from it. Only options verified
+                // against aoe2lobby.com are read here (63 data mod, 28 population, 41 speed, 10/11 the map); Relic's mode
+                // and size codes don't map to aoe2lobby.com's, so those come from the scraper only.
                 const modHash = options['52'];
                 if (modHash) {
                     m.modHash = modHash;
@@ -1678,18 +1733,15 @@ async function pollRelic() {
                     else if (speedVal === '2') m.relicSpeed = 'Normal';
                     else if (speedVal === '3') m.relicSpeed = 'Fast';
 
-                    // Auto-learning: if the title strongly implies a map, learn its hash!
-                    const tLower = (str(m.description) || "").toLowerCase();
-                    if (tLower.includes('michi') || tLower.includes('mici')) {
-                        mapDictionary[modHash] = "Michi";
-                    } else if (tLower.includes('cba')) {
-                        mapDictionary[modHash] = "CBA";
-                    }
-
                     if (mapDictionary[modHash]) {
                         trueMapName = mapDictionary[modHash];
                     }
                 }
+                // 10 = the map's id in the game's numbering (aoe2lobby.com numbers maps its own way), -2 for a custom
+                // map, whose file name is 11 (the name aoe2lobby.com shows for it). See relicMapName.
+                if (/^-?\d{1,9}$/.test(options['10'] || '')) m.relicMapId = options['10'];
+                const rms = typeof options['11'] === 'string' ? options['11'].replace(/[\x00-\x1F\x7F-\x9F]/g, '').trim() : '';
+                if (rms && rms.length <= 200) m.relicRms = rms;
             }
         } catch(e) {
             // Silently fail if decoding options fails
@@ -1738,7 +1790,10 @@ async function pollRelic() {
     // Remove matches that drop off the Relic API feed. When a later page failed they may still be listed, so keep
     // them, but only for 2 minutes, so a repeatedly failing page can't keep closed lobbies joinable for good
     for (const [id, m] of activeMatches) {
-        if (!currentMatchIds.has(id) && (complete || now - m.lastSeen > 2 * 60 * 1000)) activeMatches.delete(id);
+        if (!currentMatchIds.has(id) && (complete || now - m.lastSeen > 2 * 60 * 1000)) {
+            activeMatches.delete(id);
+            relicMapPairs.delete(id);
+        }
     }
     // Forget profiles and Unranked ratings that no lobby has shown for a day
     for (const [id, p] of profileCache) {
@@ -1820,9 +1875,13 @@ function buildLobbies(requested = new Set()) {
             if (!serverRegion && regionName(s.Server)) serverRegion = regionName(s.Server);
         }
 
-        // No usable map name from aoe2lobby.com: look for a known map name in the title
+        // No usable map name from aoe2lobby.com: Relic's map id (or custom map file) names it, else a known map name in
+        // the title, else the bare id
+        if (smMapUsable) learnRelicMap(m, sm.map, now);
+        const relicMap = smMapUsable ? null : relicMapName(m);
+        if (relicMap?.known) finalMapName = relicMap.name;
         const title = str(m.description);
-        if (!smMapUsable && title) {
+        if (!smMapUsable && !relicMap?.known && title) {
             if (!titleMaps) titleMaps = knownTitleMaps();
             const descLower = title.toLowerCase();
             for (const mapName of titleMaps) {
@@ -1832,6 +1891,7 @@ function buildLobbies(requested = new Set()) {
                 }
             }
         }
+        if (relicMap && !relicMap.known && GENERIC_MAPS.includes(String(finalMapName).toLowerCase())) finalMapName = relicMap.name;
 
         finalMapName = mapDisplayName(finalMapName);
         const slotsTotal = (sm && sm.slotsTotal) || num(m.maxplayers);
@@ -1915,9 +1975,12 @@ function buildLobbies(requested = new Set()) {
     }
 
     markPendingStats(allMatchesArray, now, scrapedPlayers, requested);
-    const ids = new Set();
-    for (const lobby of allMatchesArray) for (const p of lobby.players) if (isProfileId(p.id)) ids.add(p.id);
+    // Who is in a lobby now, and on which map (the Maps view's "Active now" sort puts the map's own lobbies first)
+    const ids = new Map();
+    for (const lobby of allMatchesArray) for (const p of lobby.players) if (isProfileId(p.id) && !ids.has(p.id)) ids.set(p.id, lobby.map);
     lobbyPlayers = { at: now, ids };
+    scrapedFeedOk = !!scrapedLobbiesRaw;
+    saveRelicMapNames(now);
     return allMatchesArray;
 }
 
@@ -1980,7 +2043,7 @@ function publishLobbies(requested) {
         console.error('Building the lobby list failed:', e);
         return;
     }
-    lobbiesCache = { at: Date.now(), body: JSON.stringify({ v: pageVersion, matches }) };
+    lobbiesCache = { at: Date.now(), body: JSON.stringify({ v: pageVersion, feed: scrapedFeedOk, matches }) };
     streamLobbies(matches);
 }
 
@@ -2058,7 +2121,7 @@ function streamLobbies(matches) {
     let ready = 0;
     for (const client of streamClients.values()) if (client.ready) ready++;
     if (!ready) return;
-    const msg = `data: {"t":"diff","seq":${streamSeq},"base":${base},"now":${Date.now()},"seenAt":${sentSeen.seenAt},` +
+    const msg = `data: {"t":"diff","seq":${streamSeq},"base":${base},"now":${Date.now()},"feed":${scrapedFeedOk},"seenAt":${sentSeen.seenAt},` +
         `"seen":${JSON.stringify(sentSeen.seen)},${orderChanged ? `"order":${JSON.stringify(order)},` : ''}` +
         `"remove":${JSON.stringify(remove)},"upsert":[${upsert.join(',')}]}\n\n`;
     for (const [res, client] of streamClients) if (client.ready) streamWrite(res, msg);
@@ -2069,7 +2132,7 @@ function streamFullMessage() {
         streamFullCache = `"seenAt":${sentSeen.seenAt},"seen":${JSON.stringify(sentSeen.seen)},` +
             `"matches":[${sentOrder.map(key => sentLobbies.get(key)).join(',')}]}`;
     }
-    return `data: {"t":"full","seq":${streamSeq},"v":${JSON.stringify(pageVersion)},"now":${Date.now()},${streamFullCache}\n\n`;
+    return `data: {"t":"full","seq":${streamSeq},"v":${JSON.stringify(pageVersion)},"now":${Date.now()},"feed":${scrapedFeedOk},${streamFullCache}\n\n`;
 }
 
 // Caddy passes the visitor's address in X-Forwarded-For (it replaces any the visitor sent)
@@ -2121,7 +2184,7 @@ async function serveLobbyStream(req, res) {
 
 setInterval(() => {
     if (!streamClients.size) return;
-    const msg = `data: {"t":"ping","seq":${streamSeq},"now":${Date.now()}}\n\n`;
+    const msg = `data: {"t":"ping","seq":${streamSeq},"now":${Date.now()},"feed":${scrapedFeedOk}}\n\n`;
     for (const [res, client] of streamClients) if (client.ready) streamWrite(res, msg);
 }, STREAM_PING_MS).unref();
 
@@ -2239,9 +2302,15 @@ function serveMapPlayers(res, query) {
         const order = `${sort}|${ladder}`;
         let sorted = kept.sorted.get(order);
         if (!sorted) {
-            // A lobby list older than 2 min (nobody on the site) says nothing about who is in a lobby now
-            const live = Date.now() - lobbyPlayers.at < 2 * 60 * 1000 ? lobbyPlayers.ids : new Set();
-            kept.sorted.set(order, sorted = sortMapPlayers(kept.players, sort, ladder, id => live.has(id)));
+            // A lobby list older than 2 min (nobody on the site) says nothing about who is in a lobby now. In a lobby on
+            // this map ranks 2, in another lobby 1.
+            const live = Date.now() - lobbyPlayers.at < 2 * 60 * 1000 ? lobbyPlayers.ids : new Map();
+            const thisMap = name.toLowerCase();
+            const activeRank = id => {
+                const map = live.get(id);
+                return map === undefined ? 0 : String(map).toLowerCase() === thisMap ? 2 : 1;
+            };
+            kept.sorted.set(order, sorted = sortMapPlayers(kept.players, sort, ladder, activeRank));
         }
         const page = mapPlayersPage(sorted, q, offset, limit);
         answerJson(res, 200, { map: name, since, lobbies: kept.entry.lobbies, total: kept.players.length, matched: page.matched, offset, players: page.players });

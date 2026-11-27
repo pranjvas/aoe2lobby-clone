@@ -260,12 +260,13 @@ const COMPARE = {
     games: (a, b) => (b.s?.games ?? 0) - (a.s?.games ?? 0) || b.p.count - a.p.count
 };
 
-// players: [{ id, name, count, lastSeen, allStats }]; isActive(id): in a lobby now. Returns a sorted copy; ties go by
-// id, so the order is the same on every call and pages never overlap
-function sortMapPlayers(players, sort, ladder, isActive = () => false) {
+// players: [{ id, name, count, lastSeen, allStats }]; isActive(id): how much they count as active now (server.js: 2 in a
+// lobby on this map, 1 in another lobby, 0 in none; true counts as 1). Returns a sorted copy; ties go by id, so the order
+// is the same on every call and pages never overlap
+function sortMapPlayers(players, sort, ladder, isActive = () => 0) {
     const compare = COMPARE[sort] || COMPARE.count;
     return players
-        .map(p => ({ p, s: sort === 'elo' || sort === 'wr' || sort === 'games' ? ladderStat(p.allStats, ladder) : null, active: sort === 'active' && isActive(p.id) ? 1 : 0 }))
+        .map(p => ({ p, s: sort === 'elo' || sort === 'wr' || sort === 'games' ? ladderStat(p.allStats, ladder) : null, active: sort === 'active' ? Number(isActive(p.id)) || 0 : 0 }))
         .sort((a, b) => compare(a, b) || a.p.id - b.p.id)
         .map(x => x.p);
 }
