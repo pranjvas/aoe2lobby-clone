@@ -54,7 +54,7 @@
     </script>
 
     <!-- Styles (fonts are self-hosted from /fonts, see styles.css) -->
-    <link rel="stylesheet" href="/styles.css?v=39">
+    <link rel="stylesheet" href="/styles.css?v=40">
 </head>
 <body>
     <!-- Background Elements -->
@@ -69,12 +69,10 @@
                 <span class="logo-icon">🛡️</span>
                 <h1>AoE2<span>Lobby</span> <small class="nav-tagline">Live Age of Empires II lobby browser</small></h1>
             </div>
-            <!-- To the Mods section (beside the lists on wide screens, below them on narrow ones), shown once it has mods -->
-            <a class="nav-mods-link" id="navModsLink" href="#mods" hidden>&#x1F9E9; pv's mods</a>
+            <!-- pv's mods have a page of their own (/mods, built by the server) -->
+            <a class="nav-mods-link" href="/mods">&#x1F9E9; pv's mods</a>
         </header>
 
-        <!-- The lists, and pv's mods to their right (app.js fills the Mods section from /api/mods) -->
-        <div class="page-columns">
         <!-- Main Content -->
         <main class="main-content">
             <!-- Header -->
@@ -408,19 +406,10 @@
                 </details>
             </section>
         </main>
-
-        <!-- Mods: pv's published mods, with the lobbies and games using them now -->
-        <aside class="mods-aside glass-panel" id="mods" aria-labelledby="modsTitle" hidden>
-            <h2 class="mods-title" id="modsTitle">Mods by pv</h2>
-            <p class="mods-sub" id="modsSub"></p>
-            <div class="mods-list" id="modsList"></div>
-            <p class="mods-note" id="modsNote"></p>
-        </aside>
-        </div>
     </div>
 
     <!-- Scripts -->
-    <script src="/app.js?v=54"></script>
+    <script src="/app.js?v=55"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "f2cacd7749024f8ba136403fdf2d8b78"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>

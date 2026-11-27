@@ -184,21 +184,6 @@
       "thumbnailSource": "https://cdn.ageofempires.com/aoe-mods/2/604261/1aa9f2ab16f7ae5a6a2b1b2c17fbaffa09e21a7f2078517a5b924fcce0a84f2d.jpg"
     },
     {
-      "id": 604263,
-      "name": "426005 flying carts military mod 3",
-      "summary": "Fix: all units can now walk through military buildings. The previous version left them solid. Portuguese changes: the Feitoria takes 5 population instead of 20 (cost unchanged). Portuguese can research Paladin at the Stable. Portuguese Castles also train the Conquistador (75 food, 60 gold; Castle Age, button next to Petard), with the Elite Conquistador upgrade at the Castle. Every tree holds twice the wood (forest trees 200 instead of 100), and lumberjacks chop twice as fast and carry twice as much, so each tree takes the same time to cut down while giving double the wood. Wood upgrades (Double-Bit Axe, Bow Saw, Two-Man Saw, Wheelbarrow, Hand Cart) and civilization bonuses keep working on top. Also includes everything from pv 2x wood 2x2 farms military builds and pv 2x2 farms military builds: 2x2 Farms and Rice Farms, with matching 2x2 placement previews and dead-farm remnants. Farming is 20% faster and each farm holds 20% more food (210 instead of 175; Horse Collar, Heavy Plow and Crop Rotation still add their usual amounts). Each House gives 50 population. Flying Trade Carts. Passable Markets. All units can walk through military buildings (Barracks, Archery Range, Stable, Siege Workshop, Castle, Krepost), as in FTC Military Builds. Stone and Fortified Walls for every civilization. Unit and wild-animal corpses fade after 30 seconds instead of 5 minutes.",
-      "tag": "Data Mod",
-      "version": "1.1",
-      "created": "2026-11-27T11:28:12Z",
-      "updated": "2026-11-27T11:28:17Z",
-      "fileSize": 11461104,
-      "downloads": 1,
-      "installs": 1,
-      "likes": 0,
-      "ratings": 0,
-      "thumbnailSource": "https://cdn.ageofempires.com/aoe-mods/2/604263/494a6bd341e4d50259973c419c1b7d08e912c4d3138c17db1b738e9a1683f641.jpg"
-    },
-    {
       "id": 604260,
       "name": "pv 2x wood 2x2 farms military builds fix",
       "summary": "Fix: all units can now walk through military buildings. The previous version left them solid. Every tree holds twice the wood (forest trees 200 instead of 100), and lumberjacks chop twice as fast and carry twice as much, so each tree takes the same time to cut down while giving double the wood. Wood upgrades (Double-Bit Axe, Bow Saw, Two-Man Saw, Wheelbarrow, Hand Cart) and civilization bonuses keep working on top. Also includes everything from pv 2x2 farms military builds: 2x2 Farms and Rice Farms, with matching 2x2 placement previews and dead-farm remnants. Farming is 20% faster and each farm holds 20% more food (210 instead of 175; Horse Collar, Heavy Plow and Crop Rotation still add their usual amounts). Each House gives 50 population. Flying Trade Carts. Passable Markets. All units can walk through military buildings (Barracks, Archery Range, Stable, Siege Workshop, Castle, Krepost), as in FTC Military Builds. Stone and Fortified Walls for every civilization. Unit and wild-animal corpses fade after 30 seconds instead of 5 minutes.",

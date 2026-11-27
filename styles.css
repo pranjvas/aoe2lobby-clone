@@ -1721,6 +1721,23 @@ input.filter-active {
     gap: 0.35rem;
 }
 
+/* A player's games, win rate, streak and best rating, then their other ladders' ratings */
+.match-player-stats,
+.match-player-ladders {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.4;
+}
+
+.match-player-stats {
+    color: var(--text-primary);
+}
+
+.match-stat-ladder {
+    color: var(--gold-primary);
+    font-weight: 600;
+}
+
 .match-player-meta:empty {
     display: none;
 }
@@ -2232,35 +2249,7 @@ button.civ-chip {
     }
 }
 
-/* The lists, with pv's mods to their right on wide screens (below them on narrow ones) */
-.page-columns {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 2rem;
-    align-items: start;
-}
-
-@media (min-width: 1280px) {
-    .page-columns {
-        grid-template-columns: minmax(0, 1fr) 340px;
-    }
-    .mods-aside {
-        position: sticky;
-        top: 1rem;
-        max-height: calc(100vh - 2rem);
-        overflow-y: auto;
-    }
-}
-
-.match-mode .page-columns {
-    grid-template-columns: minmax(0, 1fr);
-}
-
-.match-mode .mods-aside,
-.match-mode .nav-mods-link {
-    display: none;
-}
-
+/* The header's link to pv's mods page (/mods), at its right */
 .nav-mods-link {
     margin-left: auto;
     padding: 0.45rem 0.9rem;
@@ -2278,100 +2267,89 @@ button.civ-chip {
     background: rgba(212, 175, 55, 0.1);
 }
 
-.nav-mods-link[hidden],
-.mods-aside[hidden] {
-    display: none;
-}
-
-.mods-aside {
-    padding: 1.25rem;
-    margin-bottom: 2rem;
-}
-
-.mods-title {
-    margin: 0;
-    font-size: 1.15rem;
-    color: var(--gold-primary);
-}
-
-.mods-sub,
-.mods-note {
-    margin: 0.35rem 0 0;
-    color: var(--text-secondary);
-    font-size: 0.8rem;
-}
-
-.mods-note {
-    margin-top: 1rem;
-}
-
-.mods-list {
+/* /mods (map-pages.js renderModsPage): one card per mod */
+.mod-cards {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    margin-top: 1rem;
+    gap: 1rem;
 }
 
-.mod-item {
-    padding: 0.75rem;
+.mod-card {
+    display: flex;
+    gap: 1.25rem;
+    align-items: flex-start;
+    padding: 1rem;
     border: 1px solid var(--border-color);
     border-radius: 10px;
     background: rgba(255, 255, 255, 0.02);
+    scroll-margin-top: 1rem;
 }
 
-.mod-head {
-    display: flex;
-    gap: 0.75rem;
-    align-items: flex-start;
+.mod-card-thumb {
+    flex: none;
 }
 
-.mod-thumb img {
+.mod-card-thumb img {
     display: block;
-    width: 96px;
-    height: 54px;
+    width: 192px;
+    height: 108px;
     object-fit: cover;
-    border-radius: 6px;
+    border-radius: 8px;
 }
 
-.mod-head-text {
+.mod-card-body {
     min-width: 0;
+    flex: 1;
 }
 
-.mod-name {
-    display: block;
-    color: var(--text-primary);
-    font-weight: 600;
-    font-size: 0.9rem;
+.mod-card-name {
+    margin: 0;
+    font-size: 1.05rem;
     line-height: 1.3;
-    text-decoration: none;
     overflow-wrap: anywhere;
 }
 
-.mod-name:hover,
-.mod-name:focus-visible {
+.mod-card-name a {
+    color: var(--text-primary);
+    text-decoration: none;
+}
+
+.mod-card-name a:hover,
+.mod-card-name a:focus-visible {
     color: var(--gold-primary);
     text-decoration: underline;
 }
 
-.mod-meta {
-    margin-top: 0.25rem;
+.mod-card-meta,
+.mod-card-facts {
+    margin: 0.35rem 0 0;
     color: var(--text-secondary);
-    font-size: 0.78rem;
+    font-size: 0.85rem;
 }
 
-.mod-live {
+.mod-card-facts {
+    font-size: 0.8rem;
+}
+
+.mod-card-text p {
+    margin: 0.6rem 0 0;
+    line-height: 1.5;
+}
+
+.mod-card-live {
+    margin: 0.6rem 0 0;
+    padding: 0;
+    list-style: none;
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
-    margin-top: 0.6rem;
+    gap: 0.4rem;
 }
 
-.mod-live-row {
+.mod-card-live li {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem;
-    font-size: 0.78rem;
-    color: var(--text-primary);
 }
 
 .mod-live-dot {
@@ -2386,47 +2364,19 @@ button.civ-chip {
     background: #5865f2;
 }
 
-.mod-live-text {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.mod-live-btn {
-    flex: none;
-    margin-left: auto;
-    padding: 0.15rem 0.6rem;
-    border: 1px solid var(--gold-dim);
-    border-radius: 6px;
-    color: var(--gold-primary);
-    font-weight: 600;
-    text-decoration: none;
-}
-
-.mod-live-more {
-    color: var(--text-secondary);
-}
-
-.mod-details {
-    margin-top: 0.6rem;
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-}
-
-.mod-details > summary {
-    cursor: pointer;
+.mod-in-use-name {
     color: var(--gold-primary);
     font-weight: 600;
 }
 
-.mod-details p {
-    margin: 0.5rem 0 0;
-    line-height: 1.45;
-}
-
-.mod-facts {
-    margin-top: 0.5rem;
-    font-size: 0.75rem;
-    opacity: 0.85;
+@media (max-width: 600px) {
+    .mod-card {
+        flex-direction: column;
+        gap: 0.75rem;
+    }
+    .mod-card-thumb img {
+        width: 100%;
+        height: auto;
+        aspect-ratio: 16 / 9;
+    }
 }

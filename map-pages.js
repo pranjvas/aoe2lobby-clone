@@ -121,7 +121,7 @@ function page({ title, description, path, indexable, jsonLd, body, stylesHref })
 ${body}
         </main>
         <footer class="seo-footer">
-            <p><a href="/">Live lobbies</a> · <a href="/maps/">Maps</a> · <a href="/replay">Replay viewer</a></p>
+            <p><a href="/">Live lobbies</a> · <a href="/maps/">Maps</a> · <a href="/replay">Replay viewer</a> · <a href="/mods">pv's mods</a></p>
             <p>${SITE_NAME} is a fan-made site and isn't affiliated with Microsoft, Xbox Game Studios, World's Edge or Forgotten Empires.</p>
         </footer>
     </div>
@@ -290,6 +290,81 @@ ${playersSection}
     });
 }
 
+// /mods: pv's published mods, last updated first, each with what it changes and the lobbies and games using it now.
+// mods: [{ id, name, summary, tag, version, created, updated, fileSize, downloads, installs, ratings, link, thumb,
+// lobbies: [lobby list entries], games: [{ id, map, startTime, players }] }]; readAt: when the numbers were read.
+function renderModsPage({ author, readAt, mods, lobbiesAt, stylesHref, isMatchId }) {
+    const path = '/mods';
+    const title = `Mods by ${author}`;
+    const crumbs = breadcrumbs([{ name: 'Lobbies', path: '/' }, { name: title, path }]);
+    const day = iso => { const t = Date.parse(iso || ''); return isNaN(t) ? '' : date(t); };
+    const total = mods.reduce((n, m) => n + (m.downloads || 0), 0);
+    const inUse = mods.filter(m => m.lobbies.length || m.games.length);
+    const asOf = lobbiesAt ? ` As of ${new Date(lobbiesAt).toISOString().slice(11, 16)} UTC.` : '';
+    const lobbyLine = l => {
+        const filled = (Array.isArray(l.players) ? l.players.length : 0) + (Number(l.aiSlots) || 0);
+        const max = Number(l.maxPlayers) || 8;
+        const action = l.isPasswordProtected ? '<span class="seo-tag">Password</span>'
+            : l.isPlaying || filled >= max ? '<span class="seo-tag">Full</span>'
+            : isMatchId(String(l.id)) ? `<a class="seo-join" href="aoe2de://0/${esc(l.id)}">Join</a>` : '';
+        return `<li><span class="mod-live-dot" aria-hidden="true"></span>Lobby <span class="seo-lobby-title">${esc(clip(l.title || 'Age of Empires II Game', 70))}</span> <span class="seo-lobby-facts">${filled}/${max} players${l.map ? ` · ${esc(l.map)}` : ''}</span> ${action}</li>`;
+    };
+    const gameLine = g => {
+        const mins = Math.max(0, Math.floor((Date.now() / 1000 - g.startTime) / 60));
+        return `<li><span class="mod-live-dot mod-live-game" aria-hidden="true"></span>Game on ${esc(g.map)} <span class="seo-lobby-facts">${g.players} ${g.players === 1 ? 'player' : 'players'} · started ${mins < 1 ? 'just now' : `${mins} min ago`}</span> ` +
+            `<a class="seo-join" href="aoe2de://1/${esc(g.id)}" title="Opens Age of Empires II: DE as a spectator">Spectate</a> <a href="/spectate/${esc(g.id)}">Details</a></li>`;
+    };
+    const card = (m, i) => {
+        const link = esc(m.link);
+        const live = [...m.lobbies.map(lobbyLine), ...m.games.map(gameLine)];
+        const text = String(m.summary || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean).map(p => `<p>${esc(p)}</p>`).join('');
+        const facts = [m.tag, m.version && `v${m.version}`, m.fileSize ? `${(m.fileSize / 1048576).toFixed(1)} MB` : '',
+            m.created && `created ${day(m.created)}`, `ID ${m.id}`].filter(Boolean).map(esc).join(' · ');
+        return `                <article class="mod-card" id="mod-${m.id}">
+                    ${m.thumb ? `<a class="mod-card-thumb" href="${link}" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true"><img src="${esc(m.thumb)}" alt="" width="192" height="108"${i >= 4 ? ' loading="lazy"' : ''}></a>` : ''}
+                    <div class="mod-card-body">
+                        <h3 class="mod-card-name"><a href="${link}" target="_blank" rel="noopener noreferrer">${esc(m.name)}</a></h3>
+                        <p class="mod-card-meta">${number(m.downloads)} ${m.downloads === 1 ? 'download' : 'downloads'} · ${number(m.installs)} ${m.installs === 1 ? 'install' : 'installs'}${m.ratings ? ` · ${number(m.ratings)} ${m.ratings === 1 ? 'rating' : 'ratings'}` : ''}${m.updated ? ` · updated ${day(m.updated)}` : ''}</p>
+                        ${live.length ? `<ul class="mod-card-live">${live.join('')}</ul>` : ''}
+                        <div class="mod-card-text">${text}</div>
+                        <p class="mod-card-facts">${facts} · <a href="${link}" target="_blank" rel="noopener noreferrer">Open on ageofempires.com</a></p>
+                    </div>
+                </article>`;
+    };
+    const inUseSection = inUse.length
+        ? `                <ul class="mod-card-live">
+${inUse.flatMap(m => [...m.lobbies.map(l => lobbyLine(l).replace('<li>', `<li><a class="mod-in-use-name" href="#mod-${m.id}">${esc(m.name)}</a>: `)), ...m.games.map(g => gameLine(g).replace('<li>', `<li><a class="mod-in-use-name" href="#mod-${m.id}">${esc(m.name)}</a>: `))]).join('\n')}
+                </ul>
+                <p class="seo-note">${asOf} The <a href="/">lobby list</a> updates live.</p>`
+        : `                <p>None of these mods is in an open lobby or a game in progress right now.${asOf}</p>`;
+    const body = `${crumbs.html}
+            <section class="glass-panel seo-panel">
+                <h1>${esc(title)}</h1>
+                <p class="seo-lead">Every Age of Empires II: DE mod ${esc(author)} has published on ageofempires.com, last updated first, with what each one changes and the lobbies and games using it right now. To play one, subscribe to it in the game's Mods menu, then pick it as the data mod when you host a lobby.</p>
+                <p class="seo-stats"><span><strong>${number(mods.length)}</strong> mods</span><span><strong>${number(total)}</strong> downloads</span><span><strong>${number(inUse.length)}</strong> in use now</span></p>
+            </section>
+            <section class="glass-panel seo-panel">
+                <h2>In use now</h2>
+${inUseSection}
+            </section>
+            <section class="glass-panel seo-panel">
+                <h2>All ${number(mods.length)} mods</h2>
+                <div class="mod-cards">
+${mods.map(card).join('\n')}
+                </div>
+                <p class="seo-note">Downloads and installs as listed on ageofempires.com${readAt ? ` on ${day(readAt)}` : ''}. A mod's page there needs a free sign-in.</p>
+            </section>`;
+    return page({
+        title: `${title} – Age of Empires II: DE mods | ${SITE_NAME}`,
+        description: clip(`${number(mods.length)} Age of Empires II: DE mods by ${author}: 2x2 farms, bigger houses, flying Trade Carts, passable military buildings and more. What each changes, downloads, and the lobbies using them now.`, 200),
+        path,
+        indexable: mods.length > 0,
+        jsonLd: { '@context': 'https://schema.org', '@graph': [crumbs.jsonLd] },
+        body,
+        stylesHref
+    });
+}
+
 function renderNotFound({ stylesHref }) {
     const body = `            <section class="glass-panel seo-panel">
                 <h1>Map not found</h1>
@@ -323,5 +398,5 @@ function popularMapsHtml(list, slugOf, count = 12) {
 module.exports = {
     SITE_URL, INDEX_MIN_PLAYERS, INDEX_MIN_LOBBIES, TOP_PLAYERS,
     mapSlug, slugIndex, isIndexable, mapPath, mainLadder,
-    renderMapsIndex, renderMapPage, renderNotFound, renderSitemap, popularMapsHtml
+    renderMapsIndex, renderMapPage, renderModsPage, renderNotFound, renderSitemap, popularMapsHtml
 };

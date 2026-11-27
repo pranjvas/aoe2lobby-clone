@@ -566,16 +566,21 @@ function buildSpectateGames({ schema, matches, elo }) {
                 continue;
             }
             const id = profileIdOf(slot.profileid);
-            const ratings = {};
+            // Each ladder's rating, and (for the match page) its games, wins, win rate, streak and highest rating
+            const ratings = {}, stats = {};
+            const n = v => (typeof v === 'number' && Number.isFinite(v) ? v : null);
             for (const type of SPECTATE_ELO_TYPES) {
                 const st = own(elo[type], String(id));
-                if (st && Number.isFinite(st.rating)) ratings[type] = st.rating;
+                if (!st || !Number.isFinite(st.rating)) continue;
+                ratings[type] = st.rating;
+                stats[type] = { games: n(st.games), wins: n(st.wins), winp: n(st.winp), streak: n(st.streak), highest: n(st.highest) };
             }
             const player = { id, name: str(slot.name) || `Player ${id}`, kind, team, color, civ, ...ror, country: countryCode(slot.country) };
             const steamProfile = str(slot.steam_profile);
             if (steamProfile) player.steamProfile = steamProfile;
             player.rating = null;
             player.ratings = ratings;
+            player.stats = stats;
             players.push(player);
         }
         if (!players.length) continue;
@@ -624,12 +629,13 @@ function buildSpectateGames({ schema, matches, elo }) {
     return { games, unknownMaps };
 }
 
-// updatedAt is when the snapshot was taken, not when the body was (re)built. The list drops country (it doesn't
-// show it); the detail API serves the games kept in `games`, which have it. The index is the list cut down to what
-// followed-player alerts need (about a tenth of its size), so a browser can match its follows without sending them.
+// updatedAt is when the snapshot was taken, not when the body was (re)built. The list drops country and the per-ladder
+// stats (it shows neither); the detail API serves the games kept in `games`, which have them. The index is the list cut
+// down to what followed-player alerts need (about a tenth of its size), so a browser can match its follows without
+// sending them.
 function spectateBody(snapshot, snapAt) {
     const { games, unknownMaps } = buildSpectateGames(snapshot);
-    const listGames = games.map(g => ({ ...g, players: g.players.map(({ country, ...p }) => p) }));
+    const listGames = games.map(g => ({ ...g, players: g.players.map(({ country, stats, ...p }) => p) }));
     const updatedAt = Math.floor(snapAt / 1000);
     const indexGames = games.map(g => ({ id: g.id, startTime: g.startTime, map: g.map, players: g.players.filter(p => p.kind === 'human').map(p => p.id) }));
     return {
@@ -2503,18 +2509,36 @@ function pvModIdFor(text) {
     return pvModByName.get(t.toLowerCase()) ?? null;
 }
 
-function serveMods(res) {
-    const games = new Map(); // mod id -> games in progress using it
-    if (spectateFresh(spectateCache)) {
-        for (const g of spectateCache.games.values()) {
-            const id = pvModIdFor(g.modInfo);
+// /mods: the mods page (map-pages.js renderModsPage), last updated first. Kept MODS_PAGE_CACHE_MS: what is in use changes
+// with the lobbies. The games come from the spectate snapshot, refreshed on demand like the Spectate view's.
+const MODS_PAGE_CACHE_MS = 20000;
+let modsPageCache = { at: 0, body: null };
+async function serveModsPage(res) {
+    if (!modsPageCache.body || Date.now() - modsPageCache.at >= MODS_PAGE_CACHE_MS) {
+        await settleWithin(freshSpectate().catch(() => null), MAP_PLAYING_WAIT_MS);
+        const { at, list } = await currentLobbyList();
+        const lobbies = new Map(), games = new Map(); // mod id -> lobbies / games in progress using it
+        for (const l of list) {
+            const id = l.modId && pvModIds.has(l.modId) ? l.modId : pvModIdFor(l.modInfo);
             if (!id) continue;
-            if (!games.has(id)) games.set(id, []);
-            games.get(id).push({ id: g.id, map: g.map, title: g.title, startTime: g.startTime, observerDelay: g.observerDelay,
-                players: g.players.filter(p => p.kind === 'human').length });
+            if (!lobbies.has(id)) lobbies.set(id, []);
+            lobbies.get(id).push(l);
         }
+        if (spectateFresh(spectateCache)) {
+            for (const g of spectateCache.games.values()) {
+                const id = pvModIdFor(g.modInfo);
+                if (!id) continue;
+                if (!games.has(id)) games.set(id, []);
+                games.get(id).push({ id: g.id, map: g.map, startTime: g.startTime, players: g.players.filter(p => p.kind === 'human').length });
+            }
+        }
+        const time = iso => { const t = Date.parse(iso || ''); return isNaN(t) ? 0 : t; };
+        const mods = pvMods.mods.map(m => ({ ...m, lobbies: lobbies.get(m.id) || [], games: games.get(m.id) || [] }))
+            .sort((a, b) => time(b.updated) - time(a.updated) || time(b.created) - time(a.created) || b.id - a.id);
+        modsPageCache = { at: Date.now(), body: MapPages.renderModsPage({ author: pvMods.author, readAt: pvMods.readAt, mods, lobbiesAt: at || null, stylesHref, isMatchId }) };
     }
-    answerJson(res, 200, { author: pvMods.author, readAt: pvMods.readAt, mods: pvMods.mods.map(m => ({ ...m, games: games.get(m.id) || [] })) });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=20' });
+    res.end(modsPageCache.body);
 }
 
 // --- Map pages (map-pages.js): /maps/, /maps/<slug>, the sitemap, and the home page's links to busy maps -------------
@@ -2621,6 +2645,7 @@ async function serveMapPage(res, raw) {
 async function serveSitemap(res) {
     await sendCached(res, 'sitemap', () => {
         const urls = [{ path: '/' }, { path: '/replay' }];
+        if (pvMods.mods.length) urls.push({ path: '/mods', lastmod: Math.max(0, ...pvMods.mods.map(m => Date.parse(m.updated || '') || 0)) || null });
         try {
             const { maps, slugOf } = mapSlugs();
             const indexed = maps.list.filter(m => MapPages.isIndexable(m) && slugOf.has(m.name));
@@ -2724,8 +2749,9 @@ async function handleRequest(req, res) {
         serveMapList(res);
         return;
     }
-    if (pathname === '/api/mods') {
-        serveMods(res);
+    if (pathname === '/mods' || pathname === '/mods/') {
+        if (pathname === '/mods/') return redirect(res, '/mods');
+        await serveModsPage(res);
         return;
     }
     if (pathname === '/api/maps/players') {
