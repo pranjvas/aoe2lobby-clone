@@ -480,16 +480,17 @@ function writeJsonAtomic(file, obj) {
 }
 
 // A game in progress from a launching lobby: the lobby as buildLobbies built it (names, map, settings, ratings) and the
-// final picks of its slots (m.launch). Civs stay hidden when the lobby hides them (option 85). Players keep their lobby
-// order. Ratings are the lobby's (every ladder known for each player); `rating` is the game's own ladder, as on the
-// lobby list's Auto. The spectator count isn't known (null); the delay is the lobby's, in minutes.
+// final picks of its slots (m.launch). Every civ is shown, also in a game whose lobby hid them (option 85): the owner's
+// choice (28 Nov 2026); the lobby list still hides picks while players choose. Players keep their lobby order. Ratings
+// are the lobby's (every ladder known for each player); `rating` is the game's own ladder, as on the lobby list's Auto.
+// The spectator count isn't known (null); the delay is the lobby's, in minutes.
 function gameFromLaunch(lobby, m, now) {
     const opts = m.relicOptions || {};
-    const civsHidden = opts['85'] === '1';
+    const civsHidden = false;
     const lobbyPlayers = new Map(lobby.players.map(p => [p.id, p]));
     const players = m.launch.map(s => {
         const team = displayTeam(s.teamCode);
-        const civ = civsHidden ? null : relicRaceName(s.raceId);
+        const civ = relicRaceName(s.raceId);
         if (s.kind === 'ai') return { id: 0, name: 'AI', kind: 'ai', team, color: s.color, civ, rating: null, ratings: {} };
         const lp = lobbyPlayers.get(s.id), cached = profileCache.get(s.id);
         const ratings = {}, stats = {};
@@ -695,8 +696,9 @@ function a2cText(v) {
     return s && !/^\[.*\]$/.test(s) ? s : null;
 }
 
-// One of its games in the detail shape, or null when it isn't a matchmaking game with a human in it. Civs stay hidden
-// when the game hides them (its list has them anyway). Ratings are the game's own ladder, as its list gives them.
+// One of its games in the detail shape, or null when it isn't a matchmaking game with a human in it. Every civ is shown,
+// also in a game that hides them (the owner's choice, 28 Nov 2026). Ratings here are the game's own ladder, as its list
+// gives them; buildSpectateCache adds every other ladder.
 function companionGame(m) {
     if (!m || typeof m !== 'object' || m.name !== 'AUTOMATCH' || !Array.isArray(m.players)) return null;
     const id = num(m.matchId);
@@ -704,12 +706,12 @@ function companionGame(m) {
     const board = str(m.leaderboardId) || '';
     const isQuickPlay = board.startsWith('qp_');
     const ladder = isQuickPlay ? null : (A2C_LADDERS[board] ?? null);
-    const civsHidden = m.hideCivs === true;
+    const civsHidden = false;
     const players = m.players.filter(p => p && typeof p === 'object').map(p => {
         const team = Number.isInteger(p.team) && p.team >= 1 && p.team <= 4 ? p.team : null;
         const color = Number.isInteger(p.color) && p.color >= 1 && p.color <= 8 ? p.color : null;
         const civName = a2cText(p.civName);
-        const civ = civsHidden ? null : civName ? (A2C_CIV_FIXES[civName] || civName) : 'Unknown civ';
+        const civ = civName ? (A2C_CIV_FIXES[civName] || civName) : 'Unknown civ';
         if (p.status === 'ai' || !isProfileId(p.profileId)) return { id: 0, name: 'AI', kind: 'ai', team, color, civ, rating: null, ratings: {} };
         const ratings = {}, stats = {};
         const rating = num(p.rating);
@@ -746,7 +748,7 @@ function companionGame(m) {
         civsHidden,
         record: m.recordGame !== false,
         endedAt: null,
-        source: 'aoe2companion',
+        source: 'matchmaking',
         players
     };
 }
@@ -836,9 +838,56 @@ function companionUsable() {
 // alerts need, so a browser can match its follows without sending them.
 const SPECTATE_BUILD_MS = 2000;
 const SPECTATE_REBUILD_MS = 30000;
+
+// Every ladder for every player, as aoe2lobby.com had them: the ranked ladders (DM, RM and EW, 1v1 and team) from the
+// game's public profile stats (fetchProfilesBatch, profileCache: rating, wins, losses, streak, highest, the numbers
+// aoe2lobby.com showed), and Unranked, which the game's public API doesn't have, from the same lookup as the lobby list
+// (unrankedCache). A ladder the game itself carries keeps its own numbers when they have as many games or more (newer).
+// Players not known yet are looked up in the background, SPECTATE_ASK_MAX at a time every SPECTATE_ASK_MS, so the ~3,000
+// players of a full list are known within a few minutes without a burst of requests; their games show the rest once in.
+const SPECTATE_UNRANKED_REFRESH_MS = 60 * 60 * 1000; // a player in a game: their Unranked rating can't change meanwhile
+const SPECTATE_ASK_MS = 10000;
+const SPECTATE_ASK_MAX = 200;
+let spectateAskedAt = 0;
+function withEveryLadder(p, game, now, needRelic, needUnranked) {
+    if (p.kind !== 'human' || !isProfileId(p.id)) return p;
+    const cached = profileCache.get(p.id), unranked = unrankedCache.get(p.id);
+    if (cached) cached.lastSeen = now; else if (!pendingProfileIds.has(p.id)) needRelic.add(p.id);
+    if (cached && now - cached.fetchedAt > PROFILE_REFRESH_MS && !pendingProfileIds.has(p.id)) needRelic.add(p.id);
+    if (unranked) unranked.lastSeen = now;
+    if ((!unranked || now - unranked.fetchedAt > SPECTATE_UNRANKED_REFRESH_MS) && !unrankedWanted.has(p.id) &&
+        !(now - (unrankedFailedAt.get(p.id) ?? -Infinity) < PROFILE_RETRY_MS)) needUnranked.add(p.id);
+    const ratings = { ...(p.ratings || {}) }, stats = { ...(p.stats || {}) };
+    const add = (ladder, s) => {
+        if (!s || !Number.isFinite(s.rating)) return;
+        if (Number.isFinite(ratings[ladder]) && (stats[ladder]?.games ?? -1) >= (num(s.games) ?? 0)) return;
+        ratings[ladder] = s.rating;
+        stats[ladder] = { games: num(s.games), wins: num(s.wins), winp: num(s.winp), streak: num(s.streak), highest: num(s.highest) };
+    };
+    for (const ladder of RELIC_LADDERS) add(ladder, cached?.stats?.[ladder]);
+    add('0', unranked?.stats);
+    const steam = !p.steamProfile && cached?.steamProfile ? { steamProfile: cached.steamProfile } : {};
+    const country = !p.country && cached?.country ? { country: cached.country } : {};
+    return { ...p, ...steam, ...country, ratings, stats, rating: game.ladder !== null ? (ratings[game.ladder] ?? null) : null };
+}
+
+// Looks up the players withEveryLadder found missing (at most SPECTATE_ASK_MAX of each kind every SPECTATE_ASK_MS); the
+// list is built again when the answers are in
+function askSpectateRatings(needRelic, needUnranked, now) {
+    if (now - spectateAskedAt < SPECTATE_ASK_MS || (!needRelic.size && !needUnranked.size)) return;
+    spectateAskedAt = now;
+    const relic = [...needRelic].slice(0, SPECTATE_ASK_MAX);
+    if (relic.length) fetchProfilesBatch(relic).then(() => { spectateDirty = true; }, e => console.error('Spectate ratings:', e.message));
+    const unranked = [...needUnranked].slice(0, SPECTATE_ASK_MAX);
+    if (unranked.length) askUnranked(unranked);
+}
+
 function buildSpectateCache(now) {
-    const games = [...liveGames.values()];
-    if (companionUsable()) for (const g of companionGames.values()) if (!liveGames.has(g.id)) games.push(g);
+    const sourceGames = [...liveGames.values()];
+    if (companionUsable()) for (const g of companionGames.values()) if (!liveGames.has(g.id)) sourceGames.push(g);
+    const needRelic = new Set(), needUnranked = new Set();
+    const games = sourceGames.map(g => ({ ...g, players: g.players.map(p => withEveryLadder(p, g, now, needRelic, needUnranked)) }));
+    askSpectateRatings(needRelic, needUnranked, now);
     games.sort((a, b) => b.startTime - a.startTime);
     const updatedAt = Math.floor(now / 1000);
     const listGames = games.map(({ source, ...g }) => ({ ...g, players: g.players.map(({ country, stats, ...p }) => p) }));
@@ -980,7 +1029,7 @@ function emptyResult(state) {
 // The result of `game` from one getRecentMatchHistory response, or null while the game isn't in it. The history is
 // unsorted and holds older games, so the entry must match the id and, for aoe2lobby.com's feed's games (kept from before
 // 28 Nov 2026), the start time. A game taken from its lobby (source 'lobby') has only the time it was seen launching, a
-// few seconds before the real start, and aoe2companion's (source 'aoe2companion') are matched the same way: the id alone
+// few seconds before the real start, and matchmaking ones (source 'matchmaking') are matched the same way: the id alone
 // (a match id is unique) and the entry's own start. Only ids, outcomes, ratings, times and replay sizes are read:
 // matchurls[].url is a signed blob URL and is never touched.
 function parseMatchResult(data, game) {
@@ -1905,6 +1954,7 @@ async function fetchUnranked() {
                     unrankedCache.set(id, { stats: found.get(id) || null, fetchedAt: now, lastSeen: unrankedCache.get(id)?.lastSeen ?? now });
                 }
                 rebuildSoon(); // the spinners these answers end
+                spectateDirty = true; // and the Spectate players' Unranked ratings
             } catch (e) {
                 console.error('Unranked ratings (aoe2companion):', e.message);
                 const failedAt = Date.now();

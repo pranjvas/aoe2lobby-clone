@@ -1783,10 +1783,9 @@ async function fetchSpectate() {
     if (state.currentView === 'spectate') spectateTimer = setTimeout(fetchSpectate, 15000);
 }
 
-// A player's rating on a Spectate card: Elo Type's ladder, except in a ranked game, which shows its own ladder (its live
-// data, from aoe2companion, has only that one; the game's own page does the same)
-function spectateRating(p, g) {
-    if (g && g.isRanked) return finiteOrNull(p.rating);
+// A player's rating on a Spectate card: Elo Type's ladder (the server sends every ladder it knows for each player), or the
+// game's own with Auto
+function spectateRating(p) {
     return finiteOrNull(state.eloType === 'auto' ? p.rating : (p.ratings ? p.ratings[state.eloType] : null));
 }
 
@@ -1796,8 +1795,8 @@ function ratingAverage(players, ratingOf) {
     return r.length ? Math.round(r.reduce((a, b) => a + b, 0) / r.length) : null;
 }
 
-function spectateAverage(players, g) {
-    return ratingAverage(players, p => spectateRating(p, g));
+function spectateAverage(players) {
+    return ratingAverage(players, spectateRating);
 }
 
 // Teams in order (display team 1-4); each player without a team gets a group of their own (free-for-all, custom games)
@@ -1832,7 +1831,7 @@ function filterSpectate() {
         if (state.spectateServer !== 'all' && g.server !== state.spectateServer) return false;
         return true;
     });
-    if (state.spectateSort === 'rating') games.sort((a, b) => (spectateAverage(b.players, b) ?? -1) - (spectateAverage(a.players, a) ?? -1));
+    if (state.spectateSort === 'rating') games.sort((a, b) => (spectateAverage(b.players) ?? -1) - (spectateAverage(a.players) ?? -1));
     else games.sort((a, b) => b.startTime - a.startTime);
     return games;
 }
@@ -1852,12 +1851,12 @@ function countdownText(readyAt) {
 
 function spectateCardHtml(g) {
     const teamsHtml = groupTeams(g.players).map(({ team, players }) => {
-        const avg = team !== null ? spectateAverage(players, g) : null;
+        const avg = team !== null ? spectateAverage(players) : null;
         return `
             <div class="spectate-team">
                 <div class="spectate-team-head">${team !== null ? `Team ${team}` : 'No team'}${avg != null ? ` <span class="player-elo">${avg}</span>` : ''}</div>
                 ${players.map(p => {
-                    const r = spectateRating(p, g);
+                    const r = spectateRating(p);
                     return `
                     <div class="player-item">
                         <span class="player-name" style="display: flex; align-items: center; gap: 6px;">
@@ -1872,7 +1871,7 @@ function spectateCardHtml(g) {
                 }).join('')}
             </div>`;
     }).join('');
-    const avg = spectateAverage(g.players, g);
+    const avg = spectateAverage(g.players);
     const start = g.startTime, delay = g.observerDelay;
     const readyAt = start + delay * 60;
     const wait = countdownText(readyAt);
@@ -2940,7 +2939,7 @@ function desktopAlertsHtml() {
 
 const followPanel = document.getElementById('followPanel');
 // What the Spectate list holds: the server takes its games from the game's public lobby list (see server.js)
-const SPECTATE_SCOPE_NOTE = 'Games from public lobbies that allow spectators are listed the moment they launch. Ranked and Quick Play games come from aoe2companion.com\'s public list of games in progress.';
+const SPECTATE_SCOPE_NOTE = 'Games from public lobbies that allow spectators are listed the moment they launch. Ranked and Quick Play games come from the source\'s list of games in progress.';
 
 // The Spectate view's panel: who is followed, and who of them is in a game now
 function renderFollowPanel() {
