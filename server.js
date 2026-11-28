@@ -468,10 +468,10 @@ function mapDisplayName(mapName) {
 }
 
 // Write to a temp file and rename it over the target, so a reader never sees a half-written file
-function writeJsonAtomic(file, obj) {
+function writeJsonAtomic(file, obj, { compact = false } = {}) {
     const tmp = file + '.' + process.pid + '.tmp';
     try {
-        fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+        fs.writeFileSync(tmp, compact ? JSON.stringify(obj) : JSON.stringify(obj, null, 2));
         fs.renameSync(tmp, file);
     } catch (e) {
         console.error('Failed to write ' + file + ':', e.message);
@@ -563,17 +563,23 @@ function noteLobbyGone(m, now) {
     const lobby = launchLobbies.get(m.id);
     launchLobbies.delete(m.id);
     if (!lobby || !m.launch || !m.launchedAt || m.lastSeen - m.launchedAt > LAUNCH_MAX_MS) return;
-    if (m.isobservable !== 1 || liveGames.has(m.id) || endedGames.has(m.id)) return;
+    if (m.isobservable !== 1 || liveGames.has(m.id)) return;
+    // An earlier "launch" of this lobby that came to nothing (its players were seen moving on, so it was ended with no
+    // result): this one is the real game
+    const earlier = endedGames.get(m.id);
+    if (earlier && (earlier.game.source !== 'lobby' || earlier.result)) return;
+    endedGames.delete(m.id);
     liveGames.set(m.id, gameFromLaunch(lobby, m, now));
     spectateDirty = true;
     saveLiveGamesSoon();
 }
 
-// Called by pollRelic for each lobby listed: one listed again soon after it "started" never did (a game that starts
-// never comes back to the list)
+// Called by pollRelic for each lobby listed: one listed again after it "started" never did (a game that starts never
+// comes back to the list), however long that took; nor did one ended for that reason without a result
 function noteLobbyListed(id, now) {
-    const g = liveGames.get(id);
-    if (!g || now - g.startTime * 1000 > LAUNCH_UNDO_MS) return;
+    const ended = endedGames.get(id);
+    if (ended && ended.game.source === 'lobby' && !ended.result) endedGames.delete(id);
+    if (!liveGames.has(id)) return;
     liveGames.delete(id);
     liveChecks.delete(id);
     spectateDirty = true;
@@ -581,9 +587,11 @@ function noteLobbyListed(id, now) {
 }
 
 // A player in a lobby this server first saw after a game started, or in a game started after it, has left that game. A
-// game whose players have all left is over; so is one past LIVE_MAX_MS. Its result is looked up when its page asks.
+// game whose players have all left is over; so is one past LIVE_MAX_MS. The same for the matchmaking games (a removal
+// missed while their socket was down would otherwise leave one listed for good). Its result is looked up when its page
+// asks.
 function noteMovedOn(lobbies, now) {
-    if (!liveGames.size) return;
+    if (!liveGames.size && !companionGames.size) return;
     const since = new Map(); // profile id -> the newest start (ms) of a lobby or game they are in
     const note = (id, t) => { if (isProfileId(id) && t > (since.get(id) ?? 0)) since.set(id, t); };
     for (const lobby of lobbies) {
@@ -593,13 +601,15 @@ function noteMovedOn(lobbies, now) {
     for (const games of [liveGames, companionGames]) {
         for (const g of games.values()) for (const p of g.players) if (p.kind === 'human') note(p.id, g.startTime * 1000);
     }
-    for (const [id, g] of liveGames) {
+    const over = g => {
         const start = g.startTime * 1000;
         const humans = g.players.filter(p => p.kind === 'human');
-        if (now - start > LIVE_MAX_MS || (humans.length && humans.every(p => (since.get(p.id) ?? 0) > start))) {
-            endLiveGame(id, Math.floor(now / 1000));
-        }
-    }
+        return now - start > LIVE_MAX_MS || (humans.length > 0 && humans.every(p => (since.get(p.id) ?? 0) > start));
+    };
+    for (const [id, g] of liveGames) if (over(g)) endLiveGame(id, Math.floor(now / 1000));
+    let endedAny = false;
+    for (const [id, g] of companionGames) if (over(g)) { endCompanionGame(id, now); endedAny = true; }
+    if (endedAny) spectateDirty = true;
 }
 
 // A live game becomes an ended one. `found`: its match history entry's start and the result read from it, when that is
@@ -724,11 +734,12 @@ function companionGame(m) {
             id: p.profileId, name: str(p.name) || `Player ${p.profileId}`, kind: 'human', team, color, civ,
             country: countryCode(p.country), rating: ladder ? (ratings[ladder] ?? null) : null, ratings, stats
         };
-        if (/^\d{17}$/.test(String(p.steamId ?? ''))) player.steamProfile = `https://steamcommunity.com/profiles/${p.steamId}`;
+        const steamId = typeof p.steamId === 'string' || typeof p.steamId === 'number' ? String(p.steamId) : '';
+        if (/^\d{17}$/.test(steamId)) player.steamProfile = `https://steamcommunity.com/profiles/${steamId}`;
         return player;
     });
     if (!players.some(p => p.kind === 'human')) return null;
-    const started = Date.parse(m.started);
+    const started = typeof m.started === 'string' ? Date.parse(m.started) : NaN;
     return {
         id,
         title: isQuickPlay ? 'Quick Play' : 'Ranked match',
@@ -753,20 +764,20 @@ function companionGame(m) {
     };
 }
 
+// Not saved to live_games.json here: those ends come every few seconds (saveLiveGames keeps only what can't be rebuilt)
 function endCompanionGame(id, now) {
     const g = companionGames.get(id);
     if (!g) return;
     companionGames.delete(id);
     endedGames.set(id, { game: { ...g, endedAt: Math.floor(now / 1000) }, result: null, lookup: null, firstTryAt: 0, lastTryAt: 0, tries: 0 });
     pruneEndedGames();
-    saveLiveGamesSoon();
 }
 
 // One socket message: an array of { type, data } events. The first message on a socket is the whole list: games kept
-// from before that aren't in it have ended.
+// from before that aren't in it have ended. Returns false for a whole list too short to trust (it ends nothing).
 function applyCompanionMessage(text, whole) {
     let events;
-    try { events = JSON.parse(text); } catch (e) { return; }
+    try { events = JSON.parse(text); } catch (e) { return !whole; }
     if (!Array.isArray(events)) events = [events];
     const now = Date.now();
     const listed = whole ? new Set() : null;
@@ -783,12 +794,17 @@ function applyCompanionMessage(text, whole) {
             if (Number.isSafeInteger(id)) endCompanionGame(id, now);
         }
     }
-    if (listed && listed.size >= A2C_FULL_MIN) {
-        for (const id of [...companionGames.keys()]) if (!listed.has(id)) endCompanionGame(id, now);
-    }
     spectateDirty = true;
+    if (!listed) return true;
+    if (listed.size < A2C_FULL_MIN) return false;
+    for (const id of [...companionGames.keys()]) if (!listed.has(id)) endCompanionGame(id, now);
+    return true;
 }
 
+// a2cListAt: when the current socket's whole list arrived (0 until then, and while it is closed). Until then a game
+// missing from companionGames may still be running: its page says the live data is unavailable, not "not found".
+let a2cListAt = 0;
+const A2C_RESYNC_MS = 60000; // a whole list too short to trust: a new socket this long after, for a full one
 function connectCompanion() {
     let ws;
     try {
@@ -805,16 +821,31 @@ function connectCompanion() {
         a2cDownSince = 0;
         a2cRetryMs = A2C_RETRY_MIN_MS;
         if (a2cLoggedDown) { console.log('aoe2companion live games: connected again'); a2cLoggedDown = false; }
-        applyCompanionMessage(msg.data, whole);
+        // A listener's exception would be thrown as an uncaught exception, which stops the server
+        let ok = true;
+        try {
+            ok = applyCompanionMessage(msg.data, whole);
+        } catch (e) {
+            console.error('aoe2companion live games: message skipped:', e.message);
+        }
+        if (whole) {
+            if (ok) a2cListAt = Date.now();
+            else setTimeout(() => { if (a2cSocket === ws) companionClosed(ws, 'its whole list was too short; asking again'); }, A2C_RESYNC_MS).unref();
+        }
         whole = false;
     };
     ws.onerror = (e) => companionClosed(ws, e?.message || 'socket error');
     ws.onclose = (e) => companionClosed(ws, `closed (code ${e?.code})`);
 }
 
+function companionListCurrent() {
+    return !!a2cSocket && a2cListAt > 0;
+}
+
 function companionClosed(ws, reason) {
     if (ws && a2cSocket !== ws) return; // already handled
     a2cSocket = null;
+    a2cListAt = 0;
     if (ws) { ws.onmessage = ws.onerror = ws.onclose = null; try { ws.close(); } catch (e) { } }
     if (!a2cDownSince) a2cDownSince = Date.now();
     if (!a2cLoggedDown) { console.error(`aoe2companion live games: ${reason}; reconnecting`); a2cLoggedDown = true; }
@@ -882,13 +913,16 @@ function askSpectateRatings(needRelic, needUnranked, now) {
     if (unranked.length) askUnranked(unranked);
 }
 
+// Each source's games only while that source is current: the lobby games while Relic's list is read (without it nothing
+// ends them), the matchmaking ones while their socket is usable
 function buildSpectateCache(now) {
-    const sourceGames = [...liveGames.values()];
+    const sourceGames = now - relicOkAt <= SPECTATE_STALE_MS ? [...liveGames.values()] : [];
     if (companionUsable()) for (const g of companionGames.values()) if (!liveGames.has(g.id)) sourceGames.push(g);
+    // Newest first, so the players of the games that just started are looked up first
+    sourceGames.sort((a, b) => b.startTime - a.startTime);
     const needRelic = new Set(), needUnranked = new Set();
     const games = sourceGames.map(g => ({ ...g, players: g.players.map(p => withEveryLadder(p, g, now, needRelic, needUnranked)) }));
     askSpectateRatings(needRelic, needUnranked, now);
-    games.sort((a, b) => b.startTime - a.startTime);
     const updatedAt = Math.floor(now / 1000);
     const listGames = games.map(({ source, ...g }) => ({ ...g, players: g.players.map(({ country, stats, ...p }) => p) }));
     const indexGames = games.map(g => ({ id: g.id, startTime: g.startTime, map: g.map, players: g.players.filter(p => p.kind === 'human').map(p => p.id) }));
@@ -918,17 +952,28 @@ async function freshSpectate() {
     return spectateCache;
 }
 
+// live_games.json keeps what can't be rebuilt after a restart: the lobby games (live and ended) and ended games with a
+// result found. Saved compact, at most every LIVE_SAVE_MS while something changes; on shutdown (saveLiveGames(true)) the
+// live matchmaking games too, so the first whole list on the new socket ends those that finished during the restart.
+// The matchmaking ends that come every few seconds aren't saved as they happen (their socket resends the live ones).
+const LIVE_SAVE_MS = 30000;
 let liveSaveTimer = null;
 function saveLiveGamesSoon() {
     if (liveSaveTimer) return;
-    liveSaveTimer = setTimeout(saveLiveGames, 5000);
+    liveSaveTimer = setTimeout(() => saveLiveGames(false), LIVE_SAVE_MS);
     liveSaveTimer.unref();
 }
-function saveLiveGames() {
+function saveLiveGames(shutdown = false) {
     clearTimeout(liveSaveTimer);
     liveSaveTimer = null;
-    const ended = [...endedGames.values()].map(e => ({ game: e.game, result: e.result && e.result.state === 'found' ? e.result : null }));
-    writeJsonAtomic(LIVE_GAMES_PATH, { savedAt: Date.now(), live: [...liveGames.values()], ended });
+    const ended = [];
+    for (const e of endedGames.values()) {
+        const result = e.result && e.result.state === 'found' ? e.result : null;
+        if (e.game.source === 'lobby' || result) ended.push({ game: e.game, result });
+    }
+    const data = { savedAt: Date.now(), live: [...liveGames.values()], ended };
+    if (shutdown) data.matchmaking = [...companionGames.values()];
+    writeJsonAtomic(LIVE_GAMES_PATH, data, { compact: true });
 }
 // Called once at start, after endedGames exists
 function loadLiveGames() {
@@ -938,13 +983,19 @@ function loadLiveGames() {
         for (const g of Array.isArray(data?.live) ? data.live : []) {
             if (g && Number.isSafeInteger(g.id) && Array.isArray(g.players) && now - g.startTime * 1000 < LIVE_MAX_MS) liveGames.set(g.id, g);
         }
+        // Kept from a shutdown only if it was recent: an older list would end its games at the wrong time
+        if (now - (num(data?.savedAt) ?? 0) < A2C_STALE_MS) {
+            for (const g of Array.isArray(data?.matchmaking) ? data.matchmaking : []) {
+                if (g && Number.isSafeInteger(g.id) && Array.isArray(g.players) && now - g.startTime * 1000 < LIVE_MAX_MS) companionGames.set(g.id, g);
+            }
+        }
         for (const e of Array.isArray(data?.ended) ? data.ended : []) {
             if (e?.game && Number.isSafeInteger(e.game.id) && !liveGames.has(e.game.id)) {
                 endedGames.set(e.game.id, { game: e.game, result: e.result || null, lookup: null, firstTryAt: 0, lastTryAt: 0, tries: 0 });
             }
         }
         pruneEndedGames();
-        console.log(`Spectate: ${liveGames.size} live and ${endedGames.size} ended games from ${path.basename(LIVE_GAMES_PATH)}`);
+        console.log(`Spectate: ${liveGames.size} lobby and ${companionGames.size} matchmaking live games, and ${endedGames.size} ended, from ${path.basename(LIVE_GAMES_PATH)}`);
     } catch (e) {
         if (e.code !== 'ENOENT') console.error(`Reading ${path.basename(LIVE_GAMES_PATH)} failed:`, e.message);
     }
@@ -1206,11 +1257,15 @@ async function serveSpectateMatch(res, id, byPlayer = false) {
         result = found.ended.result || emptyResult('pending');
     }
     const game = await withRelicProfiles(found.game);
+    // While the matchmaking games' list isn't current (a restart before its first whole list, or its socket down), a game
+    // not live here may still be running: stale, so the page says the live data is unavailable and keeps asking, rather
+    // than "not found" (or, for a player, an older ended game as their latest)
+    const mayLack = found.status !== 'live' && !companionListCurrent();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
         status: found.status,
         updatedAt: cache.body ? Math.floor(cache.snapAt / 1000) : null,
-        stale: !spectateFresh(cache),
+        stale: !spectateFresh(cache) || mayLack,
         game,
         relay: relayOpen(found.game),
         result
@@ -1268,7 +1323,8 @@ function logMissingTag(name) {
     console.error(`Match page: index.html has no ${name} tag, served without replacing it`);
 }
 
-// Uses whatever snapshot is cached: a page view never triggers a feed refresh (the page's own script calls the API)
+// The games as freshSpectate has them now (built from memory, no request goes out), so a game that ended or started
+// since the last build is described as it is
 async function serveSpectatePage(res, id) {
     let html;
     try {
@@ -1278,7 +1334,7 @@ async function serveSpectatePage(res, id) {
         res.end(e.code === 'ENOENT' ? 'File not found' : 'Server error: ' + e.code);
         return;
     }
-    const { title, description } = spectatePageText(id, spectateGameById(spectateCache, id).game);
+    const { title, description } = spectatePageText(id, spectateGameById(await freshSpectate(), id).game);
     const url = `${SITE_URL}/spectate/${id}`;
     const tags = [
         ['title', /<title>[^<]*<\/title>/i, `<title>${esc(title)}</title>`],
@@ -2428,7 +2484,7 @@ function rebuildSoon() {
 }
 
 // Reads Relic's list and publishes the list built from it. One read at a time, shared by every waiting request; after a
-// failure, wait (15 s doubling to 60 s) before retrying
+// failure, wait (1 s doubling to 60 s) before retrying
 function refreshLobbies() {
     if (!relicPolling && Date.now() >= lobbiesFailUntil) {
         relicPollStartedAt = Date.now();
@@ -2440,7 +2496,8 @@ function refreshLobbies() {
             })
             .catch(e => {
                 lobbiesFailures++;
-                lobbiesFailUntil = Date.now() + Math.min(60000, 15000 * 2 ** (lobbiesFailures - 1));
+                // 1 s doubling to 60 s: one failed read costs about one read, not 15 s of launches the Spectate list would miss
+                lobbiesFailUntil = Date.now() + Math.min(60000, 1000 * 2 ** (lobbiesFailures - 1));
                 console.error('Lobbies refresh failed:', e.message);
             })
             .finally(() => { relicPolling = null; });
@@ -2631,18 +2688,21 @@ try {
 }
 
 // One snapshot of the built lobby list: Relic's lobbies (numeric ids), each under the map name its card shows, or the
-// mod map's number while that has no name (as aoe2lobby.com's feed stored it, so a name learned later groups them).
-// Players whose name isn't known yet (no profile fetched) wait for the next snapshot: the counting would store the stand-in.
+// map's id while Relic's data can't name it (as aoe2lobby.com's feed stored it, so a name learned later groups them),
+// never a map only guessed from the lobby's title. Players whose name isn't known yet (no profile fetched) wait for the
+// next snapshot: the counting would store the stand-in. Stats only once both rating sources have answered (statsPending
+// false), so a partial set never replaces a saved one (the writer also merges them per ladder).
 function recordMapSnapshot(lobbies, now) {
     if (!mapHistoryWriter || now - lastMapSnapshotAt < MAP_SNAPSHOT_MS) return;
     lastMapSnapshotAt = now;
     const snapshot = [];
     for (const lobby of lobbies) {
         if (typeof lobby.id !== 'number' || typeof lobby.map !== 'string') continue;
-        const map = /^Map #(\d+)$/.exec(lobby.map)?.[1] ?? lobby.map;
+        const relicMap = relicMapName(activeMatches.get(lobby.id) || {});
+        const map = relicMap && !relicMap.known ? relicMap.name : (/^Map #(\d+)$/.exec(lobby.map)?.[1] ?? lobby.map);
         const players = lobby.players
             .filter(p => isProfileId(p.id) && typeof p.name === 'string' && p.name && p.name !== 'Unknown' && p.name !== `Player_${p.id}`)
-            .map(p => ({ profileId: p.id, name: p.name, steamProfile: p.steamProfile || null, stats: p.allStats || null }));
+            .map(p => ({ profileId: p.id, name: p.name, steamProfile: p.steamProfile || null, stats: p.statsPending ? null : (p.allStats || null) }));
         if (players.length) snapshot.push({ matchId: String(lobby.id), map, players });
     }
     try {
@@ -3145,7 +3205,9 @@ async function handleRequest(req, res) {
             if (pending) await pending;
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(lobbiesCache.body || '{"matches":[]}');
+        // feed as it is now: the body was built right after a good read, when it was always true. Its first "feed" is
+        // the top-level one (the body is { v, feed, matches }).
+        res.end(lobbiesCache.body ? lobbiesCache.body.replace('"feed":true', `"feed":${lobbyFeedOk()}`) : '{"matches":[]}');
         return;
     }
 
@@ -3238,7 +3300,7 @@ connectCompanion();
 function shutdown() {
     for (const res of streamClients.keys()) res.end();
     clearTimeout(lobbyLoopTimer);
-    saveLiveGames();
+    saveLiveGames(true);
     try { mapHistoryWriter?.close(); } catch (e) { } // each snapshot is already committed
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 8000).unref();

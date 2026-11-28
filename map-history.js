@@ -72,9 +72,12 @@ class MapHistoryWriter {
             ON CONFLICT(name) DO UPDATE SET lobbies = lobbies + excluded.lobbies, last = MAX(last, excluded.last)`);
         this.upPair = this.db.prepare(`INSERT INTO map_players (map, player, n, last) VALUES (?, ?, ?, ?)
             ON CONFLICT(map, player) DO UPDATE SET n = n + excluded.n, last = MAX(last, excluded.last)`);
+        // Stats merge per ladder: a snapshot that lacks a ladder (its source hadn't answered) keeps the saved one
         this.upPlayer = this.db.prepare(`INSERT INTO players (id, name, steam, stats, last) VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET name = excluded.name, steam = COALESCE(excluded.steam, steam),
-            stats = COALESCE(excluded.stats, stats), last = MAX(last, excluded.last)`);
+            stats = CASE WHEN excluded.stats IS NULL THEN stats WHEN stats IS NULL OR json_valid(stats) = 0 THEN excluded.stats
+                ELSE json_patch(stats, excluded.stats) END,
+            last = MAX(last, excluded.last)`);
         if (!this.getMeta.get('since')) this.start(legacyJson);
         // Lobbies counted before a restart, so a restart doesn't count them again
         try {
