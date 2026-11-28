@@ -34,9 +34,11 @@ let lobbiesFailUntil = 0, lobbiesFailures = 0;
 let pageVersion = '';
 try { pageVersion = (/\/app\.js\?v=(\d+)/.exec(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8')) || [])[1] || ''; } catch (e) { }
 let lobbyPlayers = { at: 0, ids: new Map() }; // who was in a lobby at the last build, and its map (the Maps view's "Active now" sort)
-// Whether the last build had aoe2lobby.com's data (scraper.js's files fresh). Without it, lobbies have no settings or civs,
-// fewer ratings, and maps only as Relic's data names them; the stream tells the page, which says so.
-let scrapedFeedOk = true;
+// Whether the lobby list is current: Relic's list read in the last RELIC_STALE_MS. The stream and /api/lobbies say so (feed),
+// and the page shows a notice while it isn't. (Until 28 Nov 2026 this was aoe2lobby.com's feed, which has blocked us.)
+function lobbyFeedOk() {
+    return Date.now() - relicOkAt < RELIC_STALE_MS;
+}
 const profileCache = new Map(); // profile_id -> { alias, rating, totalGames, totalWins, winRate, stats, steamProfile, fetchedAt, lastSeen }
 const PROFILE_REFRESH_MS = 6 * 60 * 60 * 1000; // cached profiles this old are refetched, in the background only
 const PROFILE_FORGET_MS = 24 * 60 * 60 * 1000; // profiles not seen in any lobby for this long are dropped
@@ -2344,7 +2346,6 @@ function buildLobbies(requested = new Set()) {
     const ids = new Map();
     for (const lobby of allMatchesArray) for (const p of lobby.players) if (isProfileId(p.id) && !ids.has(p.id)) ids.set(p.id, lobby.map);
     lobbyPlayers = { at: now, ids };
-    scrapedFeedOk = !!scrapedLobbiesRaw;
     saveRelicCodes(now);
     return allMatchesArray;
 }
@@ -2416,7 +2417,8 @@ function publishLobbies(requested) {
         return;
     }
     noteLaunching(matches, Date.now()); // the Spectate list's games come from the lobbies that launch
-    lobbiesCache = { at: Date.now(), body: JSON.stringify({ v: pageVersion, feed: scrapedFeedOk, matches }) };
+    recordMapSnapshot(matches, Date.now()); // the Maps view's counts (every MAP_SNAPSHOT_MS)
+    lobbiesCache = { at: Date.now(), body: JSON.stringify({ v: pageVersion, feed: lobbyFeedOk(), matches }) };
     streamLobbies(matches);
 }
 
@@ -2495,7 +2497,7 @@ function streamLobbies(matches) {
     let ready = 0;
     for (const client of streamClients.values()) if (client.ready) ready++;
     if (!ready) return;
-    const msg = `data: {"t":"diff","seq":${streamSeq},"base":${base},"now":${Date.now()},"feed":${scrapedFeedOk},"seenAt":${sentSeen.seenAt},` +
+    const msg = `data: {"t":"diff","seq":${streamSeq},"base":${base},"now":${Date.now()},"feed":${lobbyFeedOk()},"seenAt":${sentSeen.seenAt},` +
         `"seen":${JSON.stringify(sentSeen.seen)},${orderChanged ? `"order":${JSON.stringify(order)},` : ''}` +
         `"remove":${JSON.stringify(remove)},"upsert":[${upsert.join(',')}]}\n\n`;
     for (const [res, client] of streamClients) if (client.ready) streamWrite(res, msg);
@@ -2506,7 +2508,7 @@ function streamFullMessage() {
         streamFullCache = `"seenAt":${sentSeen.seenAt},"seen":${JSON.stringify(sentSeen.seen)},` +
             `"matches":[${sentOrder.map(key => sentLobbies.get(key)).join(',')}]}`;
     }
-    return `data: {"t":"full","seq":${streamSeq},"v":${JSON.stringify(pageVersion)},"now":${Date.now()},"feed":${scrapedFeedOk},${streamFullCache}\n\n`;
+    return `data: {"t":"full","seq":${streamSeq},"v":${JSON.stringify(pageVersion)},"now":${Date.now()},"feed":${lobbyFeedOk()},${streamFullCache}\n\n`;
 }
 
 // Caddy passes the visitor's address in X-Forwarded-For (it replaces any the visitor sent)
@@ -2558,17 +2560,47 @@ async function serveLobbyStream(req, res) {
 
 setInterval(() => {
     if (!streamClients.size) return;
-    const msg = `data: {"t":"ping","seq":${streamSeq},"now":${Date.now()},"feed":${scrapedFeedOk}}\n\n`;
+    const msg = `data: {"t":"ping","seq":${streamSeq},"now":${Date.now()},"feed":${lobbyFeedOk()}}\n\n`;
     for (const [res, client] of streamClients) if (client.ready) streamWrite(res, msg);
 }, STREAM_PING_MS).unref();
 
 // --- Map history (the Maps view): which players keep showing up in each map's lobbies ----------------------------------
-// scraper.js counts them into a SQLite file (map-history.js), kept for good; this side only reads it. Feed map names are
-// grouped by the name the lobby cards show (mapDisplayName: a Steam mod map's number becomes its name). Answers are
-// kept MAP_CACHE_MS: the counts change once per 15 s snapshot. Every player is listed: the page asks for them a page at a
-// time, sorted and searched here (a busy map has thousands).
-const { MapHistoryReader, MAP_SORTS, MAP_LADDERS, sortMapPlayers, mapPlayersPage } = require('./map-history');
+// Counted here into a SQLite file (map-history.js), kept for good: every MAP_SNAPSHOT_MS, the lobbies of the last build
+// (recordMapSnapshot; a player counts once per lobby and map). Until 28 Nov 2026 scraper.js counted aoe2lobby.com's lobbies
+// instead; that feed has blocked us. Stored map names are grouped by the name the lobby cards show (mapDisplayName: a
+// Steam mod map's number becomes its name). Answers are kept MAP_CACHE_MS: the counts change once per snapshot. Every
+// player is listed: the page asks for them a page at a time, sorted and searched here (a busy map has thousands).
+const { MapHistoryReader, MapHistoryWriter, MAP_SORTS, MAP_LADDERS, sortMapPlayers, mapPlayersPage } = require('./map-history');
 const mapHistory = new MapHistoryReader();
+const MAP_SNAPSHOT_MS = 15000;
+let mapHistoryWriter = null, lastMapSnapshotAt = 0;
+try {
+    mapHistoryWriter = new MapHistoryWriter();
+} catch (e) {
+    console.error('Map history: counting is off:', e.message);
+}
+
+// One snapshot of the built lobby list: Relic's lobbies (numeric ids), each under the map name its card shows, or the
+// mod map's number while that has no name (as aoe2lobby.com's feed stored it, so a name learned later groups them).
+// Players whose name isn't known yet (no profile fetched) wait for the next snapshot: the counting would store the stand-in.
+function recordMapSnapshot(lobbies, now) {
+    if (!mapHistoryWriter || now - lastMapSnapshotAt < MAP_SNAPSHOT_MS) return;
+    lastMapSnapshotAt = now;
+    const snapshot = [];
+    for (const lobby of lobbies) {
+        if (typeof lobby.id !== 'number' || typeof lobby.map !== 'string') continue;
+        const map = /^Map #(\d+)$/.exec(lobby.map)?.[1] ?? lobby.map;
+        const players = lobby.players
+            .filter(p => isProfileId(p.id) && typeof p.name === 'string' && p.name && p.name !== 'Unknown' && p.name !== `Player_${p.id}`)
+            .map(p => ({ profileId: p.id, name: p.name, steamProfile: p.steamProfile || null, stats: p.allStats || null }));
+        if (players.length) snapshot.push({ matchId: String(lobby.id), map, players });
+    }
+    try {
+        mapHistoryWriter.recordSnapshot(snapshot, now);
+    } catch (e) {
+        console.error('Map history: snapshot not saved:', e.message);
+    }
+}
 const MAP_LIST_MAX = 1000; // maps in the picker, most lobbies first
 const MAP_PAGE_MAX = 1000; // players per request (the page asks for 60 at a time, and up to what it shows to refresh)
 const MAP_PAGE_OLD = 300; // a request without `limit` (an app.js from before paging): its 300 most frequent players
@@ -3157,6 +3189,7 @@ function shutdown() {
     for (const res of streamClients.keys()) res.end();
     clearTimeout(lobbyLoopTimer);
     saveLiveGames();
+    try { mapHistoryWriter?.close(); } catch (e) { } // each snapshot is already committed
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 8000).unref();
 }

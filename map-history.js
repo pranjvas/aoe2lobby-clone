@@ -1,5 +1,5 @@
 // Map history (the Maps view): how many of each map's lobbies each player has been in, kept for good in a SQLite file.
-// scraper.js writes it (MapHistoryWriter, one transaction per 15 s snapshot) and server.js reads it (MapHistoryReader,
+// server.js writes it (MapHistoryWriter, one transaction per 15 s snapshot; scraper.js did until 28 Nov 2026) and reads it (MapHistoryReader,
 // read-only). Uses Node's built-in node:sqlite (Node 22.13+ needs no flag); without it the Maps view is just empty.
 // Nothing is ever dropped: the file grows by roughly one row per player and map they have joined.
 'use strict';
@@ -175,7 +175,7 @@ class MapHistoryReader {
         this.byCount = new Map(); // number of map names -> prepared statement
     }
 
-    // Opened on first use: until scraper.js has created the file there is nothing to read
+    // Opened on first use: until the writer has created the file there is nothing to read
     open() {
         if (this.db) return this.db;
         const m = sqliteModule();

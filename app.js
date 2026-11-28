@@ -496,8 +496,8 @@ function reloadWhenIdle() {
     else location.reload();
 }
 
-// aoe2lobby.com's data (settings, civs, many ratings, the best map names) is missing while its feed is down. The server
-// says whether it has it (feed) in every stream message and in /api/lobbies; the page then shows a notice above the lists.
+// Whether the lobby list is current (the server read the game's lobby list lately). The server says so (feed) in every
+// stream message and in /api/lobbies; while it isn't, the page shows a notice above the lists.
 let feedOk = true;
 function noteFeedState(ok) {
     if (typeof ok !== 'boolean' || ok === feedOk) return;

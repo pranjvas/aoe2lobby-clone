@@ -134,15 +134,9 @@ function stayStart(profileId, now) {
     return stay.since;
 }
 
-// --- Map history (the Maps view): how many of each map's lobbies each player has been in, kept for good in SQLite
-// (map-history.js). If it can't be opened, only the Maps view goes without; the lobby files are still written.
-const { MapHistoryWriter } = require('./map-history');
-let mapHistory = null;
-try {
-    mapHistory = new MapHistoryWriter();
-} catch (e) {
-    console.error('Map history is off:', e.message);
-}
+// --- Map history (the Maps view): how many of each map's lobbies each player has been in, kept in SQLite (map-history.js).
+// Since 28 Nov 2026 server.js counts it from Relic's lobby list (aoe2lobby.com has blocked this server), and only one
+// process may write map_history.sqlite, so this file no longer does.
 
 // Only the ladders this player has data on
 function playerStats(profileId) {
@@ -161,8 +155,7 @@ function playerStats(profileId) {
 // page does: added over the list) and the ones that closed (lobby_match_remove). Its updates come and go: on 25 Nov 2026
 // they stopped after its server restarted, and every socket got the list and nothing more. So the socket stays open while
 // updates come, and when none comes for DATA_WAIT_MS a new socket takes a fresh list. Either way the files are rewritten
-// within a few seconds of a change. This is the only source. The map history still counts one snapshot every SNAPSHOT_MS.
-const SNAPSHOT_MS = 15000;
+// within a few seconds of a change.
 const WRITE_DELAY_MS = 150; // the ratings for an update arrive just after it: write once, with both
 const DATA_WAIT_MS = 5000; // updates come every ~3 s; this long without one, take a fresh list
 const FIRST_LIST_MS = 15000; // a new socket that sends no list in this time has failed
@@ -310,7 +303,6 @@ function writeJsonAtomic(file, obj) {
 
 const MAX_DATA_AGE_MS = 60000;
 let lastSavedSummary = '';
-let lastHistoryAt = 0; // the map history's last snapshot
 
 function dumpData() {
     if (!lobbyMatchAll) return;
@@ -319,7 +311,6 @@ function dumpData() {
 
     // Keyed by String(matchid) and String(profileId), never by display name
     const scrapedLobbies = Object.create(null);
-    const mapLobbies = []; // this write's lobbies, for the map history
     const scrapedPlayers = Object.create(null);
 
     const now = Date.now();
@@ -369,7 +360,6 @@ function dumpData() {
             hostProfileId = players[0].profileId;
         }
         if (hostName === 'UNKNOWN') continue;
-        mapLobbies.push({ matchId: String(matchId), map: lobby.map_name, players });
 
         scrapedLobbies[String(matchId)] = {
             matchId: String(matchId),
@@ -402,11 +392,6 @@ function dumpData() {
 
     const savedLobbies = writeJsonAtomic(OUTPUT_PATH, scrapedLobbies);
     const savedPlayers = writeJsonAtomic(PLAYERS_PATH, scrapedPlayers);
-    // At the cadence it was built for (one transaction per SNAPSHOT_MS), not on every 3 s write
-    if (now - lastHistoryAt >= SNAPSHOT_MS) {
-        lastHistoryAt = now;
-        try { mapHistory?.recordSnapshot(mapLobbies, now); } catch (e) { console.error('Map history: snapshot not saved:', e.message); }
-    }
     // Log only when the counts change, to keep pm2 logs small
     const summary = `${Object.keys(scrapedLobbies).length} lobbies and ${Object.keys(scrapedPlayers).length} players`;
     if (savedLobbies && savedPlayers && summary !== lastSavedSummary) {
@@ -426,12 +411,9 @@ setInterval(() => {
     }
 }, 10000);
 
-// pm2 stop/reload sends SIGINT: close the map history cleanly (each snapshot is already committed)
+// pm2 stop/reload sends SIGINT: exit at once (the files are written whole, by rename)
 for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.on(signal, () => {
-        try { mapHistory?.close(); } catch (e) { }
-        process.exit(0);
-    });
+    process.on(signal, () => process.exit(0));
 }
 
 console.log('Starting aoe2lobby.com lobby scraper (one live WebSocket; the files are rewritten on each update)...');
