@@ -1783,7 +1783,10 @@ async function fetchSpectate() {
     if (state.currentView === 'spectate') spectateTimer = setTimeout(fetchSpectate, 15000);
 }
 
-function spectateRating(p) {
+// A player's rating on a Spectate card: Elo Type's ladder, except in a ranked game, which shows its own ladder (its live
+// data, from aoe2companion, has only that one; the game's own page does the same)
+function spectateRating(p, g) {
+    if (g && g.isRanked) return finiteOrNull(p.rating);
     return finiteOrNull(state.eloType === 'auto' ? p.rating : (p.ratings ? p.ratings[state.eloType] : null));
 }
 
@@ -1793,8 +1796,8 @@ function ratingAverage(players, ratingOf) {
     return r.length ? Math.round(r.reduce((a, b) => a + b, 0) / r.length) : null;
 }
 
-function spectateAverage(players) {
-    return ratingAverage(players, spectateRating);
+function spectateAverage(players, g) {
+    return ratingAverage(players, p => spectateRating(p, g));
 }
 
 // Teams in order (display team 1-4); each player without a team gets a group of their own (free-for-all, custom games)
@@ -1829,7 +1832,7 @@ function filterSpectate() {
         if (state.spectateServer !== 'all' && g.server !== state.spectateServer) return false;
         return true;
     });
-    if (state.spectateSort === 'rating') games.sort((a, b) => (spectateAverage(b.players) ?? -1) - (spectateAverage(a.players) ?? -1));
+    if (state.spectateSort === 'rating') games.sort((a, b) => (spectateAverage(b.players, b) ?? -1) - (spectateAverage(a.players, a) ?? -1));
     else games.sort((a, b) => b.startTime - a.startTime);
     return games;
 }
@@ -1849,12 +1852,12 @@ function countdownText(readyAt) {
 
 function spectateCardHtml(g) {
     const teamsHtml = groupTeams(g.players).map(({ team, players }) => {
-        const avg = team !== null ? spectateAverage(players) : null;
+        const avg = team !== null ? spectateAverage(players, g) : null;
         return `
             <div class="spectate-team">
                 <div class="spectate-team-head">${team !== null ? `Team ${team}` : 'No team'}${avg != null ? ` <span class="player-elo">${avg}</span>` : ''}</div>
                 ${players.map(p => {
-                    const r = spectateRating(p);
+                    const r = spectateRating(p, g);
                     return `
                     <div class="player-item">
                         <span class="player-name" style="display: flex; align-items: center; gap: 6px;">
@@ -1869,7 +1872,7 @@ function spectateCardHtml(g) {
                 }).join('')}
             </div>`;
     }).join('');
-    const avg = spectateAverage(g.players);
+    const avg = spectateAverage(g.players, g);
     const start = g.startTime, delay = g.observerDelay;
     const readyAt = start + delay * 60;
     const wait = countdownText(readyAt);
