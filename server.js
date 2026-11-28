@@ -374,8 +374,8 @@ function lobbyTeam(code) {
 // once it has ended (none of 77 lobbies that closed within 4 minutes was in it while running, 28 Nov 2026). So a game is
 // known here from its lobby: pollRelic reads the lobby list every 0.5-1 s, whether or not anyone is watching, and a
 // lobby that launches (launchSlots) becomes a game in progress with its final civs, teams and colours. Matchmaking games
-// (ranked, Quick Play) have no lobby in the list, so they can't be listed. Only lobbies that allow spectators are kept:
-// the Spectate list is games you can watch.
+// (ranked, Quick Play) have no lobby in the list; until there is a way of our own, they come from aoe2companion (see
+// "ranked and Quick Play games"). Only lobbies that allow spectators are kept: the Spectate list is games you can watch.
 // A game stays live until the public match history has it (checkLiveEnds), or every player in it has moved on to a newer
 // lobby or game (noteMovedOn), or it has run for LIVE_MAX_MS; then it is an ended game (see endedGames).
 const LIVE_GAMES_PATH = path.join(__dirname, 'live_games.json');
@@ -587,7 +587,9 @@ function noteMovedOn(lobbies, now) {
         const first = activeMatches.get(lobby.id)?.firstSeen;
         if (first) for (const p of lobby.players) note(p.id, first);
     }
-    for (const g of liveGames.values()) for (const p of g.players) if (p.kind === 'human') note(p.id, g.startTime * 1000);
+    for (const games of [liveGames, companionGames]) {
+        for (const g of games.values()) for (const p of g.players) if (p.kind === 'human') note(p.id, g.startTime * 1000);
+    }
     for (const [id, g] of liveGames) {
         const start = g.startTime * 1000;
         const humans = g.players.filter(p => p.kind === 'human');
@@ -663,18 +665,185 @@ async function checkLiveEnds() {
 }
 setInterval(() => { checkLiveEnds(); }, LIVE_CHECK_GAP_MS).unref();
 
+// --- Spectate: ranked and Quick Play games, from aoe2companion (a stopgap) --------------------------------------------
+// Matchmaking games never have a public lobby, so the lobby list can't show them. Until there is a way of our own, they
+// come from aoe2companion's public list of games in progress, the socket its own app uses: the whole list when it opens,
+// then each game as it is added or removed. Only its matchmaking games (named AUTOMATCH) are taken; lobby games are ours.
+// One socket, reopened after A2C_RETRY_MIN_MS doubling to A2C_RETRY_MAX_MS while it fails, and closed and reopened when
+// it has said nothing for A2C_SILENT_MS (several games start every minute, so silence means a dead socket).
+const A2C_SOCKET = 'wss://socket.aoe2companion.com/listen?handler=ongoing-matches';
+const A2C_RETRY_MIN_MS = 5000;
+const A2C_RETRY_MAX_MS = 5 * 60 * 1000;
+const A2C_SILENT_MS = 5 * 60 * 1000;
+const A2C_STALE_MS = 10 * 60 * 1000; // its socket down this long: its games are left out of the list (not ended)
+const A2C_FULL_MIN = 50; // a whole list with fewer matchmaking games is a glitch: it ends nothing
+// Its leaderboards as the site's ladders (the console queues as the PC ladders, as before); Quick Play has none
+const A2C_LADDERS = Object.assign(Object.create(null), {
+    rm_1v1: '3', rm_1v1_console: '3', rm_team: '4', rm_team_console: '4', ew_1v1: '13', ew_1v1_console: '13',
+    ew_team: '14', ew_team_console: '14', dm_1v1: '1', dm_team: '2'
+});
+const A2C_CIV_FIXES = Object.assign(Object.create(null), { Maya: 'Mayans', Inca: 'Incas', Indians: 'Hindustanis' });
+const companionGames = new Map(); // match id -> game
+let a2cSocket = null, a2cLastAt = 0, a2cDownSince = Date.now(), a2cRetryMs = A2C_RETRY_MIN_MS, a2cLoggedDown = false;
+let a2cOpenedAt = 0; // when the current socket was made
+
+// aoe2companion writes "[speed.unknown]" and the like for a value it doesn't know
+function a2cText(v) {
+    const s = str(v);
+    return s && !/^\[.*\]$/.test(s) ? s : null;
+}
+
+// One of its games in the detail shape, or null when it isn't a matchmaking game with a human in it. Civs stay hidden
+// when the game hides them (its list has them anyway). Ratings are the game's own ladder, as its list gives them.
+function companionGame(m) {
+    if (!m || typeof m !== 'object' || m.name !== 'AUTOMATCH' || !Array.isArray(m.players)) return null;
+    const id = num(m.matchId);
+    if (!Number.isSafeInteger(id) || id <= 0) return null;
+    const board = str(m.leaderboardId) || '';
+    const isQuickPlay = board.startsWith('qp_');
+    const ladder = isQuickPlay ? null : (A2C_LADDERS[board] ?? null);
+    const civsHidden = m.hideCivs === true;
+    const players = m.players.filter(p => p && typeof p === 'object').map(p => {
+        const team = Number.isInteger(p.team) && p.team >= 1 && p.team <= 4 ? p.team : null;
+        const color = Number.isInteger(p.color) && p.color >= 1 && p.color <= 8 ? p.color : null;
+        const civName = a2cText(p.civName);
+        const civ = civsHidden ? null : civName ? (A2C_CIV_FIXES[civName] || civName) : 'Unknown civ';
+        if (p.status === 'ai' || !isProfileId(p.profileId)) return { id: 0, name: 'AI', kind: 'ai', team, color, civ, rating: null, ratings: {} };
+        const ratings = {}, stats = {};
+        const rating = num(p.rating);
+        if (ladder && Number.isFinite(rating)) {
+            const games = num(p.games), wins = num(p.wins);
+            ratings[ladder] = rating;
+            stats[ladder] = { games, wins, winp: games ? Math.round(100 * (wins || 0) / games) : null, streak: null, highest: num(p.maxRating) };
+        }
+        const player = {
+            id: p.profileId, name: str(p.name) || `Player ${p.profileId}`, kind: 'human', team, color, civ,
+            country: countryCode(p.country), rating: ladder ? (ratings[ladder] ?? null) : null, ratings, stats
+        };
+        if (/^\d{17}$/.test(String(p.steamId ?? ''))) player.steamProfile = `https://steamcommunity.com/profiles/${p.steamId}`;
+        return player;
+    });
+    if (!players.some(p => p.kind === 'human')) return null;
+    const started = Date.parse(m.started);
+    return {
+        id,
+        title: isQuickPlay ? 'Quick Play' : 'Ranked match',
+        isRanked: !isQuickPlay,
+        isQuickPlay,
+        map: a2cText(m.mapName) || 'Unknown Map',
+        matchType: a2cText(m.gameModeName),
+        mapSize: a2cText(m.mapSizeName)?.replace(/\s*\[\d+\]$/, '') || null,
+        speed: a2cText(m.speedName),
+        population: num(m.population) || null,
+        server: regionName(str(m.server)),
+        modInfo: m.mod === true && a2cText(m.modDataset) ? a2cText(m.modDataset).replace(/^\d+-/, '') : 'No Mods',
+        startTime: Number.isFinite(started) ? Math.floor(started / 1000) : 0,
+        observerDelay: 2, // matchmaking games' spectator delay
+        observers: null,
+        ladder,
+        civsHidden,
+        record: m.recordGame !== false,
+        endedAt: null,
+        source: 'aoe2companion',
+        players
+    };
+}
+
+function endCompanionGame(id, now) {
+    const g = companionGames.get(id);
+    if (!g) return;
+    companionGames.delete(id);
+    endedGames.set(id, { game: { ...g, endedAt: Math.floor(now / 1000) }, result: null, lookup: null, firstTryAt: 0, lastTryAt: 0, tries: 0 });
+    pruneEndedGames();
+    saveLiveGamesSoon();
+}
+
+// One socket message: an array of { type, data } events. The first message on a socket is the whole list: games kept
+// from before that aren't in it have ended.
+function applyCompanionMessage(text, whole) {
+    let events;
+    try { events = JSON.parse(text); } catch (e) { return; }
+    if (!Array.isArray(events)) events = [events];
+    const now = Date.now();
+    const listed = whole ? new Set() : null;
+    for (const ev of events) {
+        const type = ev?.type, data = ev?.data;
+        if (type === 'matchAdded' || type === 'matchUpdated' || type === 'matchChanged') {
+            const g = companionGame(data);
+            if (!g) continue;
+            listed?.add(g.id);
+            endedGames.delete(g.id); // listed again: live again
+            companionGames.set(g.id, g);
+        } else if (type === 'matchRemoved' || type === 'matchFinished' || type === 'matchEnded') {
+            const id = num(typeof data === 'object' && data ? data.matchId : data);
+            if (Number.isSafeInteger(id)) endCompanionGame(id, now);
+        }
+    }
+    if (listed && listed.size >= A2C_FULL_MIN) {
+        for (const id of [...companionGames.keys()]) if (!listed.has(id)) endCompanionGame(id, now);
+    }
+    spectateDirty = true;
+}
+
+function connectCompanion() {
+    let ws;
+    try {
+        ws = new WebSocket(A2C_SOCKET, { headers: { 'User-Agent': 'aoe2lobby.online (spectate)' } });
+    } catch (e) {
+        return companionClosed(null, e.message);
+    }
+    a2cSocket = ws;
+    a2cOpenedAt = Date.now();
+    let whole = true;
+    ws.onmessage = (msg) => {
+        if (a2cSocket !== ws || typeof msg.data !== 'string') return;
+        a2cLastAt = Date.now();
+        a2cDownSince = 0;
+        a2cRetryMs = A2C_RETRY_MIN_MS;
+        if (a2cLoggedDown) { console.log('aoe2companion live games: connected again'); a2cLoggedDown = false; }
+        applyCompanionMessage(msg.data, whole);
+        whole = false;
+    };
+    ws.onerror = (e) => companionClosed(ws, e?.message || 'socket error');
+    ws.onclose = (e) => companionClosed(ws, `closed (code ${e?.code})`);
+}
+
+function companionClosed(ws, reason) {
+    if (ws && a2cSocket !== ws) return; // already handled
+    a2cSocket = null;
+    if (ws) { ws.onmessage = ws.onerror = ws.onclose = null; try { ws.close(); } catch (e) { } }
+    if (!a2cDownSince) a2cDownSince = Date.now();
+    if (!a2cLoggedDown) { console.error(`aoe2companion live games: ${reason}; reconnecting`); a2cLoggedDown = true; }
+    setTimeout(connectCompanion, a2cRetryMs).unref();
+    a2cRetryMs = Math.min(A2C_RETRY_MAX_MS, a2cRetryMs * 2);
+}
+
+setInterval(() => {
+    if (a2cSocket && Date.now() - Math.max(a2cLastAt, a2cOpenedAt) > A2C_SILENT_MS) companionClosed(a2cSocket, 'silent for 5 minutes');
+}, 30000).unref();
+
+function companionUsable() {
+    return !a2cDownSince || Date.now() - a2cDownSince <= A2C_STALE_MS;
+}
+
 // --- Spectate: the list, and keeping it across restarts -----------------------------------------------------------------
-// updatedAt is Relic's last good read. The list drops country and the per-ladder stats (it shows neither); the detail API
-// serves the games kept in `games`, which have them. The index is the list cut down to what followed-player alerts need,
-// so a browser can match its follows without sending them.
+// The games: ours (lobbies seen launching) and aoe2companion's matchmaking ones. Built at most every SPECTATE_BUILD_MS
+// when something changed (aoe2companion's socket changes it every few seconds), and every SPECTATE_REBUILD_MS anyway, so
+// updatedAt (the build's time) stays current. The list drops country and the per-ladder stats (it shows neither); the
+// detail API serves the games kept in `games`, which have them. The index is the list cut down to what followed-player
+// alerts need, so a browser can match its follows without sending them.
+const SPECTATE_BUILD_MS = 2000;
+const SPECTATE_REBUILD_MS = 30000;
 function buildSpectateCache(now) {
-    const games = [...liveGames.values()].sort((a, b) => b.startTime - a.startTime);
-    const updatedAt = relicOkAt ? Math.floor(relicOkAt / 1000) : null;
+    const games = [...liveGames.values()];
+    if (companionUsable()) for (const g of companionGames.values()) if (!liveGames.has(g.id)) games.push(g);
+    games.sort((a, b) => b.startTime - a.startTime);
+    const updatedAt = Math.floor(now / 1000);
     const listGames = games.map(({ source, ...g }) => ({ ...g, players: g.players.map(({ country, stats, ...p }) => p) }));
     const indexGames = games.map(g => ({ id: g.id, startTime: g.startTime, map: g.map, players: g.players.filter(p => p.kind === 'human').map(p => p.id) }));
     spectateCache = {
         at: now,
-        snapAt: relicOkAt,
+        snapAt: now,
         body: JSON.stringify({ updatedAt, stale: false, games: listGames }),
         index: JSON.stringify({ updatedAt, stale: false, games: indexGames }),
         games: new Map(games.map(g => [g.id, g]))
@@ -682,14 +851,19 @@ function buildSpectateCache(now) {
     spectateDirty = false;
 }
 
-// Usable while Relic's list is fresh: older, the list shows no games and no game counts as live
+// Usable while either source is: Relic's list read lately, or aoe2companion's socket up. Otherwise the list shows no
+// games and no game counts as live.
 function spectateFresh(cache) {
-    return !!cache.body && cache.snapAt > 0 && Date.now() - cache.snapAt <= SPECTATE_STALE_MS;
+    return !!cache.body && (Date.now() - relicOkAt <= SPECTATE_STALE_MS || companionUsable());
 }
 
-// The games as of Relic's last read (rebuilt when a game started or ended, or the read is newer). Async, as callers await it.
+// The games, rebuilt when they changed (at most every SPECTATE_BUILD_MS) or the build is SPECTATE_REBUILD_MS old. Async,
+// as callers await it.
 async function freshSpectate() {
-    if (spectateDirty || spectateCache.snapAt !== relicOkAt) buildSpectateCache(Date.now());
+    const now = Date.now();
+    if (!spectateCache.body || (spectateDirty && now - spectateCache.at >= SPECTATE_BUILD_MS) || now - spectateCache.at >= SPECTATE_REBUILD_MS) {
+        buildSpectateCache(now);
+    }
     return spectateCache;
 }
 
@@ -802,14 +976,15 @@ function emptyResult(state) {
 }
 
 // The result of `game` from one getRecentMatchHistory response, or null while the game isn't in it. The history is
-// unsorted and holds older games, so the entry must match the id and, for a feed's game, the start time. A game taken
-// from its lobby (source 'lobby') has only the time it was seen launching, a few seconds before the real start: the id
-// alone (a lobby's id is the match's) and the entry's own start. Only ids, outcomes, ratings, times and replay sizes are
-// read: matchurls[].url is a signed blob URL and is never touched.
+// unsorted and holds older games, so the entry must match the id and, for aoe2lobby.com's feed's games (kept from before
+// 28 Nov 2026), the start time. A game taken from its lobby (source 'lobby') has only the time it was seen launching, a
+// few seconds before the real start, and aoe2companion's (source 'aoe2companion') are matched the same way: the id alone
+// (a match id is unique) and the entry's own start. Only ids, outcomes, ratings, times and replay sizes are read:
+// matchurls[].url is a signed blob URL and is never touched.
 function parseMatchResult(data, game) {
     const history = own(data, 'matchHistoryStats');
     if (!Array.isArray(history)) return null;
-    const fromLobby = game.source === 'lobby';
+    const fromLobby = !!game.source;
     const entry = history.find(e => num(own(e, 'id')) === game.id && (fromLobby || num(own(e, 'startgametime')) === game.startTime));
     if (!entry) return null;
     if (fromLobby) {
@@ -2967,11 +3142,13 @@ server.listen(API_PORT, HOST, () => {
     console.log(`API Server listening on ${HOST}:${API_PORT}`);
 });
 
-// The Spectate list: the games kept over the restart, Relic's civ names, and the lobby list read from now on
+// The Spectate list: the games kept over the restart, Relic's civ names, the lobby list read from now on, and
+// aoe2companion's matchmaking games
 loadLiveGames();
 refreshRelicRaces();
 setInterval(refreshRelicRaces, RACES_REFRESH_MS).unref();
 watchLobbies();
+connectCompanion();
 
 // pm2 stop/reload sends SIGINT: finish in-flight requests, then exit (force it after 8 s). Open lobby streams are ended
 // first (they would hold the server open); their pages reconnect to the new process. The games in progress are saved

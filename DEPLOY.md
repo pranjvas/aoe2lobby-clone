@@ -21,7 +21,9 @@ the Spectate list comes from it.
 Spectate is built here, from public data only. A lobby that launches gets its final civs, teams and colours in its slots
 about a second before it leaves Relic's list; a lobby that allows spectators and leaves that way becomes a game in
 progress, kept until Relic's public match history has it (checked every 3 minutes) or its players have moved on to newer
-lobbies. Ranked and Quick Play games have no public lobby, so they aren't listed. The games in progress and those that
+lobbies. Ranked and Quick Play games have no public lobby: until there is a way of our own, they come from aoe2companion's
+public socket of games in progress (`wss://socket.aoe2companion.com/listen?handler=ongoing-matches`, one connection,
+its matchmaking games only). The games in progress and those that
 ended in the last 2 hours are saved in `live_games.json` (kept by deploys) so a restart keeps them. Since 28 Nov 2026
 13:28 CET data.aoe2lobby.com drops this server's connections, so the scraper tries only every 10 minutes while that lasts.
 

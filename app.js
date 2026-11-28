@@ -1779,8 +1779,8 @@ async function fetchSpectate() {
         // Keep the last games on screen; rendering again lets the "unavailable since" notice appear once they're old
         if (spectateLoaded && state.currentView === 'spectate') applyFiltersAndRender();
     }
-    // The server lists a game within a second or so of its lobby launching; polling only while this view is open
-    if (state.currentView === 'spectate') spectateTimer = setTimeout(fetchSpectate, 10000);
+    // The server lists a game within seconds of its start; polling only while this view is open
+    if (state.currentView === 'spectate') spectateTimer = setTimeout(fetchSpectate, 15000);
 }
 
 function spectateRating(p) {
@@ -2652,7 +2652,7 @@ window.addEventListener('resize', () => reanchorCivPopover());
 // The star next to a player follows them. While the site is open in a tab, it checks the games in progress every
 // FOLLOW_POLL_MS (/api/spectate/index: ids only, matched here, so the follow list never leaves the browser) and shows an
 // alert when a followed player is in a game this tab hasn't announced yet, plus a desktop notification if turned on.
-// The server lists a game a second or so after its lobby launches, so an alert comes within about 20 s of the start.
+// The server lists a game within seconds of its start, so an alert comes within about 20 s of it.
 const FOLLOW_KEY = 'aoe2Follows';
 const FOLLOW_MAX = 100;
 const ALERTED_KEY = 'aoe2Alerted'; // sessionStorage: games this tab has announced
@@ -2937,7 +2937,7 @@ function desktopAlertsHtml() {
 
 const followPanel = document.getElementById('followPanel');
 // What the Spectate list holds: the server takes its games from the game's public lobby list (see server.js)
-const SPECTATE_SCOPE_NOTE = 'Spectate lists games from public lobbies that allow spectators, from the moment they launch. Ranked and Quick Play games aren\'t listed: the game shares those only with signed-in players.';
+const SPECTATE_SCOPE_NOTE = 'Games from public lobbies that allow spectators are listed the moment they launch. Ranked and Quick Play games come from aoe2companion.com\'s public list of games in progress.';
 
 // The Spectate view's panel: who is followed, and who of them is in a game now
 function renderFollowPanel() {

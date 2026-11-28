@@ -19,7 +19,10 @@ come from Relic's public lobby list (`server.js`, "Spectate: games in progress")
   with `isobservable: 1` are listed. Spectator counts aren't known.
 - **The end:** the public match history (one player of each game every 3 minutes, from 3 minutes in), or every player
   seen in a newer lobby or game, or 5 hours.
-- **Not listed:** ranked and Quick Play games, which never have a public lobby.
+- **Ranked and Quick Play games** never have a public lobby. Until there is a way of our own, they come from
+  aoe2companion's public socket of games in progress (`wss://socket.aoe2companion.com/listen?handler=ongoing-matches`:
+  the whole list as `matchAdded` events when it opens, then changes), its `AUTOMATCH` games only; civs of games that
+  hide them are dropped. A game it removes has ended; the result comes from the match history as for the others.
 
 ## Ground rule: public data only
 
