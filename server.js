@@ -253,7 +253,8 @@ async function fetchProfilesBatch(ids) {
                                 }
                             }
                             const now = Date.now();
-                            profileCache.set(profileId, { alias, rating: currentRating, totalGames, totalWins, winRate, stats: ladderStats, steamProfile, fetchedAt: now, lastSeen: now });
+                            // country: the profile's (aoe2insights shows this one; aoe2lobby.com's feed can differ)
+                            profileCache.set(profileId, { alias, rating: currentRating, totalGames, totalWins, winRate, stats: ladderStats, steamProfile, country: countryCode(member.country), fetchedAt: now, lastSeen: now });
                         }
                     });
                     // Ids Relic answered for but returned nothing about: cache an empty entry so they stop showing as
@@ -910,6 +911,36 @@ async function serveSpectateList(res, which = 'body') {
 }
 
 // /api/spectate/<matchId>, or /api/spectate/player/<profileId> for that player's game (same answer)
+// A game's players with what their Relic profile says (GetPersonalStat, as fetchProfilesBatch keeps it; one not kept yet,
+// or kept over PROFILE_REFRESH_MS, is fetched first, ~0.15 s): the country (aoe2lobby.com's feed had robincule in the US,
+// his profile and aoe2insights in India), and the ladders the feed doesn't carry (DM 1v1 and DM Team, or any other it
+// lacks). The feed's own ladders stay: its numbers are newer. A copy: the snapshot's games are shared.
+const RELIC_LADDERS = ['1', '2', '3', '4', '13', '14'];
+const MATCH_PROFILE_WAIT_MS = 2000;
+async function withRelicProfiles(game) {
+    if (!game) return game;
+    const now = Date.now();
+    const humans = game.players.filter(p => p.kind === 'human' && isProfileId(p.id)).map(p => p.id);
+    const missing = humans.filter(pid => { const c = profileCache.get(pid); return !c || now - c.fetchedAt > PROFILE_REFRESH_MS; });
+    if (missing.length) await settleWithin(fetchProfilesBatch(missing).catch(() => { }), MATCH_PROFILE_WAIT_MS);
+    return {
+        ...game,
+        players: game.players.map(p => {
+            const c = p.kind === 'human' ? profileCache.get(p.id) : null;
+            if (!c) return p;
+            c.lastSeen = now;
+            const stats = { ...(p.stats || {}) }, ratings = { ...(p.ratings || {}) };
+            for (const board of RELIC_LADDERS) {
+                const s = c.stats && c.stats[board];
+                if (Object.hasOwn(stats, board) || !s || !Number.isFinite(s.rating)) continue;
+                ratings[board] = s.rating;
+                stats[board] = { games: s.games ?? null, wins: s.wins ?? null, winp: s.winp ?? null, streak: s.streak ?? null, highest: s.highest ?? null };
+            }
+            return { ...p, country: c.country || p.country || null, ratings, stats };
+        })
+    };
+}
+
 async function serveSpectateMatch(res, id, byPlayer = false) {
     const cache = await freshSpectate();
     const found = byPlayer ? spectateGameByPlayer(cache, id) : spectateGameById(cache, id);
@@ -919,12 +950,13 @@ async function serveSpectateMatch(res, id, byPlayer = false) {
         if (found.ended.lookup) await settleWithin(found.ended.lookup, RESULT_WAIT_MS);
         result = found.ended.result || emptyResult('pending');
     }
+    const game = await withRelicProfiles(found.game);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
         status: found.status,
         updatedAt: cache.body ? Math.floor(cache.snapAt / 1000) : null,
         stale: !spectateFresh(cache),
-        game: found.game,
+        game,
         relay: relayOpen(found.game),
         result
     }));

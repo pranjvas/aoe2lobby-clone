@@ -1986,7 +1986,8 @@ const matchPageId = (/^\/spectate\/(\d{1,15})\/?$/.exec(location.pathname) || []
 const matchView = document.getElementById('matchView');
 const MATCH_POLL_LIVE_MS = 30000;
 const MATCH_POLL_PENDING_MS = 20000;
-const LADDER_NAMES = Object.assign(Object.create(null), { '0': 'Unranked', '3': 'RM 1v1', '4': 'RM Team', '13': 'EW 1v1', '14': 'EW Team' });
+// DM 1v1 and DM Team come from players' Relic profiles (the match page's other ladders); the live feed has the rest
+const LADDER_NAMES = Object.assign(Object.create(null), { '0': 'Unranked', '1': 'DM 1v1', '2': 'DM Team', '3': 'RM 1v1', '4': 'RM Team', '13': 'EW 1v1', '14': 'EW Team' });
 let matchData = null; // the last answer that could be read; a failed refresh keeps it on screen
 let matchOkAt = 0; // when that answer arrived (ms)
 let matchRefreshFailed = false;
