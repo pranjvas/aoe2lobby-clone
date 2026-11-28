@@ -1,10 +1,32 @@
 # Spectate on aoe2lobby.online: plan and V1 design
 
+## Since 28 Nov 2026: games in progress from the game's own lobby list
+
+aoe2lobby.com blocked this server on 28 Nov 2026, and the site stopped reading its spectate feed. Games in progress now
+come from Relic's public lobby list (`server.js`, "Spectate: games in progress"):
+
+- **Only signed-in clients can list games in progress.** `community/advertisement/findObservableAdvertisements` is a
+  404; the in-game list comes from the signed-in Game API (what aoe2lobby.com and aoe2companion read with a game
+  account). `getRecentMatchHistory` lists a game only after it ends: none of 77 lobbies that closed in 4 minutes was
+  there while running.
+- **The launch is visible.** About a second before a launching lobby leaves `findAdvertisements`, every taken slot drops
+  its civ pick (`metaData` `1`), gets its colour (`metaData` `0`, 0-7) and its civ in Relic's numbering (`raceID`, named by
+  `getAvailableLeaderboards` `races`), and teams become final. At the site's read rate, 23 of 29 launches left within
+  1.3 s of the first such reading, all within 3 s, and every one allowing spectators within 3 s. A few lobbies (none
+  allowing spectators) showed the same for 20 s to minutes, some going back: a game counts only when the lobby leaves
+  within 15 s.
+- **The lobby says what spectators get:** `isobservable`, `observerdelay` (seconds) and `hasobserverpassword`. Only lobbies
+  with `isobservable: 1` are listed. Spectator counts aren't known.
+- **The end:** the public match history (one player of each game every 3 minutes, from 3 minutes in), or every player
+  seen in a newer lobby or game, or 5 hours.
+- **Not listed:** ranked and Quick Play games, which never have a public lobby.
+
 ## Ground rule: public data only
 
 The site's spectate features use public data only:
 
-- the aoe2lobby.com spectate feed (match metadata);
+- the game's public lobby list (games in progress, since 28 Nov 2026), and until then the aoe2lobby.com spectate feed
+  (match metadata);
 - the World's Edge community API (`aoe-api.worldsedgelink.com/community`: match history, replay files);
 - aoe2companion's public match API;
 - `aoe.ms` replay links.

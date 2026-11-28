@@ -169,6 +169,11 @@ const FIRST_LIST_MS = 15000; // a new socket that sends no list in this time has
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 const RESYNC_MS = 30 * 60 * 1000; // a fresh whole list now and then, in case a removal was ever missed
+// Since 28 Nov 2026 13:28 CET data.aoe2lobby.com drops every connection from this server (ping answers, TCP times out;
+// the same socket opens from elsewhere): it has blocked us. While no socket opens on either host, try once every
+// BLOCKED_RETRY_MS, and don't let the watchdog restart the process (a restart would only knock again at once).
+const BLOCKED_RETRY_MS = 10 * 60 * 1000;
+let unopenedInARow = 0; // sockets in a row that never opened
 let ws = null, wsOpenedAt = 0, wsOpened = false, waitTimer = null, writeTimer = null, reconnectMs = RECONNECT_MIN_MS;
 let liveUpdates = null; // whether aoe2lobby.com is sending live updates, as last logged
 
@@ -228,11 +233,17 @@ function dropSocket(reason) {
     ws = null;
     clearTimeout(waitTimer);
     if (sock) { sock.onopen = sock.onmessage = sock.onerror = sock.onclose = null; try { sock.close(); } catch (e) { } }
-    const delay = reason === null ? 0 : reconnectMs;
+    unopenedInARow = wsOpened ? 0 : unopenedInARow + 1;
+    const blocked = unopenedInARow >= 2 * WS_HOSTS.length; // every host refused, twice over
+    const delay = reason === null ? 0 : blocked ? BLOCKED_RETRY_MS : reconnectMs;
     if (reason !== null) {
         const host = WS_HOSTS[wsHostIndex];
         if (!wsOpened) wsHostIndex = (wsHostIndex + 1) % WS_HOSTS.length; // refused: try the other host next
-        console.error(`Socket (${host}): ${reason}; reconnecting in ${delay / 1000} s${!wsOpened ? ` to ${WS_HOSTS[wsHostIndex]}` : ''}`);
+        // While blocked, logged once per hour (each attempt is 10 min apart)
+        if (!blocked || unopenedInARow % 6 === 0) {
+            console.error(`Socket (${host}): ${reason}; reconnecting in ${delay / 1000} s${!wsOpened ? ` to ${WS_HOSTS[wsHostIndex]}` : ''}` +
+                (blocked ? ` (no socket has opened in ${unopenedInARow} tries: the host seems to block this server)` : ''));
+        }
         reconnectMs = Math.min(RECONNECT_MAX_MS, reconnectMs * 2);
     }
     setTimeout(connect, delay);
@@ -408,7 +419,8 @@ function dumpData() {
 const WATCHDOG_MS = 180000;
 setInterval(() => {
     const since = Math.max(lastDataAt, startedAt);
-    if (Date.now() - since > WATCHDOG_MS) {
+    // Not while sockets don't even open: the host refuses us, and a restart would only try again at once
+    if (Date.now() - since > WATCHDOG_MS && unopenedInARow < 2 * WS_HOSTS.length) {
         console.error(`No lobbies from aoe2lobby.com for ${Math.round((Date.now() - since) / 1000)} s; exiting so pm2 restarts the scraper.`);
         process.exit(1);
     }

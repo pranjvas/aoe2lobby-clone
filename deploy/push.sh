@@ -2,8 +2,8 @@
 # Ship the committed HEAD to the VPS and reload the app. Run from the repo root (Git Bash works):
 #   bash deploy/push.sh
 # Only HEAD is shipped, so the script refuses to run while a deployed file has uncommitted changes
-# (ALLOW_DIRTY=1 overrides). Scraped data, map_names.json, relic_codes.json (and the older relic_map_ids.json) and the map
-# history (map_history.sqlite) on the server are kept.
+# (ALLOW_DIRTY=1 overrides). Scraped data, map_names.json, relic_codes.json (and the older relic_map_ids.json), the games in
+# progress (live_games.json) and the map history (map_history.sqlite) on the server are kept.
 # Needs pm2 running under systemd on the server (pm2-aoe2.service, see DEPLOY.md).
 set -euo pipefail
 
@@ -69,6 +69,7 @@ INSTALL='
     --exclude /scraped_maps.json --exclude /map_names.json --exclude "/map_names.json.*.tmp" --exclude /deploy/ \
     --exclude "/map_history.sqlite*" --exclude "/scraped_map_players_v2.json.imported" \
     --exclude /relic_map_ids.json --exclude "/relic_map_ids.json.*.tmp" --exclude /relic_codes.json --exclude "/relic_codes.json.*.tmp" \
+    --exclude /live_games.json --exclude "/live_games.json.*.tmp" \
     /root/aoe2lobby/ /opt/aoe2lobby/
   chown -R aoe2:aoe2 /opt/aoe2lobby
   install -o root -g root -m 644 /root/aoe2lobby/deploy/Caddyfile /etc/caddy/Caddyfile

@@ -761,6 +761,8 @@ function setupEventListeners() {
         spectateLimit = SPECTATE_PAGE;
         applyFiltersAndRender();
     });
+    // "Most spectators" is gone (the game's lobby list has no spectator counts): a saved choice of it is Newest first
+    if (state.spectateSort !== 'rating') state.spectateSort = 'newest';
     for (const [id, key] of [['spectateType', 'spectateType'], ['spectateKind', 'spectateKind'], ['spectateServer', 'spectateServer'], ['spectateSort', 'spectateSort'], ['spectateEloType', 'eloType']]) {
         const el = document.getElementById(id);
         el.value = state[key];
@@ -1746,7 +1748,7 @@ function normalizeSpectateGame(g) {
         ladder: text(g.ladder, null),
         startTime: intIn(g.startTime, 0, Number.MAX_SAFE_INTEGER) ?? 0,
         observerDelay: intIn(g.observerDelay, 0, 600) ?? 0,
-        observers: intIn(g.observers, 0, Number.MAX_SAFE_INTEGER) ?? 0,
+        observers: intIn(g.observers, 0, Number.MAX_SAFE_INTEGER), // null: not known (the lobby list doesn't say)
         civsHidden,
         record: typeof g.record === 'boolean' ? g.record : null,
         endedAt: intIn(g.endedAt, 1, Number.MAX_SAFE_INTEGER),
@@ -1777,8 +1779,8 @@ async function fetchSpectate() {
         // Keep the last games on screen; rendering again lets the "unavailable since" notice appear once they're old
         if (spectateLoaded && state.currentView === 'spectate') applyFiltersAndRender();
     }
-    // The server refreshes its copy at most once a minute; polling only while this view is open
-    if (state.currentView === 'spectate') spectateTimer = setTimeout(fetchSpectate, 30000);
+    // The server lists a game within a second or so of its lobby launching; polling only while this view is open
+    if (state.currentView === 'spectate') spectateTimer = setTimeout(fetchSpectate, 10000);
 }
 
 function spectateRating(p) {
@@ -1828,7 +1830,6 @@ function filterSpectate() {
         return true;
     });
     if (state.spectateSort === 'rating') games.sort((a, b) => (spectateAverage(b.players) ?? -1) - (spectateAverage(a.players) ?? -1));
-    else if (state.spectateSort === 'spectators') games.sort((a, b) => b.observers - a.observers || b.startTime - a.startTime);
     else games.sort((a, b) => b.startTime - a.startTime);
     return games;
 }
@@ -1884,7 +1885,7 @@ function spectateCardHtml(g) {
                 </div>
                 <div class="game-title" title="${esc(g.title)}">${esc(g.title)}</div>
             </div>
-            <div class="server-badge"><span title="Spectators">&#x1F441; ${esc(g.observers)}</span> ${esc(g.server || '')}</div>
+            <div class="server-badge">${g.observers != null ? `<span title="Spectators">&#x1F441; ${esc(g.observers)}</span> ` : ''}${esc(g.server || '')}</div>
         </div>
         <div class="card-body">
             <div class="game-details">
@@ -2186,7 +2187,7 @@ function matchHeadHtml(d) {
                 : waiting ? '<span class="match-status match-status-unknown" title="Live game data is unavailable, so the game may have ended">No live data</span>'
                 : '<span class="match-status match-status-ended">ENDED</span>'}
             ${g.isRanked ? '<span class="badge treaty-badge">Ranked</span>' : g.isQuickPlay ? '<span class="badge quickplay-badge">Quick Play</span>' : '<span class="badge mod-info-badge">Unranked</span>'}
-            ${live ? `<span class="match-spectators" title="Spectators watching now">&#x1F441; ${g.observers} spectator${g.observers === 1 ? '' : 's'}</span>` : ''}
+            ${live && g.observers != null ? `<span class="match-spectators" title="Spectators watching now">&#x1F441; ${g.observers} spectator${g.observers === 1 ? '' : 's'}</span>` : ''}
         </div>
         <h1 class="match-title">${esc(g.map)}</h1>
         <p class="match-subtitle">${esc(g.title)}</p>
@@ -2649,13 +2650,13 @@ window.addEventListener('resize', () => reanchorCivPopover());
 
 // ---------------------------------------------------------------- Followed players (kept in this browser only)
 // The star next to a player follows them. While the site is open in a tab, it checks the games in progress every
-// minute (/api/spectate/index: ids only, matched here, so the follow list never leaves the browser) and shows an alert
-// when a followed player is in a game this tab hasn't announced yet, plus a desktop notification if turned on.
-// The feed itself is a snapshot taken at most once a minute, so an alert comes 1-2 minutes after the game starts.
+// FOLLOW_POLL_MS (/api/spectate/index: ids only, matched here, so the follow list never leaves the browser) and shows an
+// alert when a followed player is in a game this tab hasn't announced yet, plus a desktop notification if turned on.
+// The server lists a game a second or so after its lobby launches, so an alert comes within about 20 s of the start.
 const FOLLOW_KEY = 'aoe2Follows';
 const FOLLOW_MAX = 100;
 const ALERTED_KEY = 'aoe2Alerted'; // sessionStorage: games this tab has announced
-const FOLLOW_POLL_MS = 60000;
+const FOLLOW_POLL_MS = 20000;
 let follows = new Map(); // profile id -> name when followed
 let desktopAlerts = false;
 let followGames = []; // [{ id, startTime, map, players: [profile ids] }] from the last index
@@ -2935,6 +2936,8 @@ function desktopAlertsHtml() {
 }
 
 const followPanel = document.getElementById('followPanel');
+// What the Spectate list holds: the server takes its games from the game's public lobby list (see server.js)
+const SPECTATE_SCOPE_NOTE = 'Spectate lists games from public lobbies that allow spectators, from the moment they launch. Ranked and Quick Play games aren\'t listed: the game shares those only with signed-in players.';
 
 // The Spectate view's panel: who is followed, and who of them is in a game now
 function renderFollowPanel() {
@@ -2943,7 +2946,8 @@ function renderFollowPanel() {
     if (followPanel.hidden) return;
     let html;
     if (!follows.size) {
-        html = `<p class="follow-note"><span aria-hidden="true">&#x2606;</span> Follow players with the star next to their name: while this site is open in a tab, you get an alert when they start a game.</p>`;
+        html = `<p class="follow-note">${SPECTATE_SCOPE_NOTE}</p>
+            <p class="follow-note"><span aria-hidden="true">&#x2606;</span> Follow players with the star next to their name: while this site is open in a tab, you get an alert when they start a game.</p>`;
     } else {
         // Each followed player's newest game in the last index
         const gameOf = new Map();
@@ -2962,7 +2966,8 @@ function renderFollowPanel() {
                 <h2 class="follow-title">Followed players <span class="follow-count">${gameOf.size ? `${gameOf.size} of ${follows.size} in a game` : follows.size}</span></h2>
                 ${desktopAlertsHtml()}
             </div>
-            <ul class="follow-list">${rows}</ul>`;
+            <ul class="follow-list">${rows}</ul>
+            <p class="follow-note">${SPECTATE_SCOPE_NOTE}</p>`;
     }
     if (followPanel.dataset.html === html) return; // unchanged: leave focus and hover alone
     // Focus stays on the same control; when that is gone (its game ended, the player was unfollowed), on that row's

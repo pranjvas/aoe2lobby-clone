@@ -13,9 +13,17 @@ Internet -> Caddy (80/443, auto HTTPS) -> server.js (127.0.0.1:3002, API + front
 Lobby data flow: `scraper.js` keeps one socket open to aoe2lobby.com (on `data.aoe2lobby.com`, where its own page connects
 since 26 Nov 2026; the old host is the fallback) and rewrites `scraped_*_v2.json` on each of its
 updates (about every 3 s; when the feed sends no updates, it takes a fresh list every 5 s). While anyone is on the site,
-`server.js` reads Relic's lobby list every second (all pages at once), rebuilds the list as soon as that or the scraped
+`server.js` reads Relic's lobby list every 0.5-1 s (all pages at once), rebuilds the list as soon as that or the scraped
 files change, and pushes the changed lobbies to every open page over `/api/lobbies/stream` (server-sent events). Pages
-poll `/api/lobbies` only while their stream is down. With nobody on the site, the server fetches nothing.
+poll `/api/lobbies` only while their stream is down. The list is read all the time, with or without visitors, because
+the Spectate list comes from it.
+
+Spectate is built here, from public data only. A lobby that launches gets its final civs, teams and colours in its slots
+about a second before it leaves Relic's list; a lobby that allows spectators and leaves that way becomes a game in
+progress, kept until Relic's public match history has it (checked every 3 minutes) or its players have moved on to newer
+lobbies. Ranked and Quick Play games have no public lobby, so they aren't listed. The games in progress and those that
+ended in the last 2 hours are saved in `live_games.json` (kept by deploys) so a restart keeps them. Since 28 Nov 2026
+13:28 CET data.aoe2lobby.com drops this server's connections, so the scraper tries only every 10 minutes while that lasts.
 
 aoe2lobby.com builds every lobby field from Relic's own list, 3-4 s after Relic has it. So the server decodes the map,
 game mode, map size, starting age, resources, treaty, population, speed and each player's civ straight from Relic's lobby

@@ -292,19 +292,45 @@ function parseSlotInfo(slotinfoBase64) {
         const arr = JSON.parse(decompressed.substring(bracketIndex, lastBracketIndex + 1));
         if (!Array.isArray(arr)) return none;
         const slots = arr.filter(p => p && typeof p === 'object');
+        const metas = slots.map(p => slotMeta(p.metaData));
+        const teamCode = meta => /^\d$/.test(meta.Team || '') ? Number(meta.Team) : null;
         // slot: the player's place in the list, which is the order the game's own lobby shows its slots in
         const players = slots.map((p, slot) => ({ p, slot })).filter(({ p }) => p['profileInfo.id'] !== -1).map(({ p, slot }) => {
-            const meta = slotMeta(p.metaData);
+            const meta = metas[slot];
             return {
                 id: p['profileInfo.id'],
                 slot,
-                teamCode: /^\d$/.test(meta.Team || '') ? Number(meta.Team) : null,
+                teamCode: teamCode(meta),
                 civCode: /^\d{1,9}$/.test(meta['1'] || '') ? meta['1'] : null
             };
         });
-        return { players, total: slots.filter(p => p.status === 0).length, ai: slots.filter(p => p.status === 2).length };
+        return { players, total: slots.filter(p => p.status === 0).length, ai: slots.filter(p => p.status === 2).length, launch: launchSlots(slots, metas, teamCode) };
     } catch (e) { }
     return none;
+}
+
+// A lobby that is launching. When a game launches, the lobby's slots get its final picks a second or two before the
+// lobby leaves the list (seen on 28 Nov 2026): every taken slot loses its civ pick (metaData "1") and gets its colour
+// (metaData "0", 0-7, from 4294967295 for "any"), its civ in Relic's numbering (raceID, which is 0 in a lobby: see
+// relicRaces), and its final team (a random "?" team becomes a real one). A lobby that just closes leaves without any of
+// that. Returns the taken slots in lobby order, { kind, id, slot, teamCode, color (1-8), raceId }, or null while the lobby
+// isn't launching. Needs a human: an AI-only lobby can't launch.
+function launchSlots(slots, metas, teamCode) {
+    const taken = [];
+    slots.forEach((p, slot) => {
+        const human = p.status === 0 && isProfileId(p['profileInfo.id']);
+        if (human || p.status === 2) taken.push({ p, meta: metas[slot], slot, human });
+    });
+    if (!taken.some(t => t.human)) return null;
+    if (!taken.every(t => !('1' in t.meta) && /^[0-7]$/.test(t.meta['0'] || ''))) return null;
+    return taken.map(t => ({
+        kind: t.human ? 'human' : 'ai',
+        id: t.human ? t.p['profileInfo.id'] : 0,
+        slot: t.slot,
+        teamCode: teamCode(t.meta),
+        color: Number(t.meta['0']) + 1,
+        raceId: Number.isInteger(t.p.raceID) ? t.p.raceID : null
+    }));
 }
 
 // A Relic slot's metaData: base64 of a JSON string holding base64 of [pair count] then [uint32 LE length][text] for each
@@ -342,76 +368,79 @@ function lobbyTeam(code) {
     return { team: displayTeam(code), randomTeam: code === 0 || code === 6 };
 }
 
-// --- Spectate: games in progress, from aoe2lobby.com's spectate feed ---------------------------------
-// The feed is ~3 MB, so it is fetched at most once per SPECTATE_REFRESH_MS and only while someone is
-// using the Spectate view or a match page (each /api/spectate request may trigger a refresh; nothing polls
-// on its own).
-const SPECTATE_REFRESH_MS = 60000;
-const SPECTATE_STALE_MS = 10 * 60 * 1000; // a snapshot older than this is reported as stale, with no games
-const SPECTATE_WAIT_MS = 2 * 60 * 1000; // older than this, a request waits for the refresh (app.js flags > 3 min as unavailable)
-const SPECTATE_ELO_TYPES = ['0', '3', '4', '13', '14'];
-// games: match id -> built game (the detail shape, with country) of the current snapshot
+// --- Spectate: games in progress, from the game's public lobby list ---------------------------------------------------
+// Only the game's signed-in API lists games in progress (the in-game Spectate list, which aoe2lobby.com and aoe2companion
+// read with a game account); the public API has lobbies and finished games only, and its match history lists a game only
+// once it has ended (none of 77 lobbies that closed within 4 minutes was in it while running, 28 Nov 2026). So a game is
+// known here from its lobby: pollRelic reads the lobby list every 0.5-1 s, whether or not anyone is watching, and a
+// lobby that launches (launchSlots) becomes a game in progress with its final civs, teams and colours. Matchmaking games
+// (ranked, Quick Play) have no lobby in the list, so they can't be listed. Only lobbies that allow spectators are kept:
+// the Spectate list is games you can watch.
+// A game stays live until the public match history has it (checkLiveEnds), or every player in it has moved on to a newer
+// lobby or game (noteMovedOn), or it has run for LIVE_MAX_MS; then it is an ended game (see endedGames).
+const LIVE_GAMES_PATH = path.join(__dirname, 'live_games.json');
+const LIVE_MAX_MS = 5 * 60 * 60 * 1000;
+const LAUNCH_UNDO_MS = 60000; // a launched lobby listed again this soon without its picks: the launch was called off
+// Relic's list older than this (its reads keep failing): the list is reported stale, with no games
+const SPECTATE_STALE_MS = 2 * 60 * 1000;
+// games: match id -> game (the detail shape, with country and per-ladder stats), as of the last build
 let spectateCache = { at: 0, snapAt: 0, body: null, index: null, games: new Map() };
-let spectateLoading = null, spectateFailedAt = 0;
+let spectateDirty = true;
+const liveGames = new Map(); // match id -> game, oldest first
 
 // The schema labels civs up to its own table; newer civs arrive as their raw id negated (like negative mapids).
-// Checked against aoe2companion. Never read them as abs(id): the schema's 57 and 61-63 are Return of Rome civs.
-// The four-digit ids are what lobby slots send for these civs. scraper.js labels those (FALLBACK_SCHEMA.civilization, which says
-// how they were checked); this table only reads the spectate feed. Keep the two in sync.
-const NEW_CIVS = Object.assign(Object.create(null), {
-    '-56': 'Thracians', '-57': 'Puru', '-61': 'Saxons', '-62': 'Varangians', '-63': 'Danes',
-    '-1540': 'Macedonians', '-1550': 'Thracians', '-1560': 'Puru', '-1600': 'Saxons', '-1610': 'Varangians', '-1620': 'Danes'
-});
 // The schema's 15 is singular, and three Return of Rome civs (58, 62, 66) carry internal names, not display names
 const CIV_LABEL_FIXES = Object.assign(Object.create(null), { Aztec: 'Aztecs', OldPersians: 'Persians', OldRomans: 'Romans', LacViet: 'Lac Viet' });
 // Those two then share a name with a DE civ, whose details (civ-info.json) don't apply: players get civRor: true
 const ROR_SHARED_LABELS = new Set(['OldPersians', 'OldRomans']);
-const loggedUnknownCivs = new Set();
 
-// A civ label from either feed (spectate schema and NEW_CIVS, or the lobby labels scraper.js wrote), as the site shows it
+// A civ label from the lobby labels scraper.js wrote, as the site shows it
 function civLabel(label) {
     return (label && CIV_LABEL_FIXES[label]) || label;
 }
 
-function rawCivLabel(civ, schema) {
-    const key = (typeof civ === 'number' || typeof civ === 'string') ? String(civ) : '';
-    return str(own(own(schema, 'civilization'), key)) || NEW_CIVS[key] || null;
+// Relic's civ numbers (a launching slot's raceID, match history's civilization_id), named as Relic's public
+// getAvailableLeaderboards names them ("races", 28 Nov 2026), with the site's name where it differs. Civs added later are
+// picked up from there (refreshRelicRaces, at start and once a day). Two launches checked by hand: players who picked
+// Persians and Bohemians got 32 and 4.
+const RELIC_RACE_FIXES = Object.assign(Object.create(null), { Indians: 'Hindustanis' });
+const relicRaces = Object.assign(Object.create(null), {
+    0: 'Armenians', 1: 'Aztecs', 2: 'Bengalis', 3: 'Berbers', 4: 'Bohemians', 5: 'Britons', 6: 'Bulgarians', 7: 'Burgundians',
+    8: 'Burmese', 9: 'Byzantines', 10: 'Celts', 11: 'Chinese', 12: 'Cumans', 13: 'Dravidians', 14: 'Ethiopians', 15: 'Franks',
+    16: 'Georgians', 17: 'Goths', 18: 'Gurjaras', 19: 'Huns', 20: 'Incas', 21: 'Hindustanis', 22: 'Italians', 23: 'Japanese',
+    24: 'Khmer', 25: 'Koreans', 26: 'Lithuanians', 27: 'Magyars', 28: 'Malay', 29: 'Malians', 30: 'Mayans', 31: 'Mongols',
+    32: 'Persians', 33: 'Poles', 34: 'Portuguese', 35: 'Romans', 36: 'Saracens', 37: 'Sicilians', 38: 'Slavs', 39: 'Spanish',
+    40: 'Tatars', 41: 'Teutons', 42: 'Turks', 43: 'Vietnamese', 44: 'Vikings', 45: 'Achaemenids', 46: 'Athenians',
+    47: 'Spartans', 48: 'Shu', 49: 'Wu', 50: 'Wei', 51: 'Jurchens', 52: 'Khitans', 55: 'Macedonians', 56: 'Thracians',
+    57: 'Puru', 58: 'Muisca', 59: 'Mapuche', 60: 'Tupi', 61: 'Saxons', 62: 'Varangians', 63: 'Danes'
+});
+const RACES_REFRESH_MS = 24 * 60 * 60 * 1000;
+
+function relicRaceName(id) {
+    if (!Number.isInteger(id) || id < 0) return null;
+    return own(relicRaces, String(id)) || 'Unknown civ';
 }
 
-function civName(civ, schema) {
-    const key = (typeof civ === 'number' || typeof civ === 'string') ? String(civ) : '';
-    const label = rawCivLabel(civ, schema);
-    if (label) return civLabel(label);
-    // Logged once per id, so NEW_CIVS can be updated by hand
-    if (!loggedUnknownCivs.has(key) && loggedUnknownCivs.size < 100) {
-        loggedUnknownCivs.add(key);
-        console.log(`Spectate: civ id ${JSON.stringify(key.slice(0, 20))} has no label, shown as "Unknown civ" (add it to NEW_CIVS)`);
+async function refreshRelicRaces() {
+    try {
+        const data = JSON.parse(await httpsGet(`${RELIC_API}/leaderboard/getAvailableLeaderboards?title=age2`));
+        let added = 0;
+        for (const r of Array.isArray(data?.races) ? data.races : []) {
+            const id = num(own(r, 'id')), name = str(own(r, 'name'));
+            if (!Number.isInteger(id) || id < 0 || id > 10000 || !name || name.length > 40 || own(relicRaces, String(id))) continue;
+            relicRaces[id] = RELIC_RACE_FIXES[name] || name;
+            added++;
+        }
+        if (added) console.log(`Spectate: ${added} new civ name(s) from Relic's list`);
+    } catch (e) {
+        console.error('Reading Relic civ names failed:', e.message);
     }
-    return 'Unknown civ';
 }
 
-// Slots by the schema's status labels (0 Open, 1 Closed, 2 AI, 3 Player). A closed slot carries a dummy civ and an
-// open one never occurs in a running game, so both are skipped. Names never decide: some humans are called "D-Computers".
-function slotKind(slot) {
-    const status = num(slot.status);
-    if (status === 3) return profileIdOf(slot.profileid) ? 'human' : null;
-    if (status === 2) return 'ai';
-    if (status === 0 || status === 1) return null;
-    // No (known) status: a profile id means a human, else a team and colour mean an AI, else the slot is closed
-    if (profileIdOf(slot.profileid)) return 'human';
-    return (num(slot.team) !== null && num(slot.color) !== null) ? 'ai' : null;
-}
-
-// Feed team 1 is "no team" (custom games, free-for-all) and 2-5 are Teams 1-4; matchmaking uses 2 and 3
+// Lobby team codes 2-5 are Teams 1-4; 1 is "no team" (free-for-all) and 0 or 6 a team the game picks (none at launch)
 function displayTeam(team) {
     const t = num(team);
     return (Number.isInteger(t) && t >= 2 && t <= 5) ? t - 1 : null;
-}
-
-// Feed colours 0-7 are player colours 1-8 (Blue, Red, Green, Yellow, Teal, Pink, Grey, Orange)
-function displayColor(color) {
-    const c = num(color);
-    return (Number.isInteger(c) && c >= 0 && c <= 7) ? c + 1 : null;
 }
 
 // ISO-2 codes arrive in mixed case; a few are null or missing
@@ -420,69 +449,19 @@ function countryCode(country) {
     return /^[a-z]{2}$/.test(c) ? c : null;
 }
 
-// aoe2lobby.com's sockets are on data.aoe2lobby.com since 26 Nov 2026 (the old host answers 403); the old host stays as the
-// second choice, tried after a socket that never opened (see WS_HOSTS in scraper.js)
-const A2L_WS_HOSTS = ['data.aoe2lobby.com', 'aoe2lobby.com'];
-let spectateHostIndex = 0;
-
-function fetchSpectateSnapshot() {
-    return new Promise((resolve, reject) => {
-        let schema = null, matches = null, opened = false;
-        const elo = Object.create(null);
-        let ws;
-        const finish = (err) => {
-            clearTimeout(timer);
-            try { ws.close(); } catch (e) { }
-            if (matches) return resolve({ schema: schema || {}, matches, elo });
-            if (!opened) spectateHostIndex = (spectateHostIndex + 1) % A2L_WS_HOSTS.length; // refused: the other host next time
-            reject(err || new Error('no spectate data'));
-        };
-        const timer = setTimeout(() => finish(new Error('spectate snapshot timed out')), 20000);
-        try {
-            ws = new WebSocket(`wss://${A2L_WS_HOSTS[spectateHostIndex]}/ws/spectate/`);
-        } catch (e) {
-            return finish(e);
-        }
-        ws.onopen = () => {
-            opened = true;
-            ws.send(JSON.stringify({ action: 'subscribe', type: 'elotypes', context: 'spectate', ids: SPECTATE_ELO_TYPES }));
-        };
-        ws.onerror = () => finish(new Error('spectate websocket error'));
-        ws.onmessage = (msg) => {
-            try {
-                const data = JSON.parse(msg.data);
-                if (data.schema && typeof data.schema === 'object') schema = data.schema;
-                if (data.spectate_match_all && typeof data.spectate_match_all === 'object') matches = data.spectate_match_all;
-                const upd = data.spectate_elo_update;
-                if (upd && typeof upd === 'object') {
-                    // Only the ladders we asked for, merged into null-prototype objects (feed keys are profile ids)
-                    for (const type of SPECTATE_ELO_TYPES) {
-                        if (Object.hasOwn(upd, type) && upd[type] && typeof upd[type] === 'object') elo[type] = Object.assign(elo[type] || Object.create(null), upd[type]);
-                    }
-                }
-                if (matches && Object.keys(elo).length) finish();
-            } catch (e) { }
-        };
-    });
-}
-
-// Map-pool and some custom maps arrive from aoe2lobby.com as a bare id (e.g. "10979"). Their names are looked up
-// once per id from aoe2companion's public match API (via one player's current match) and kept in map_names.json.
+// Map names learned earlier for maps that arrived as a bare id (e.g. "10979"), kept in map_names.json
 const MAP_NAMES_PATH = path.join(__dirname, 'map_names.json');
 let mapNames = Object.create(null);
 try {
     const saved = JSON.parse(fs.readFileSync(MAP_NAMES_PATH, 'utf8'));
     if (saved && typeof saved === 'object') Object.assign(mapNames, saved);
 } catch (e) { if (e.code !== 'ENOENT') console.error('Error reading map_names.json:', e.message); }
-const mapLookupFailedAt = Object.create(null);
-const MAP_LOOKUP_RETRY_MS = 10 * 60 * 1000;
-let mapLookupRunning = false;
 
-function mapDisplayName(mapName, mapId, schema) {
+function mapDisplayName(mapName) {
     if (typeof mapName === 'number' && Number.isFinite(mapName)) mapName = String(mapName);
     if (typeof mapName !== 'string') return 'Unknown Map';
     if (!/^\d+$/.test(mapName)) return mapName || 'Unknown Map';
-    const name = own(mapNames, mapName) ?? own(own(schema, 'mapid'), String(mapId));
+    const name = own(mapNames, mapName);
     return (typeof name === 'string' && name) ? name : `Map #${mapName}`;
 }
 
@@ -498,207 +477,259 @@ function writeJsonAtomic(file, obj) {
     }
 }
 
-// samples: { mapId: { matchId, profileId } } — one game in progress per unknown map id
-async function resolveMapNames(samples) {
-    if (mapLookupRunning) return false;
-    mapLookupRunning = true;
-    let added = false;
-    try {
-        for (const [mapId, sample] of Object.entries(samples).slice(0, 15)) {
-            if (own(mapNames, mapId) || Date.now() - (mapLookupFailedAt[mapId] || 0) < MAP_LOOKUP_RETRY_MS) continue;
-            if (!/^\d+$/.test(mapId) || !isProfileId(sample.profileId)) continue;
-            try {
-                const r = await fetch(`https://data.aoe2companion.com/api/matches?profile_ids=${sample.profileId}&page=1`, {
-                    headers: { 'User-Agent': 'aoe2lobby.online (map name lookup)' },
-                    signal: AbortSignal.timeout(10000)
-                });
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                const data = await r.json();
-                const match = (Array.isArray(data?.matches) ? data.matches : []).find(x => x && String(x.matchId) === String(sample.matchId));
-                if (match && typeof match.mapName === 'string' && match.mapName) {
-                    mapNames[mapId] = match.mapName;
-                    added = true;
-                } else {
-                    mapLookupFailedAt[mapId] = Date.now();
-                }
-            } catch (e) {
-                mapLookupFailedAt[mapId] = Date.now();
-            }
-            await new Promise(r => setTimeout(r, 1000)); // be gentle with aoe2companion
+// A game in progress from a launching lobby: the lobby as buildLobbies built it (names, map, settings, ratings) and the
+// final picks of its slots (m.launch). Civs stay hidden when the lobby hides them (option 85). Players keep their lobby
+// order. Ratings are the lobby's (every ladder known for each player); `rating` is the game's own ladder, as on the
+// lobby list's Auto. The spectator count isn't known (null); the delay is the lobby's, in minutes.
+function gameFromLaunch(lobby, m, now) {
+    const opts = m.relicOptions || {};
+    const civsHidden = opts['85'] === '1';
+    const lobbyPlayers = new Map(lobby.players.map(p => [p.id, p]));
+    const players = m.launch.map(s => {
+        const team = displayTeam(s.teamCode);
+        const civ = civsHidden ? null : relicRaceName(s.raceId);
+        if (s.kind === 'ai') return { id: 0, name: 'AI', kind: 'ai', team, color: s.color, civ, rating: null, ratings: {} };
+        const lp = lobbyPlayers.get(s.id), cached = profileCache.get(s.id);
+        const ratings = {}, stats = {};
+        for (const [ladder, st] of Object.entries(lp?.allStats || lobbyPlayerStats(s.id, null) || {})) {
+            if (!st || !Number.isFinite(st.rating)) continue;
+            ratings[ladder] = st.rating;
+            stats[ladder] = { games: num(st.games), wins: num(st.wins), winp: num(st.winp), streak: num(st.streak), highest: num(st.highest) };
         }
-        if (added) writeJsonAtomic(MAP_NAMES_PATH, mapNames);
-    } finally {
-        mapLookupRunning = false;
-    }
-    return added;
-}
-
-// Ranked queues by the feed's match_typeid (the schema's table) and their ladders, for a ranked game whose mode is
-// missing: RM 1v1 (5, console 16), RM team (6-8, console 17-19), EW 1v1 (10, console 20), EW team (11-13, console 21-23).
-// The console queues get the PC ladders, as they do through ladderFor when the mode is set.
-const QUEUE_LADDERS = Object.assign(Object.create(null), {
-    5: '3', 16: '3', 6: '4', 7: '4', 8: '4', 17: '4', 18: '4', 19: '4',
-    10: '13', 20: '13', 11: '14', 12: '14', 13: '14', 21: '14', 22: '14', 23: '14'
-});
-
-function buildSpectateGames({ schema, matches, elo }) {
-    const label = (field, value) => {
-        if (value === null || value === undefined) return null;
-        return scalar(own(own(schema, field), String(value))) ?? null;
-    };
-    const games = [];
-    const unknownMaps = Object.create(null);
-    for (const m of Object.values(matches)) {
-        if (!m || typeof m !== 'object' || m.observable === false) continue;
-        const gameId = Number(m.matchid);
-        if (!Number.isSafeInteger(gameId) || gameId <= 0) continue;
-        // Hidden-civ games still carry the real picks, so they are dropped here or the page would reveal them
-        const civsHidden = m.hide_civilizations === true;
-        const players = [];
-        for (const slot of Object.values(m.slots || {})) {
-            if (!slot || typeof slot !== 'object') continue;
-            const kind = slotKind(slot);
-            if (!kind) continue;
-            const team = displayTeam(slot.team), color = displayColor(slot.color);
-            const civ = civsHidden ? null : civName(slot.civilization, schema);
-            const ror = civ !== null && ROR_SHARED_LABELS.has(rawCivLabel(slot.civilization, schema)) ? { civRor: true } : {};
-            if (kind === 'ai') {
-                players.push({ id: 0, name: 'AI', kind, team, color, civ, ...ror, rating: null, ratings: {} });
-                continue;
-            }
-            const id = profileIdOf(slot.profileid);
-            // Each ladder's rating, and (for the match page) its games, wins, win rate, streak and highest rating
-            const ratings = {}, stats = {};
-            const n = v => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-            for (const type of SPECTATE_ELO_TYPES) {
-                const st = own(elo[type], String(id));
-                if (!st || !Number.isFinite(st.rating)) continue;
-                ratings[type] = st.rating;
-                stats[type] = { games: n(st.games), wins: n(st.wins), winp: n(st.winp), streak: n(st.streak), highest: n(st.highest) };
-            }
-            const player = { id, name: str(slot.name) || `Player ${id}`, kind, team, color, civ, ...ror, country: countryCode(slot.country) };
-            const steamProfile = str(slot.steam_profile);
-            if (steamProfile) player.steamProfile = steamProfile;
-            player.rating = null;
-            player.ratings = ratings;
-            player.stats = stats;
-            players.push(player);
-        }
-        if (!players.length) continue;
-        const mapId = (typeof m.map_name === 'number' || typeof m.map_name === 'string') ? String(m.map_name) : '';
-        if (/^\d+$/.test(mapId) && !own(mapNames, mapId) && !unknownMaps[mapId]) {
-            const human = players.find(p => p.kind === 'human');
-            if (human) unknownMaps[mapId] = { matchId: gameId, profileId: human.id };
-        }
-        const mode = label('mode', m.mode);
-        const queue = num(m.match_typeid);
-        // Quick Play (and Quick Play vs AI) games are matchmaking games too, with the raw Relic queue id negated as their
-        // match_typeid. They change a Quick Play rating, which none of the feed's ladders carry.
-        const isQuickPlay = m.description === 'AUTOMATCH' && queue !== null && queue < 0;
-        const isRanked = m.description === 'AUTOMATCH' && !isQuickPlay;
-        // 1v1 or team counts AI players too (slots_taken and slots_total are unreliable). A ranked game that arrives
-        // without its settings (mode null) takes the ladder from its queue instead.
-        const ladder = isQuickPlay ? null
-            : (isRanked && mode === null) ? (QUEUE_LADDERS[queue] ?? null)
-            : ladderFor(mode, m.map_name, players.length === 2 ? 2 : 8);
-        for (const p of players) {
-            if (p.kind === 'human') p.rating = ladder !== null ? (p.ratings[ladder] ?? null) : null; // the lobby's own ladder, like Auto on the lobby list
-        }
-        games.push({
-            id: gameId,
-            title: isRanked ? 'Ranked match' : isQuickPlay ? 'Quick Play' : (str(m.description) || 'Age of Empires II Game'),
-            isRanked,
-            isQuickPlay,
-            map: mapDisplayName(m.map_name, m.mapid, schema),
-            matchType: mode,
-            mapSize: label('size', m.size),
-            speed: label('speed', m.speed),
-            population: num(m.population) || null,
-            server: regionName(label('server', m.server)),
-            modInfo: str(m.data_mod) || 'No Mods',
-            startTime: num(m.start_time, 0),
-            observerDelay: num(m.observer_delay, 0),
-            observers: num(m.observers, 0),
-            ladder,
-            civsHidden,
-            record: m.record !== false,
-            endedAt: null,
-            players
-        });
-    }
-    games.sort((a, b) => b.startTime - a.startTime);
-    return { games, unknownMaps };
-}
-
-// updatedAt is when the snapshot was taken, not when the body was (re)built. The list drops country and the per-ladder
-// stats (it shows neither); the detail API serves the games kept in `games`, which have them. The index is the list cut
-// down to what followed-player alerts need (about a tenth of its size), so a browser can match its follows without
-// sending them.
-function spectateBody(snapshot, snapAt) {
-    const { games, unknownMaps } = buildSpectateGames(snapshot);
-    const listGames = games.map(g => ({ ...g, players: g.players.map(({ country, stats, ...p }) => p) }));
-    const updatedAt = Math.floor(snapAt / 1000);
-    const indexGames = games.map(g => ({ id: g.id, startTime: g.startTime, map: g.map, players: g.players.filter(p => p.kind === 'human').map(p => p.id) }));
+        const player = {
+            id: s.id, name: lp?.name || (cached && cached.alias !== 'Unknown' ? cached.alias : `Player ${s.id}`), kind: 'human',
+            team, color: s.color, civ, country: cached?.country || null, rating: null, ratings, stats
+        };
+        const steamProfile = lp?.steamProfile || cached?.steamProfile;
+        if (steamProfile) player.steamProfile = steamProfile;
+        return player;
+    });
+    const ladder = ladderFor(lobby.matchType, lobby.map, players.length === 2 ? 2 : 8);
+    for (const p of players) if (p.kind === 'human') p.rating = p.ratings[ladder] ?? null;
+    const delayS = num(m.observerdelay, 0);
     return {
+        id: lobby.id,
+        title: lobby.title || 'Age of Empires II Game',
+        isRanked: false,
+        isQuickPlay: false,
+        map: lobby.map,
+        matchType: lobby.matchType ?? null,
+        mapSize: lobby.mapSize ?? null,
+        speed: lobby.speed ?? null,
+        population: num(lobby.population) || null,
+        server: lobby.server || null,
+        modInfo: lobby.modInfo || 'No Mods',
+        startTime: Math.floor((m.launchedAt || now) / 1000),
+        observerDelay: Math.max(0, Math.round(delayS / 60)),
+        observers: null,
+        ladder,
+        civsHidden,
+        record: null,
+        endedAt: null,
+        source: 'lobby',
+        players
+    };
+}
+
+// A game starts when a lobby leaves the list while launching, having launched at most LAUNCH_MAX_MS before. Measured at
+// the site's read rate on 28 Nov 2026: 23 of 29 launches left within 1.3 s of their first launching reading, the rest
+// within 3 s, and every one that allowed spectators within 3 s. A few lobbies (none allowing spectators) showed the same
+// picks for 20 s to minutes, some then going back to normal: not taken.
+const LAUNCH_MAX_MS = 15000;
+const launchLobbies = new Map(); // lobby id -> the lobby as last built, while it is launching
+
+// Called with each lobby list built: keeps the launching lobbies as built (names, map, settings, ratings) for when they
+// leave the list, and ends the games whose players have moved on
+function noteLaunching(lobbies, now) {
+    const launching = new Set();
+    for (const lobby of lobbies) {
+        const m = typeof lobby.id === 'number' ? activeMatches.get(lobby.id) : undefined;
+        if (m?.launch) {
+            launchLobbies.set(lobby.id, lobby);
+            launching.add(lobby.id);
+        }
+    }
+    // Still listed but launching no more (a lobby that left is handled by noteLobbyGone)
+    for (const id of launchLobbies.keys()) if (!launching.has(id) && activeMatches.has(id)) launchLobbies.delete(id);
+    noteMovedOn(lobbies, now);
+}
+
+// Called by pollRelic for each lobby that left the list (m as last read): one that left while launching is a game in
+// progress, kept when it allows spectators
+function noteLobbyGone(m, now) {
+    const lobby = launchLobbies.get(m.id);
+    launchLobbies.delete(m.id);
+    if (!lobby || !m.launch || !m.launchedAt || m.lastSeen - m.launchedAt > LAUNCH_MAX_MS) return;
+    if (m.isobservable !== 1 || liveGames.has(m.id) || endedGames.has(m.id)) return;
+    liveGames.set(m.id, gameFromLaunch(lobby, m, now));
+    spectateDirty = true;
+    saveLiveGamesSoon();
+}
+
+// Called by pollRelic for each lobby listed: one listed again soon after it "started" never did (a game that starts
+// never comes back to the list)
+function noteLobbyListed(id, now) {
+    const g = liveGames.get(id);
+    if (!g || now - g.startTime * 1000 > LAUNCH_UNDO_MS) return;
+    liveGames.delete(id);
+    liveChecks.delete(id);
+    spectateDirty = true;
+    saveLiveGamesSoon();
+}
+
+// A player in a lobby this server first saw after a game started, or in a game started after it, has left that game. A
+// game whose players have all left is over; so is one past LIVE_MAX_MS. Its result is looked up when its page asks.
+function noteMovedOn(lobbies, now) {
+    if (!liveGames.size) return;
+    const since = new Map(); // profile id -> the newest start (ms) of a lobby or game they are in
+    const note = (id, t) => { if (isProfileId(id) && t > (since.get(id) ?? 0)) since.set(id, t); };
+    for (const lobby of lobbies) {
+        const first = activeMatches.get(lobby.id)?.firstSeen;
+        if (first) for (const p of lobby.players) note(p.id, first);
+    }
+    for (const g of liveGames.values()) for (const p of g.players) if (p.kind === 'human') note(p.id, g.startTime * 1000);
+    for (const [id, g] of liveGames) {
+        const start = g.startTime * 1000;
+        const humans = g.players.filter(p => p.kind === 'human');
+        if (now - start > LIVE_MAX_MS || (humans.length && humans.every(p => (since.get(p.id) ?? 0) > start))) {
+            endLiveGame(id, Math.floor(now / 1000));
+        }
+    }
+}
+
+// A live game becomes an ended one. `found`: its match history entry's start and the result read from it, when that is
+// how its end was found.
+function endLiveGame(id, endedAt, found = null) {
+    const g = liveGames.get(id);
+    if (!g) return;
+    liveGames.delete(id);
+    liveChecks.delete(id);
+    const game = { ...g, endedAt, ...(found?.startTime ? { startTime: found.startTime } : {}) };
+    endedGames.set(id, { game, result: found?.result || null, lookup: null, firstTryAt: 0, lastTryAt: 0, tries: 0 });
+    pruneEndedGames();
+    spectateDirty = true;
+    saveLiveGamesSoon();
+}
+
+// --- Spectate: ends from the public match history -----------------------------------------------------------------------
+// From LIVE_CHECK_FIRST_MS after its start, every LIVE_CHECK_EVERY_MS, each live game's history is read for one of its
+// players (a different one each time): a game there has ended, with its result. One request every LIVE_CHECK_GAP_MS for up
+// to LIVE_CHECK_BATCH games (one player each), so ~100 live games are each checked about every 3 minutes.
+const LIVE_CHECK_FIRST_MS = 3 * 60 * 1000;
+const LIVE_CHECK_EVERY_MS = 3 * 60 * 1000;
+const LIVE_CHECK_GAP_MS = 10000;
+const LIVE_CHECK_BATCH = 4;
+const liveChecks = new Map(); // match id -> { at, tries }
+let liveCheckBusy = false;
+
+async function checkLiveEnds() {
+    if (liveCheckBusy || !liveGames.size) return;
+    const now = Date.now();
+    const due = [...liveGames.values()]
+        .filter(g => now - g.startTime * 1000 >= LIVE_CHECK_FIRST_MS && now - (liveChecks.get(g.id)?.at ?? 0) >= LIVE_CHECK_EVERY_MS)
+        .sort((a, b) => (liveChecks.get(a.id)?.at ?? 0) - (liveChecks.get(b.id)?.at ?? 0))
+        .slice(0, LIVE_CHECK_BATCH);
+    if (!due.length) return;
+    const asked = new Set();
+    for (const g of due) {
+        const humans = g.players.filter(p => p.kind === 'human');
+        const check = liveChecks.get(g.id) || { at: 0, tries: 0 };
+        check.at = now;
+        const pid = humans.length ? humans[check.tries++ % humans.length].id : null;
+        liveChecks.set(g.id, check);
+        if (pid) asked.add(pid);
+    }
+    if (!asked.size) return;
+    liveCheckBusy = true;
+    try {
+        const text = await httpsGet(`${RELIC_API}/leaderboard/getRecentMatchHistory?title=age2&profile_ids=[${[...asked].join(',')}]`,
+            { 'User-Agent': 'aoe2lobby.online (spectate)' });
+        let data;
+        try { data = JSON.parse(text); } catch (e) { throw new Error('invalid JSON'); }
+        const history = Array.isArray(own(data, 'matchHistoryStats')) ? data.matchHistoryStats : [];
+        for (const g of due) {
+            const entry = history.find(e => num(own(e, 'id')) === g.id);
+            const completedAt = num(own(entry, 'completiontime'));
+            if (!entry || !Number.isSafeInteger(completedAt) || completedAt <= 0) continue;
+            const startTime = num(own(entry, 'startgametime'));
+            const result = parseMatchResult(data, { ...g, startTime: Number.isSafeInteger(startTime) ? startTime : g.startTime });
+            endLiveGame(g.id, completedAt, { startTime: Number.isSafeInteger(startTime) ? startTime : null, result });
+        }
+    } catch (e) {
+        console.error('Spectate end check failed:', e.message);
+    } finally {
+        liveCheckBusy = false;
+    }
+}
+setInterval(() => { checkLiveEnds(); }, LIVE_CHECK_GAP_MS).unref();
+
+// --- Spectate: the list, and keeping it across restarts -----------------------------------------------------------------
+// updatedAt is Relic's last good read. The list drops country and the per-ladder stats (it shows neither); the detail API
+// serves the games kept in `games`, which have them. The index is the list cut down to what followed-player alerts need,
+// so a browser can match its follows without sending them.
+function buildSpectateCache(now) {
+    const games = [...liveGames.values()].sort((a, b) => b.startTime - a.startTime);
+    const updatedAt = relicOkAt ? Math.floor(relicOkAt / 1000) : null;
+    const listGames = games.map(({ source, ...g }) => ({ ...g, players: g.players.map(({ country, stats, ...p }) => p) }));
+    const indexGames = games.map(g => ({ id: g.id, startTime: g.startTime, map: g.map, players: g.players.filter(p => p.kind === 'human').map(p => p.id) }));
+    spectateCache = {
+        at: now,
+        snapAt: relicOkAt,
         body: JSON.stringify({ updatedAt, stale: false, games: listGames }),
         index: JSON.stringify({ updatedAt, stale: false, games: indexGames }),
-        games: new Map(games.map(g => [g.id, g])),
-        unknownMaps
+        games: new Map(games.map(g => [g.id, g]))
     };
+    spectateDirty = false;
 }
 
-// A snapshot is usable for this long: older, the list shows no games and no game counts as live
+// Usable while Relic's list is fresh: older, the list shows no games and no game counts as live
 function spectateFresh(cache) {
-    return !!cache.body && Date.now() - cache.snapAt <= SPECTATE_STALE_MS;
+    return !!cache.body && cache.snapAt > 0 && Date.now() - cache.snapAt <= SPECTATE_STALE_MS;
 }
 
-async function refreshSpectate() {
-    const snapAt = Date.now();
-    const snapshot = await fetchSpectateSnapshot();
-    const { body, index, games, unknownMaps } = spectateBody(snapshot, snapAt);
-    // Hundreds of games are always in progress and they don't halve within minutes, so a snapshot with no games, or with
-    // under half the games of a recent one, is a feed glitch: it counts as a failed refresh, or every running game it
-    // misses would be marked as ended
-    const prev = spectateCache;
-    if (!games.size || (spectateFresh(prev) && prev.games.size >= 20 && games.size < prev.games.size / 2)) {
-        throw new Error(`implausible snapshot: ${games.size} games, after ${prev.games.size}`);
-    }
-    noteEndedGames(prev.games, games, snapAt);
-    const entry = { at: Date.now(), snapAt, body, index, games };
-    spectateCache = entry;
-    // Look up unknown map names in the background, then rebuild this snapshot with them (unless a newer one replaced it)
-    if (Object.keys(unknownMaps).length) {
-        resolveMapNames(unknownMaps).then(added => {
-            if (!added || spectateCache !== entry) return;
-            const rebuilt = spectateBody(snapshot, snapAt);
-            entry.body = rebuilt.body;
-            entry.index = rebuilt.index;
-            entry.games = rebuilt.games;
-        }).catch(e => console.error('Map name lookup failed:', e.message));
-    }
-}
-
-// One freshness rule for the list and the detail API: refresh the snapshot on demand at most once per
-// SPECTATE_REFRESH_MS, and wait for the refresh only when there is nothing usable yet (no snapshot, or one too old to show)
+// The games as of Relic's last read (rebuilt when a game started or ended, or the read is newer). Async, as callers await it.
 async function freshSpectate() {
-    const now = Date.now();
-    if (now - spectateCache.at > SPECTATE_REFRESH_MS && !spectateLoading && now - spectateFailedAt > SPECTATE_REFRESH_MS) {
-        spectateLoading = refreshSpectate()
-            .catch(e => {
-                spectateFailedAt = Date.now();
-                console.error('Spectate refresh failed:', e.message);
-            })
-            .finally(() => { spectateLoading = null; });
-    }
-    if (spectateLoading && (!spectateCache.body || Date.now() - spectateCache.snapAt > SPECTATE_WAIT_MS)) await spectateLoading;
+    if (spectateDirty || spectateCache.snapAt !== relicOkAt) buildSpectateCache(Date.now());
     return spectateCache;
 }
 
-// --- Spectate: games that left the feed, and their results from World's Edge's match history --------------
-// A game missing from a new snapshot has ended; its page then shows the winner, rating changes and replay link.
+let liveSaveTimer = null;
+function saveLiveGamesSoon() {
+    if (liveSaveTimer) return;
+    liveSaveTimer = setTimeout(saveLiveGames, 5000);
+    liveSaveTimer.unref();
+}
+function saveLiveGames() {
+    clearTimeout(liveSaveTimer);
+    liveSaveTimer = null;
+    const ended = [...endedGames.values()].map(e => ({ game: e.game, result: e.result && e.result.state === 'found' ? e.result : null }));
+    writeJsonAtomic(LIVE_GAMES_PATH, { savedAt: Date.now(), live: [...liveGames.values()], ended });
+}
+// Called once at start, after endedGames exists
+function loadLiveGames() {
+    try {
+        const data = JSON.parse(fs.readFileSync(LIVE_GAMES_PATH, 'utf8'));
+        const now = Date.now();
+        for (const g of Array.isArray(data?.live) ? data.live : []) {
+            if (g && Number.isSafeInteger(g.id) && Array.isArray(g.players) && now - g.startTime * 1000 < LIVE_MAX_MS) liveGames.set(g.id, g);
+        }
+        for (const e of Array.isArray(data?.ended) ? data.ended : []) {
+            if (e?.game && Number.isSafeInteger(e.game.id) && !liveGames.has(e.game.id)) {
+                endedGames.set(e.game.id, { game: e.game, result: e.result || null, lookup: null, firstTryAt: 0, lastTryAt: 0, tries: 0 });
+            }
+        }
+        pruneEndedGames();
+        console.log(`Spectate: ${liveGames.size} live and ${endedGames.size} ended games from ${path.basename(LIVE_GAMES_PATH)}`);
+    } catch (e) {
+        if (e.code !== 'ENOENT') console.error(`Reading ${path.basename(LIVE_GAMES_PATH)} failed:`, e.message);
+    }
+}
+
+// --- Spectate: ended games, and their results from World's Edge's match history --------------------------------------
+// A game that has ended (endLiveGame) keeps its page, which then shows the winner, rating changes and replay link.
 const ENDED_KEEP_MS = 2 * 60 * 60 * 1000;
 const ENDED_MAX = 5000;
-const RESULT_GIVE_UP_S = 15 * 60; // after the first lookup (normally right after the game left the feed)
+const RESULT_GIVE_UP_S = 15 * 60; // after the first lookup (normally right after the game ended)
 const RESULT_FAST_S = 3 * 60; // retries are >= 20 s apart for this long after the game ended, then >= 60 s
 const RESULT_WAIT_MS = 3000; // the longest a detail request waits for a lookup in flight
 const endedGames = new Map(); // match id -> { game (with endedAt), result, lookup, firstTryAt, lastTryAt, tries }, oldest first
@@ -706,17 +737,7 @@ const endedGames = new Map(); // match id -> { game (with endedAt), result, look
 let resultLookupBusy = false;
 const resultLookupStarts = []; // start times (ms) within the last minute
 
-// Called on each refresh. endedAt is the new snapshot's time; a game listed again is live again.
-function noteEndedGames(prevGames, games, snapAt) {
-    const endedAt = Math.floor(snapAt / 1000);
-    for (const [id, game] of prevGames) {
-        if (!games.has(id)) endedGames.set(id, { game: { ...game, endedAt }, result: null, lookup: null, firstTryAt: 0, lastTryAt: 0, tries: 0 });
-    }
-    for (const id of games.keys()) endedGames.delete(id);
-    pruneEndedGames();
-}
-
-// Map order is insertion order, which is endedAt order: drop expired entries, then the oldest past the cap
+// Map order is insertion order, which is roughly endedAt order: drop expired entries, then the oldest past the cap
 function pruneEndedGames() {
     const oldest = Math.floor((Date.now() - ENDED_KEEP_MS) / 1000);
     for (const [id, e] of endedGames) {
@@ -752,7 +773,7 @@ function spectateGameByPlayer(cache, profileId) {
 
 // Who is playing now, for the Maps view: profile id -> the live game they started last (the same rule as
 // spectateGameByPlayer, so a team game they have left and since finished another doesn't count). Every game in the list
-// allows spectators: the feed's unobservable games are dropped in buildSpectateGames. Built once per snapshot.
+// allows spectators: only lobbies that allow them are kept (noteLobbyGone). Built once per list.
 function playingIndex(cache) {
     if (!spectateFresh(cache)) return new Map();
     if (cache.playing && cache.playing.games === cache.games) return cache.playing.index;
@@ -781,13 +802,20 @@ function emptyResult(state) {
 }
 
 // The result of `game` from one getRecentMatchHistory response, or null while the game isn't in it. The history is
-// unsorted and holds older games, so the entry must match both the id and the start time. Only ids, outcomes,
-// ratings, times and replay sizes are read: matchurls[].url is a signed blob URL and is never touched.
+// unsorted and holds older games, so the entry must match the id and, for a feed's game, the start time. A game taken
+// from its lobby (source 'lobby') has only the time it was seen launching, a few seconds before the real start: the id
+// alone (a lobby's id is the match's) and the entry's own start. Only ids, outcomes, ratings, times and replay sizes are
+// read: matchurls[].url is a signed blob URL and is never touched.
 function parseMatchResult(data, game) {
     const history = own(data, 'matchHistoryStats');
     if (!Array.isArray(history)) return null;
-    const entry = history.find(e => num(own(e, 'id')) === game.id && num(own(e, 'startgametime')) === game.startTime);
+    const fromLobby = game.source === 'lobby';
+    const entry = history.find(e => num(own(e, 'id')) === game.id && (fromLobby || num(own(e, 'startgametime')) === game.startTime));
     if (!entry) return null;
+    if (fromLobby) {
+        const start = num(own(entry, 'startgametime'));
+        if (Number.isSafeInteger(start) && start > 0) game = { ...game, startTime: start };
+    }
     const members = Array.isArray(entry.matchhistorymember) ? entry.matchhistorymember : [];
     const rowById = new Map();
     for (const m of members) {
@@ -936,7 +964,8 @@ async function withRelicProfiles(game) {
                 ratings[board] = s.rating;
                 stats[board] = { games: s.games ?? null, wins: s.wins ?? null, winp: s.winp ?? null, streak: s.streak ?? null, highest: s.highest ?? null };
             }
-            return { ...p, country: c.country || p.country || null, ratings, stats };
+            const steam = !p.steamProfile && c.steamProfile ? { steamProfile: c.steamProfile } : {};
+            return { ...p, ...steam, country: c.country || p.country || null, ratings, stats };
         })
     };
 }
@@ -1839,6 +1868,7 @@ async function pollRelic() {
 
     allMatches.forEach(m => {
         currentMatchIds.add(m.id);
+        noteLobbyListed(m.id, now);
         m.lastSeen = now;
         m.isPlaying = false;
         m.rawPlayers = [];
@@ -1893,6 +1923,9 @@ async function pollRelic() {
             m.rawPlayers = slots.players;
             m.relicSlotsTotal = slots.total;
             m.relicAiSlots = slots.ai;
+            // Launching: if it then leaves the list, it is a game in progress (noteLaunching, noteLobbyGone)
+            m.launch = slots.launch || null;
+            m.launchedAt = m.launch ? (prev?.launchedAt || now) : null;
             m.rawPlayers.forEach(p => {
                 if (!isProfileId(p.id)) return;
                 const cached = profileCache.get(p.id);
@@ -1935,6 +1968,7 @@ async function pollRelic() {
     // them, but only for 2 minutes, so a repeatedly failing page can't keep closed lobbies joinable for good
     for (const [id, m] of activeMatches) {
         if (!currentMatchIds.has(id) && (complete || now - m.lastSeen > 2 * 60 * 1000)) {
+            noteLobbyGone(m, now); // left while launching: a game in progress
             activeMatches.delete(id);
             relicLobbyFields.delete(id);
         }
@@ -2141,10 +2175,10 @@ function buildLobbies(requested = new Set()) {
 }
 
 // --- Live lobby list -----------------------------------------------------------------------------------------------------
-// While anyone is watching (an open /api/lobbies/stream, or a poll of /api/lobbies in the last LOBBY_IDLE_MS), Relic's
-// list is read every relicPollMs() (0.5-1 s), and the list is built again as soon as it or aoe2lobby.com's data changes (scraper.js
+// Relic's list is read every relicPollMs() (0.5-1 s) from the start, whether or not anyone is watching (the Spectate list
+// needs every launch: see noteLobbyGone), and the list is built again as soon as it or aoe2lobby.com's data changes (scraper.js
 // rewrites its files on each of the feed's updates, about every 3 s). Each build that changes anything goes to every open
-// stream at once, as just the lobbies that changed. With nobody watching, nothing is fetched.
+// stream at once, as just the lobbies that changed.
 // Relic's list is live (at 4 reads a second, 259 of 360 differed on 27 Nov 2026; its max-age=5 header is advisory), so the
 // read interval is most of our delay. Every 500 ms while the list fits in 3 pages, slower as it grows, so the requests a
 // second never exceed 6 (the rate of a 6-page list read every second).
@@ -2155,13 +2189,12 @@ function relicPollMs() {
     return Math.min(RELIC_POLL_MAX_MS, Math.max(RELIC_POLL_MIN_MS, Math.round(relicPagesWanted * 1000 / RELIC_REQUESTS_PER_S)));
 }
 const SCRAPED_CHECK_MS = 100; // how often the scraped files' times are checked (a stat each, while anyone is watching)
-const LOBBY_IDLE_MS = 30000;
 const RELIC_STALE_MS = 60000; // once Relic's list is this old (it keeps failing), aoe2lobby.com's updates alone don't rebuild
 const RELIC_WAIT_MS = 10000; // a poll finding Relic's list older than this waits for a fresh read
 let relicPolling = null, relicPollStartedAt = 0, relicOkAt = 0;
 let relicApplying = false; // pollRelic is between updating activeMatches and having every new host's name
 let scrapedMtime = 0; // the scraped files' newest time, as of the last build
-let lobbyLoopTimer = null, lastLobbyPollAt = 0;
+let lobbyLoopTimer = null;
 let rebuildWanted = false; // new stats arrived (aoe2companion): build again at the next tick
 
 function rebuildSoon() {
@@ -2207,6 +2240,7 @@ function publishLobbies(requested) {
         console.error('Building the lobby list failed:', e);
         return;
     }
+    noteLaunching(matches, Date.now()); // the Spectate list's games come from the lobbies that launch
     lobbiesCache = { at: Date.now(), body: JSON.stringify({ v: pageVersion, feed: scrapedFeedOk, matches }) };
     streamLobbies(matches);
 }
@@ -2214,7 +2248,8 @@ function publishLobbies(requested) {
 function lobbyTick() {
     lobbyLoopTimer = null;
     const now = Date.now();
-    if (streamClients.size === 0 && now - lastLobbyPollAt > LOBBY_IDLE_MS) return; // nobody watching: stop until someone is
+    // Relic's list is read whether or not anyone is watching: the Spectate list's games are the lobbies seen launching,
+    // and a launch shows for about a second (see noteLobbyGone)
     // aoe2lobby.com's data changed: build again with the Relic list we have, also while a Relic read waits on the network
     // (it builds again when it's done)
     if (!relicApplying && now - relicOkAt < RELIC_STALE_MS && (rebuildWanted || scrapedFilesTime() !== scrapedMtime)) {
@@ -2451,8 +2486,8 @@ function mapPlayerFromRow(row) {
 
 // ?map=&sort=&ladder=&q=&offset=&limit=: one page of the map's players, sorted, narrowed to names containing q. A player
 // in a game in progress (every listed game allows spectators) carries it as playing, so the page can offer to watch it;
-// the games come from the Spectate view's snapshot, refreshed on demand the same way (at most once a minute).
-const MAP_PLAYING_WAIT_MS = 2500; // the longest a request waits for a first snapshot
+// the games are the Spectate view's (the lobbies seen launching).
+const MAP_PLAYING_WAIT_MS = 2500; // the longest a request waits for the games
 async function serveMapPlayers(res, query) {
     const name = String(query.get('map') || '');
     if (!name || name.length > 120) return answerJson(res, 400, { error: 'bad map' });
@@ -2548,7 +2583,7 @@ function pvModIdFor(text) {
 }
 
 // /mods: the mods page (map-pages.js renderModsPage), last updated first. Kept MODS_PAGE_CACHE_MS: what is in use changes
-// with the lobbies. The games come from the spectate snapshot, refreshed on demand like the Spectate view's.
+// with the lobbies. The games are the Spectate view's.
 const MODS_PAGE_CACHE_MS = 20000;
 let modsPageCache = { at: 0, body: null };
 async function serveModsPage(res) {
@@ -2845,10 +2880,8 @@ async function handleRequest(req, res) {
         return;
     }
     if (req.url.startsWith('/api/lobbies')) {
-        // Polled by pages whose stream is down (and by pages from before the stream). A poll keeps the list live for
-        // LOBBY_IDLE_MS, and waits for a fresh read when Relic's list is out of date (nobody was watching). A failed read
-        // keeps the old body.
-        lastLobbyPollAt = Date.now();
+        // Polled by pages whose stream is down (and by pages from before the stream). A poll waits for a fresh read when
+        // Relic's list is out of date (its reads were failing). A failed read keeps the old body.
         watchLobbies();
         if (!lobbiesCache.body || Date.now() - relicOkAt > RELIC_WAIT_MS) {
             const pending = refreshLobbies();
@@ -2934,11 +2967,19 @@ server.listen(API_PORT, HOST, () => {
     console.log(`API Server listening on ${HOST}:${API_PORT}`);
 });
 
+// The Spectate list: the games kept over the restart, Relic's civ names, and the lobby list read from now on
+loadLiveGames();
+refreshRelicRaces();
+setInterval(refreshRelicRaces, RACES_REFRESH_MS).unref();
+watchLobbies();
+
 // pm2 stop/reload sends SIGINT: finish in-flight requests, then exit (force it after 8 s). Open lobby streams are ended
-// first (they would hold the server open); their pages reconnect to the new process.
+// first (they would hold the server open); their pages reconnect to the new process. The games in progress are saved
+// for the next process.
 function shutdown() {
     for (const res of streamClients.keys()) res.end();
     clearTimeout(lobbyLoopTimer);
+    saveLiveGames();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 8000).unref();
 }
